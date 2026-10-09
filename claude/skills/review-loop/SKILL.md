@@ -1,6 +1,6 @@
 ---
 name: review-loop
-description: Run an independent review-fix loop (max 5 rounds) on the current changes using the reviewer subagent.
+description: Simplify the current changes, then run an independent Opus review-fix loop (max 5 rounds) using the reviewer subagent.
 disable-model-invocation: true
 argument-hint: "[scope: staged | branch | path]"
 ---
@@ -8,6 +8,10 @@ argument-hint: "[scope: staged | branch | path]"
 Run a bounded review-fix loop on: $ARGUMENTS (default: all uncommitted changes, `git diff HEAD`).
 
 You orchestrate from the main thread. Do not change models or effort levels; if you think a different model or effort is needed, ask the user first.
+
+## Step 0: simplify (once)
+
+Invoke the `simplify` skill via the Skill tool on the same scope, so the reviewer sees the final code. If the skill cannot be invoked, say so and continue. Re-run the tests afterwards; if simplify broke them, fix or revert that change before starting the loop. Simplify does not count as a round.
 
 ## Loop (hard cap: 5 rounds)
 

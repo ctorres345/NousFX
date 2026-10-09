@@ -4,7 +4,6 @@ description: Looks up library, API, and framework documentation on the web and r
 model: haiku
 effort: medium
 maxTurns: 20
-memory: user
 tools: Read, Grep, Glob, WebFetch, WebSearch
 ---
 
