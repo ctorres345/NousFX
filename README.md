@@ -13,6 +13,19 @@ Opus/Sonnet main session with Haiku 5.5 subagents for noisy work.
 | `claude/skills/review-loop/SKILL.md` | `/review-loop`: review-fix loop, max 5 rounds, never commits |
 | `claude/CLAUDE.delegation.md` | Delegation policy appended to `~/.claude/CLAUDE.md` |
 
+### Hands-off review loop with `/goal`
+`/review-loop` is user-run only, so a goal can't invoke it. Paste the procedure as the goal instead (start the session in auto mode so test commands don't prompt):
+
+```text
+/goal Review-fix loop on git diff HEAD. Each round, print "Round N/5", run the reviewer subagent, verify its findings, fix the real high/med ones, then run tests. Done when the reviewer's latest output is NO FINDINGS or low-only, and the passing test output is shown. Stop after Round 5 regardless and list what remains. Do not commit.
+```
+
+Notes:
+- The cap counts rounds (printed as `Round N/5`), not turns, because one round takes several turns.
+- "Clean" means no high/med findings; reviewers almost always find something minor.
+- The goal evaluator only reads the conversation, so the reviewer output and test result must be shown in it.
+- For interactive use, just run `/review-loop`.
+
 ### Install
 ```bash
 ./install.sh
