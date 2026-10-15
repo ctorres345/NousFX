@@ -31,6 +31,9 @@ For round N = 1..5:
 
 After round 5, stop regardless of remaining findings.
 
+## Optional deep pass (interactive only)
+When the loop ends clean and the change is large or risky (security/auth, data migrations, concurrency, public API changes), tell the user why and ask whether to run `reviewer-deep` once. Run it only after they approve. Treat its findings like any others (verify, fix real high/med ones, run tests), then stop; do not start another loop. Skip this step in unattended or `/goal` runs.
+
 ## Rules
 - Never commit, push, or stash. Leave all changes in the working tree.
 - Do not widen scope beyond the findings.

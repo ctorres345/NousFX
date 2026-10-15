@@ -9,6 +9,7 @@ Opus/Sonnet main session with Haiku 5.5 subagents for noisy work.
 | `claude/agents/Explore.md` | Haiku code search; replaces the built-in Explore |
 | `claude/agents/researcher.md` | Haiku docs and API lookups |
 | `claude/agents/reviewer.md` | Read-only Opus reviewer |
+| `claude/agents/reviewer-deep.md` | Fable second-opinion reviewer; large/risky changes only, and only after asking |
 | `claude/agents/test-runner.md` | Haiku build/test runner, returns only failures |
 | `claude/skills/review-loop/SKILL.md` | `/review-loop`: review-fix loop, max 5 rounds, never commits |
 | `claude/CLAUDE.delegation.md` | Delegation policy appended to `~/.claude/CLAUDE.md` |
@@ -30,7 +31,10 @@ Notes:
 ```bash
 ./install.sh
 ```
-Copies the files into `~/.claude/` (override with `CLAUDE_HOME`), backs up anything it replaces, and appends the delegation policy to `CLAUDE.md` only once.
+Copies the files into `~/.claude/` (override with `CLAUDE_HOME`), backs up anything it replaces, and keeps the "Delegation policy" section of `CLAUDE.md` current (the rest of that file is untouched). Safe to re-run after pulling updates.
+
+### Fable (optional)
+`reviewer-deep` needs Fable access (included on Max up to 50% of the weekly limit; terms may change). If you lose access, delete `claude/agents/reviewer-deep.md`, the "Optional deep pass" section in the review-loop skill, and its line in `CLAUDE.delegation.md`.
 
 ### Requirements
 - Claude Code 2.1.293 or later (Haiku 5.5). Run `claude update` if older.
