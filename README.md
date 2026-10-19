@@ -13,6 +13,7 @@ Opus/Sonnet main session with Haiku 5.5 subagents for noisy work.
 | `claude/agents/architect.md` | Fable architecture consultant; read-only, only after asking |
 | `claude/agents/test-runner.md` | Haiku build/test runner, returns only failures |
 | `claude/skills/review-loop/SKILL.md` | `/review-loop`: review-fix loop, max 5 rounds, never commits |
+| `claude/skills/ui-review/SKILL.md` | `/ui-review`: platform-aware UI/UX review that runs the right design skills (invoked automatically per the policy) |
 | `claude/CLAUDE.delegation.md` | Delegation policy appended to `~/.claude/CLAUDE.md` |
 
 ### Hands-off review loop with `/goal`
@@ -36,6 +37,12 @@ Copies the files into `~/.claude/` (override with `CLAUDE_HOME`), backs up anyth
 
 ### Fable (optional)
 `reviewer-deep` needs Fable access (included on Max up to 50% of the weekly limit; terms may change). If you lose access, delete `claude/agents/reviewer-deep.md` and `claude/agents/architect.md`, the "Optional deep pass" section in the review-loop skill, and their lines in `CLAUDE.delegation.md`.
+
+### UI skills `ui-review` relies on (not stored in this repo)
+It skips any that are missing and lists them under "Skipped", so install what you want on each device:
+- User skills: `ui-ux-pro-max`, and the Android set (`adaptive`, `edge-to-edge`, `jetpack-compose-performance`, `navigation-3`, `styles`, `testing-setup`), which come from the `android` CLI.
+- Plugin: `material-3` (`material-3@material-3-skill`).
+- Claude desktop/cloud plugins: `design:accessibility-review`, `design:design-critique`, `design:ux-copy`, and `anthropic-skills:frontend-design`.
 
 ### Requirements
 - Claude Code 2.1.293 or later (Haiku 5.5). Run `claude update` if older.

@@ -3,6 +3,7 @@
 - Keep edits in the main thread. Re-read any file yourself before editing it; do not rely on a Haiku summary alone.
 - Every subagent call needs an objective, expected output format, and boundaries. Max ~3 parallel agents for simple tasks.
 - Before a PR, use `/review-loop` (runs `/simplify`, then the Opus `reviewer` for max 5 rounds) once per feature, not per edit. It replaces running `/simplify` and `/code-review` by hand; it is also the one to use for unattended `/goal` runs.
+- Any request to review, critique, polish, or optimize UI/UX, visual design, responsiveness, or accessibility: invoke the `ui-review` skill first, in any project. It detects the platform (Android/Compose, Flutter, iOS, web) and runs the matching design skills; do not improvise a UI review from memory or skip skills it lists.
 - Fable is a premium resource (limited weekly allowance). Two Fable agents exist, both read-only:
   - `architect`: architecture decisions (module boundaries, data models, migration strategy, major dependencies), optimization and performance reviews (speed, memory, battery), and design reviews. Give it a short brief (goal, constraints, options, what to measure).
   - `reviewer-deep`: second-opinion code review for large or risky changes (security/auth, data migrations, concurrency, public API changes), or when the default `reviewer` was inconclusive.
