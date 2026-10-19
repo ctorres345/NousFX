@@ -56,7 +56,7 @@ Read-only. Shows tokens and estimated list-price cost by project and model, wher
 - Anthropic API. On Bedrock/Vertex the `haiku` alias resolves to Haiku 4.5; put the full model ID in the agent files.
 
 ### Not shared on purpose
-`settings.json` (project-specific `autoMode` details and graphify hooks), memory, history, sessions. If you want the same main model, add `"model": "opusplan"` to `~/.claude/settings.json` by hand.
+`settings.json` (project-specific `autoMode` details and graphify hooks), memory, history, sessions. If you want the same main model, add `"model": "opusplan"` to `~/.claude/settings.json` by hand. To cap context growth (long sessions are the main cost), also add `"autoCompactWindow": 300000` there; the default window compacts at about 967K tokens.
 
 ### Check
 Run `/agents` in a new session; all four agents should be listed.
