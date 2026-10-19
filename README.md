@@ -14,6 +14,7 @@ Opus/Sonnet main session with Haiku 5.5 subagents for noisy work.
 | `claude/agents/test-runner.md` | Haiku build/test runner, returns only failures |
 | `claude/skills/review-loop/SKILL.md` | `/review-loop`: review-fix loop, max 5 rounds, never commits |
 | `claude/skills/ui-review/SKILL.md` | `/ui-review`: platform-aware UI/UX review that runs the right design skills (invoked automatically per the policy) |
+| `claude/skills/handoff/SKILL.md` | `/handoff`: writes `.claude/handoff.md` so the next session starts cheap instead of carrying old context |
 | `claude/CLAUDE.delegation.md` | Delegation policy appended to `~/.claude/CLAUDE.md` |
 
 ### Hands-off review loop with `/goal`
