@@ -44,6 +44,13 @@ It skips any that are missing and lists them under "Skipped", so install what yo
 - Plugin: `material-3` (`material-3@material-3-skill`).
 - Claude desktop/cloud plugins: `design:accessibility-review`, `design:design-critique`, `design:ux-copy`, and `anthropic-skills:frontend-design`.
 
+### Usage report
+```bash
+python3 -I scripts/usage-report.py --days 14          # all projects
+python3 -I scripts/usage-report.py --project pawly    # one project
+```
+Read-only. Shows tokens and estimated list-price cost by project and model, where the cost goes (cache reads vs output), the costliest sessions with their average context size, which subagents ran and on which model, the tools returning the most text, and files re-read often. Use it to check that the Haiku/Fable agents are actually being used and where tokens go. Costs are relative weights, not a bill.
+
 ### Requirements
 - Claude Code 2.1.293 or later (Haiku 5.5). Run `claude update` if older.
 - Anthropic API. On Bedrock/Vertex the `haiku` alias resolves to Haiku 4.5; put the full model ID in the agent files.
