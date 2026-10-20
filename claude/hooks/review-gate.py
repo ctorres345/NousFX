@@ -5,6 +5,10 @@ Hook mode (default): PreToolUse hook. Reads the hook JSON on stdin and, only for
 `gh pr create` or a create-pull-request MCP tool, exits 2 (blocking) unless a review
 marker matches the code being submitted. Every other call, and every error, exits 0.
 
+Branch check: the branch must be named cesar/<JIRA-KEY> (for example cesar/MOB-23). If the
+user approves another name for this PR, `review-gate.py --allow-branch "reason"` records an
+exception for the current branch (stored in the git dir, never committed).
+
 Mark mode: `review-gate.py --mark [--findings N] [--skip "reason"]` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
 
@@ -21,6 +25,7 @@ import tempfile
 import time
 
 GH_PR_CREATE = re.compile(r"(?:^|[;&|(]|&&|\|\|)\s*gh\s+pr\s+create\b")
+BRANCH_OK = re.compile(r"^cesar/[A-Z][A-Z0-9]+-\d+$")
 MCP_PR_CREATE = re.compile(r"create_pull_request", re.I)
 
 BLOCK = """\
@@ -33,6 +38,13 @@ Blocked: no review recorded for this code. Before opening a PR:
 - When done, record it: python "{script}" --mark --findings <open high/med count>
 - If the user explicitly approves skipping the review: python "{script}" --mark --skip "<reason>"
 Editing code after the review invalidates the marker; re-run on the final diff."""
+
+BRANCH_BLOCK = """\
+Blocked: branch "{branch}" is not named cesar/<JIRA-KEY> (for example cesar/MOB-23).
+- Create or find the Jira ticket, then rename the branch: git branch -m cesar/<KEY>
+  (rename only an unpushed branch, or ask the user first).
+- If the user explicitly approves this name for the PR: python "{script}" --allow-branch "<reason>"
+"""
 
 
 def git(args, cwd, env=None):
@@ -89,6 +101,30 @@ def mark(argv):
     return 0
 
 
+def allow_branch(argv):
+    cwd = os.getcwd()
+    branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    reason = argv[argv.index("--allow-branch") + 1] if len(argv) > argv.index("--allow-branch") + 1 else ""
+    with open(git_path("claude-branch-ok", cwd), "w", encoding="utf-8") as f:
+        json.dump({"branch": branch, "reason": reason}, f)
+    print(f"branch name exception recorded for {branch}")
+    return 0
+
+
+def branch_blocked(cwd):
+    """Message to print when the current branch breaks the naming rule, else None."""
+    branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    if branch == "HEAD" or BRANCH_OK.match(branch):  # detached HEAD: nothing to judge
+        return None
+    try:
+        with open(git_path("claude-branch-ok", cwd), encoding="utf-8") as f:
+            if json.load(f)["branch"] == branch:
+                return None
+    except (OSError, KeyError, ValueError):
+        pass
+    return BRANCH_BLOCK.format(branch=branch, script=os.path.abspath(__file__).replace("\\", "/"))
+
+
 def gate():
     try:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
@@ -98,6 +134,10 @@ def gate():
             return 0
         cwd = payload.get("cwd") or os.getcwd()
         git(["rev-parse", "--git-dir"], cwd)  # not a repo -> RuntimeError -> allow
+        msg = branch_blocked(cwd)
+        if msg:
+            print(msg, file=sys.stderr)
+            return 2
         try:
             with open(git_path("claude-review-ok", cwd), encoding="utf-8") as f:
                 ok = json.load(f)["tree"]
@@ -112,4 +152,6 @@ def gate():
 
 
 if __name__ == "__main__":
+    if "--allow-branch" in sys.argv:
+        sys.exit(allow_branch(sys.argv))
     sys.exit(mark(sys.argv) if "--mark" in sys.argv else gate())

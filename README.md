@@ -38,7 +38,7 @@ Notes:
 Copies the files into `~/.claude/` (override with `CLAUDE_HOME`), backs up anything it replaces, and keeps the "Delegation policy" section of `CLAUDE.md` current (the rest of that file is untouched). Safe to re-run after pulling updates.
 
 ### PR review gate
-`install.sh` copies `claude/hooks/review-gate.py` to `~/.claude/hooks/` and registers it in `~/.claude/settings.json` (backed up first; other hooks untouched). It blocks `gh pr create` and create-pull-request MCP tools unless a review marker matches the code (a git tree hash of the working tree or `HEAD`). The marker lives in the git dir, so it is never committed. Any error lets the call through. Hooks load at session start, so restart running sessions. A PR opened in the GitHub web UI is not caught.
+`install.sh` copies `claude/hooks/review-gate.py` to `~/.claude/hooks/` and registers it in `~/.claude/settings.json` (backed up first; other hooks untouched). It blocks `gh pr create` and create-pull-request MCP tools unless the branch is named `cesar/<JIRA-KEY>` (exception: `review-gate.py --allow-branch "reason"`, with the user's approval) and a review marker matches the code (a git tree hash of the working tree or `HEAD`). The marker lives in the git dir, so it is never committed. Any error lets the call through. Hooks load at session start, so restart running sessions. A PR opened in the GitHub web UI is not caught.
 
 ### Fable (optional)
 `reviewer-deep` needs Fable access (included on Max up to 50% of the weekly limit; terms may change). If you lose access, delete `claude/agents/reviewer-deep.md` and `claude/agents/architect.md`, the "Optional deep pass" section in the review-loop skill, and their lines in `CLAUDE.delegation.md`.
@@ -65,3 +65,6 @@ Read-only. Shows tokens and estimated list-price cost by project and model, wher
 
 ### Check
 Run `/agents` in a new session; all four agents should be listed.
+
+### PR template
+`claude/templates/pull_request_template.md` is the standard PR body (ticket, what/why, how to test, screenshots or recording for UI changes, checklist). Copy it to `.github/pull_request_template.md` in a project; it is not installed globally because GitHub reads it per repo.
