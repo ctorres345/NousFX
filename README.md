@@ -15,13 +15,14 @@ Opus/Sonnet main session with Haiku 5.5 subagents for noisy work.
 | `claude/skills/review-loop/SKILL.md` | `/review-loop`: review-fix loop, max 5 rounds, never commits |
 | `claude/skills/ui-review/SKILL.md` | `/ui-review`: platform-aware UI/UX review that runs the right design skills (invoked automatically per the policy) |
 | `claude/skills/handoff/SKILL.md` | `/handoff`: writes `.claude/handoff.md` so the next session starts cheap instead of carrying old context |
+| `claude/hooks/review-gate.py` | PreToolUse hook: blocks `gh pr create` until `/review-loop` has recorded a review of the current code; `--mark` records one |
 | `claude/CLAUDE.delegation.md` | Delegation policy appended to `~/.claude/CLAUDE.md` |
 
 ### Hands-off review loop with `/goal`
 `/review-loop` is user-run only, so a goal can't invoke it. Paste the procedure as the goal instead (start the session in auto mode so test commands don't prompt):
 
 ```text
-/goal Review-fix loop on git diff HEAD. Each round, print "Round N/5", run the reviewer subagent, verify its findings, fix the real high/med ones, then run tests. Done when the reviewer's latest output is NO FINDINGS or low-only, and the passing test output is shown. Stop after Round 5 regardless and list what remains. Do not commit.
+/goal Review-fix loop on git diff HEAD. Each round, print "Round N/5", run the reviewer subagent, verify its findings, fix the real high/med ones, then run tests. Done when the reviewer's latest output is NO FINDINGS or low-only, and the passing test output is shown. Stop after Round 5 regardless, list what remains, then run `python3 ~/.claude/hooks/review-gate.py --mark --findings <open count>` (`python` on Windows). Do not commit.
 ```
 
 Notes:
@@ -35,6 +36,9 @@ Notes:
 ./install.sh
 ```
 Copies the files into `~/.claude/` (override with `CLAUDE_HOME`), backs up anything it replaces, and keeps the "Delegation policy" section of `CLAUDE.md` current (the rest of that file is untouched). Safe to re-run after pulling updates.
+
+### PR review gate
+`install.sh` copies `claude/hooks/review-gate.py` to `~/.claude/hooks/` and registers it in `~/.claude/settings.json` (backed up first; other hooks untouched). It blocks `gh pr create` and create-pull-request MCP tools unless a review marker matches the code (a git tree hash of the working tree or `HEAD`). The marker lives in the git dir, so it is never committed. Any error lets the call through. Hooks load at session start, so restart running sessions. A PR opened in the GitHub web UI is not caught.
 
 ### Fable (optional)
 `reviewer-deep` needs Fable access (included on Max up to 50% of the weekly limit; terms may change). If you lose access, delete `claude/agents/reviewer-deep.md` and `claude/agents/architect.md`, the "Optional deep pass" section in the review-loop skill, and their lines in `CLAUDE.delegation.md`.

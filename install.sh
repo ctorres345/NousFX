@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs the shared Claude Code config into ~/.claude (agents, skills, delegation policy).
+# Installs the shared Claude Code config into ~/.claude (agents, skills, hooks, delegation policy).
 # Existing files are backed up as <file>.bak-<timestamp> before being replaced.
 set -euo pipefail
 
@@ -21,7 +21,7 @@ install_file() {
 
 while IFS= read -r -d '' f; do
   install_file "${f#"$SRC"/}"
-done < <(find "$SRC/agents" "$SRC/skills" -type f -print0)
+done < <(find "$SRC/agents" "$SRC/skills" "$SRC/hooks" -type f -print0)
 
 # Keep the delegation policy in CLAUDE.md current. The section starts at the marker line and
 # ends at the next "# " heading (or end of file); everything else in the file is left alone.
@@ -41,6 +41,26 @@ else
   echo "updated delegation policy in CLAUDE.md"
 fi
 rm -f "$NEW" "$NEW.out"
+
+# Register the PR review gate in settings.json (idempotent; other settings and hooks untouched).
+PY=python3; command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' 2>/dev/null || PY=python
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WIN=1; GATE="$(cygpath -m "$DEST")/hooks/review-gate.py";; *) WIN=0; GATE="$DEST/hooks/review-gate.py";; esac
+[ -e "$DEST/settings.json" ] && cp "$DEST/settings.json" "$DEST/settings.json.bak-$STAMP"
+"$PY" - "$DEST/settings.json" "$GATE" "$WIN" <<'PYEOF'
+import json, os, sys
+path, gate, win = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+cfg = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+hook = {"type": "command", "timeout": 30,
+        "command": f'python "{gate}"' if win else f'python3 "{gate}"'}
+if win:
+    hook["shell"] = "powershell"
+entry = {"matcher": "Bash|PowerShell|mcp__.*create_pull_request", "hooks": [hook]}
+pre = cfg.setdefault("hooks", {}).setdefault("PreToolUse", [])
+pre[:] = [e for e in pre if not any("review-gate.py" in h.get("command", "") for h in e.get("hooks", []))]
+pre.append(entry)
+json.dump(cfg, open(path, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+print("registered review-gate hook in settings.json")
+PYEOF
 
 if command -v claude >/dev/null 2>&1; then
   echo "Claude Code version: $(claude --version) (Haiku 5.5 needs 2.1.293 or later)"
