@@ -1,7 +1,6 @@
 ---
 name: review-loop
 description: Simplify the current changes, then run an independent Opus review-fix loop (max 5 rounds) using the reviewer subagent.
-disable-model-invocation: true
 argument-hint: "[scope: staged | branch | path]"
 ---
 

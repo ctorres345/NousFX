@@ -25,8 +25,8 @@ MCP_PR_CREATE = re.compile(r"create_pull_request", re.I)
 
 BLOCK = """\
 Blocked: no review recorded for this code. Before opening a PR:
-- Ask the user to run /review-loop (you cannot invoke it yourself). In unattended or /goal
-  runs, do the same steps by hand: /simplify, then the `reviewer` subagent for up to 5
+- Run the review now by invoking the `review-loop` skill (Skill tool); do not ask the user to type
+  it. In unattended or /goal runs, do the same steps by hand: /simplify, then the `reviewer` subagent for up to 5
   rounds, fixing real high/med findings and showing test results.
 - If the change touches auth, migrations, concurrency, or a public API, offer the
   `reviewer-deep` agent (ask first).

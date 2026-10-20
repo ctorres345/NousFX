@@ -19,7 +19,7 @@ Opus/Sonnet main session with Haiku 5.5 subagents for noisy work.
 | `claude/CLAUDE.delegation.md` | Delegation policy appended to `~/.claude/CLAUDE.md` |
 
 ### Hands-off review loop with `/goal`
-`/review-loop` is user-run only, so a goal can't invoke it. Paste the procedure as the goal instead (start the session in auto mode so test commands don't prompt):
+The `review-loop` skill can be invoked by the model, but a `/goal` evaluator only reads the transcript, so paste the procedure as the goal instead (start the session in auto mode so test commands don't prompt):
 
 ```text
 /goal Review-fix loop on git diff HEAD. Each round, print "Round N/5", run the reviewer subagent, verify its findings, fix the real high/med ones, then run tests. Done when the reviewer's latest output is NO FINDINGS or low-only, and the passing test output is shown. Stop after Round 5 regardless, list what remains, then run `python3 ~/.claude/hooks/review-gate.py --mark --findings <open count>` (`python` on Windows). Do not commit.
