@@ -25,6 +25,7 @@ import tempfile
 import time
 
 GH_PR_CREATE = re.compile(r"(?:^|[;&|(]|&&|\|\|)\s*gh\s+pr\s+create\b")
+CD_PREFIX = re.compile(r"^\s*cd\s+(\"[^\"]+\"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)")
 BRANCH_OK = re.compile(r"^cesar/[A-Z][A-Z0-9]+-\d+$")
 MCP_PR_CREATE = re.compile(r"create_pull_request", re.I)
 
@@ -133,6 +134,9 @@ def gate():
         if not (GH_PR_CREATE.search(command) or MCP_PR_CREATE.search(tool)):
             return 0
         cwd = payload.get("cwd") or os.getcwd()
+        cd = CD_PREFIX.match(command)  # a leading `cd repo &&` means the command runs in repo, not the session cwd
+        if cd:
+            cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(cd.group(1).strip("\"'"))))
         git(["rev-parse", "--git-dir"], cwd)  # not a repo -> RuntimeError -> allow
         msg = branch_blocked(cwd)
         if msg:
