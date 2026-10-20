@@ -91,7 +91,7 @@ def mark(argv):
 
 def gate():
     try:
-        payload = json.load(sys.stdin)
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
         tool = payload.get("tool_name", "")
         command = (payload.get("tool_input") or {}).get("command", "")
         if not (GH_PR_CREATE.search(command) or MCP_PR_CREATE.search(tool)):
