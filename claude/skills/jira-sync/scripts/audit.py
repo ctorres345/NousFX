@@ -19,14 +19,18 @@ RANK = {"high": 0, "medium": 1, "low": 2}
 
 
 def load_issues(paths):
-    issues = {}
+    issues, tokens = {}, []
     for path in paths:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         block = data.get("issues", data)
+        info = block.get("pageInfo", {}) if isinstance(block, dict) else {}
+        tokens.append(info.get("endCursor") or data.get("nextPageToken"))
         nodes = block.get("nodes", []) if isinstance(block, dict) else block
         for node in nodes:
             issues[node["key"]] = node
+    if tokens[-1]:
+        raise SystemExit("A Jira page is missing: the last page still has a next-page token. Fetch it and run again.")
     return issues
 
 
@@ -104,6 +108,13 @@ def run(cmd, cwd):
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=120, check=True).stdout
 
 
+def commit_keys(project, subject):
+    """Keys a commit claims: a `KEY: summary` prefix, or a closing `(KEY, KEY)` as Yuyay writes them."""
+    prefix = re.match(rf"^({project}-\d+):", subject)
+    closing = re.search(r"\(([^()]*)\)\s*$", subject)
+    return set(prefix.groups() if prefix else ()) | set(re.findall(rf"\b{project}-\d+\b", closing.group(1) if closing else ""))
+
+
 def repo_evidence(project, repo):
     """Commits, branches and PRs per ticket key. A failed source becomes a gap, not a clean result."""
     pattern = re.compile(rf"\b{project}-\d+\b")
@@ -116,9 +127,8 @@ def repo_evidence(project, repo):
             base = "origin/main"
         for line in run(["git", "log", base, "--format=%h\t%s"], repo).splitlines():
             sha, _, subject = line.partition("\t")
-            prefix = re.match(rf"^({project}-\d+):", subject)
-            if prefix:
-                evidence["commits"][prefix.group(1)].append(sha)
+            for key in commit_keys(project, subject):
+                evidence["commits"][key].append(sha)
             for key in pattern.findall(subject):
                 evidence["mentioned"][key].append(f"commit {sha}")
         for line in run(["git", "branch", "-r", "--format=%(refname:short)"], repo).splitlines():

@@ -17,7 +17,7 @@ Jira cloudId: `3b0b1388-2d20-4fda-afae-c83d656697f9`.
 3. Fetch every page with `nextPageToken`. An empty last page is normal.
 4. Save each page as a JSON file in the scratchpad. A result too large to return is already saved to a file; use that path and leave it unread.
 
-Done when every page is on disk and the last one reports `hasNextPage: false`.
+Done when every page is on disk and the last one reports no next page. The script stops if a page is missing.
 
 ## 2. Run the checks
 

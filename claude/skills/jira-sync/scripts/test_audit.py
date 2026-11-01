@@ -6,7 +6,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from audit import audit, next_up
+from audit import audit, commit_keys, next_up
 
 READY = ("## Goal\nx\n## Scope\nx\n## Acceptance criteria\nx\n## Environment\nx\n"
          "## Review\nx\n## Human gates\nNone\n## Blocked by\nNone\n")
@@ -82,6 +82,16 @@ class Checks(unittest.TestCase):
     def test_ui_checks(self):
         found = ids([issue("DEM-1", summary="Redesign the screen")])
         self.assertLessEqual({"env-none-ui:DEM-1", "ui-no-evidence:DEM-1"}, found)
+
+
+class CommitKeys(unittest.TestCase):
+    def test_prefix_and_closing_keys_count(self):
+        self.assertEqual(commit_keys("DEM", "DEM-1: Fix it"), {"DEM-1"})
+        self.assertEqual(commit_keys("YUY", "Add sync (YUY-2, level B)"), {"YUY-2"})
+        self.assertEqual(commit_keys("YUY", "Add wizard (YUY-2, YUY-3)"), {"YUY-2", "YUY-3"})
+
+    def test_passing_mention_does_not_count(self):
+        self.assertEqual(commit_keys("DEM", "Follow up on DEM-1 notes"), set())
 
 
 class NextUp(unittest.TestCase):
