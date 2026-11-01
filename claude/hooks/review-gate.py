@@ -24,8 +24,12 @@ import sys
 import tempfile
 import time
 
-GH_PR_CREATE = re.compile(r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*gh\s+(?:-\S+\s+\S+\s+)*pr\s+create\b")
-CD_PREFIX = re.compile(r"^\s*cd\s+(\"[^\"]+\"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)")
+GH_PR_CREATE = re.compile(
+    r"(?:^|[;&|(\n])\s*"
+    r"(?:(?:then|do|else|env|command|exec|time)\s+|\{\s+|\w+=(?:\"[^\"]*\"|'[^']*'|\S*)\s+)*"
+    r"(?:\S*/)?gh\s+(?:-\S+\s+(?:(?!pr\b)\S+\s+)?)*pr\s+(?:-\S+\s+(?:(?!create\b)\S+\s+)?)*create\b"
+)
+CD_PREFIX = re.compile(r"^\s*cd\s+(\"[^\"]+\"|'[^']+'|[^\s;&|]+)\s*(?:&&|;|\n)")
 BRANCH_OK = re.compile(r"^cesar/[A-Z][A-Z0-9]+-\d+$")
 MCP_PR_CREATE = re.compile(r"create_pull_request", re.I)
 
