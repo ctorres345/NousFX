@@ -14,6 +14,9 @@ Opus/Sonnet main session with Haiku 5.5 subagents for noisy work.
 | `claude/agents/test-runner.md` | Haiku build/test runner, returns only failures |
 | `claude/skills/review-loop/SKILL.md` | `/review-loop`: review-fix loop, max 5 rounds, never commits |
 | `claude/skills/ui-review/SKILL.md` | `/ui-review`: platform-aware UI/UX review that runs the right design skills (invoked automatically per the policy) |
+| `claude/skills/ui-review/scripts/argon-review.sh` | Sends UI files and screenshots to Gemini Argon for a second opinion, with safety stops. Private repos need a line in `argon-repos.txt` |
+| `claude/skills/ui-review/assets/flutter_shot_test.dart.txt` | Template for temporary Flutter screenshots |
+| `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. Needs that CLI and a key in the keychain. `scripts/common.sh` holds the safety checks both Gemini scripts share |
 | `claude/skills/handoff/SKILL.md` | `/handoff`: writes `.claude/handoff.md` so the next session starts cheap instead of carrying old context |
 | `claude/hooks/review-gate.py` | PreToolUse hook: blocks `gh pr create` until `/review-loop` has recorded a review of the current code; `--mark` records one |
 | `claude/CLAUDE.delegation.md` | Delegation policy appended to `~/.claude/CLAUDE.md` |

@@ -17,7 +17,7 @@ Invoke the `simplify` skill via the Skill tool on the same scope, so the reviewe
 For round N = 1..5:
 
 1. Print `Round N/5`. Get the diff for the scope. If it is empty, stop and say so.
-2. Call the `reviewer` subagent with: the objective (find real bugs and security issues), the scope or diff, and the required output format (`ID | severity | file:line | problem | suggested fix`, or `NO FINDINGS`). Show the reviewer's output in the conversation.
+2. Call the `reviewer` subagent with: the objective (find real bugs and security issues), the scope or diff, and the required output format (`ID | severity | file:line | problem | suggested fix`, or `NO FINDINGS`). Show the reviewer's output in the conversation. If the work is based on a prototype or design (see "Prototype fidelity" in CLAUDE.md), also give the reviewer the prototype (link or the saved source file path) and ask it to list visual deviations (colors, sizes, radii, spacing, icons, states, light and dark) as findings, severity `med` unless purely cosmetic; skip this only if there is no prototype.
 3. If the result is `NO FINDINGS`, or contains only `low` findings, stop the loop and report success. Clean means no `high` or `med` findings; list any `low` items in the final report.
 4. For each `high` and `med` finding, verify it yourself against the code. The reviewer can be wrong.
    - Real: fix it in the main thread.
