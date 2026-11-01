@@ -18,6 +18,7 @@ Opus/Sonnet main session with Haiku 5.5 subagents for noisy work.
 | `claude/skills/ui-review/assets/flutter_shot_test.dart.txt` | Template for temporary Flutter screenshots |
 | `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. Needs that CLI and a key in the keychain. `scripts/common.sh` holds the safety checks both Gemini scripts share |
 | `claude/skills/handoff/SKILL.md` | `/handoff`: writes `.claude/handoff.md` so the next session starts cheap instead of carrying old context |
+| `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list; applies only approved fixes and logs them |
 | `claude/hooks/review-gate.py` | PreToolUse hook: blocks `gh pr create` until `/review-loop` has recorded a review of the current code; `--mark` records one |
 | `claude/CLAUDE.delegation.md` | Delegation policy appended to `~/.claude/CLAUDE.md` |
 
