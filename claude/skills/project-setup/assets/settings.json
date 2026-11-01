@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|mcp__.*create_pull_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/review-gate.py\"; [ ! -f \"$f\" ] || python3 \"$f\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
