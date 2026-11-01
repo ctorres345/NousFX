@@ -19,14 +19,15 @@ Opus/Sonnet main session with Haiku 5.5 subagents for noisy work.
 | `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. Needs that CLI and a key in the keychain. `scripts/common.sh` holds the safety checks both Gemini scripts share |
 | `claude/skills/handoff/SKILL.md` | `/handoff`: writes `.claude/handoff.md` so the next session starts cheap instead of carrying old context |
 | `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list; applies only approved fixes and logs them |
-| `claude/hooks/review-gate.py` | PreToolUse hook: blocks `gh pr create` until `/review-loop` has recorded a review of the current code; `--mark` records one |
+| `claude/skills/project-setup/` | Sets up or audits a repo with the shared workflow: ticket template, work labels, review gate, shared `.claude` files, runbook and secret checks |
+| `claude/hooks/review-gate.py` | PreToolUse hook: blocks `gh pr create` until `/review-loop` has recorded a review of the current code with 0 open findings; `--mark` records one |
 | `claude/CLAUDE.delegation.md` | Delegation policy appended to `~/.claude/CLAUDE.md` |
 
 ### Hands-off review loop with `/goal`
 The `review-loop` skill can be invoked by the model, but a `/goal` evaluator only reads the transcript, so paste the procedure as the goal instead (start the session in auto mode so test commands don't prompt):
 
 ```text
-/goal Review-fix loop on git diff HEAD. Each round, print "Round N/5", run the reviewer subagent, verify its findings, fix the real high/med ones, then run tests. Done when the reviewer's latest output is NO FINDINGS or low-only, and the passing test output is shown. Stop after Round 5 regardless, list what remains, then run `python3 ~/.claude/hooks/review-gate.py --mark --findings <open count>` (`python` on Windows). Do not commit.
+/goal Review-fix loop on everything on this branch since it left the default branch: git diff $(git merge-base origin/HEAD HEAD), plus untracked files (if origin/HEAD is unset, use origin/main). If that is empty, stop, say so and record nothing. Each round, print "Round N/5", run the reviewer subagent, verify its findings, fix the real high/med ones, then run tests. Done when the reviewer's latest output is NO FINDINGS or low-only, and the passing test output is shown. Stop after Round 5 regardless and list what remains. Then run the tests one last time and show the result. If any test fails, say so and record nothing. Otherwise run `python3 ~/.claude/hooks/review-gate.py --mark --findings <open count>` (`python` on Windows); the gate blocks the PR while the count is above 0. Do not commit.
 ```
 
 Notes:

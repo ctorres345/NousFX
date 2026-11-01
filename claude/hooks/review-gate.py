@@ -11,6 +11,7 @@ exception for the current branch (stored in the git dir, never committed).
 
 Mark mode: `review-gate.py --mark [--findings N] [--skip "reason"]` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
+Open findings above 0 keep the PR blocked unless a --skip reason was recorded.
 
 The marker is keyed on a git tree hash of the working tree (tracked + untracked files,
 .gitignore respected), so it survives committing but not further edits. It lives in the
@@ -40,15 +41,21 @@ Blocked: no review recorded for this code. Before opening a PR:
   rounds, fixing real high/med findings and showing test results.
 - If the change touches auth, migrations, concurrency, or a public API, offer the
   `reviewer-deep` agent (ask first).
-- When done, record it: python "{script}" --mark --findings <open high/med count>
-- If the user explicitly approves skipping the review: python "{script}" --mark --skip "<reason>"
+- When done, record it: python3 "{script}" --mark --findings <open high/med count>
+- If the user explicitly approves skipping the review: python3 "{script}" --mark --skip "<reason>"
 Editing code after the review invalidates the marker; re-run on the final diff."""
+
+FINDINGS_BLOCK = """\
+Blocked: the recorded review has {count} open high/med finding(s).
+- Fix them and run the `review-loop` skill again. When none are open, it records: python3 "{script}" --mark --findings 0
+- If the user explicitly approves opening the PR anyway: python3 "{script}" --mark --skip "<reason>"
+"""
 
 BRANCH_BLOCK = """\
 Blocked: branch "{branch}" is not named cesar/<JIRA-KEY> (for example cesar/MOB-23).
 - Create or find the Jira ticket, then rename the branch: git branch -m cesar/<KEY>
   (rename only an unpushed branch, or ask the user first).
-- If the user explicitly approves this name for the PR: python "{script}" --allow-branch "<reason>"
+- If the user explicitly approves this name for the PR: python3 "{script}" --allow-branch "<reason>"
 """
 
 
@@ -148,12 +155,18 @@ def gate():
             return 2
         try:
             with open(git_path("claude-review-ok", cwd), encoding="utf-8") as f:
-                ok = json.load(f)["tree"]
+                marker = json.load(f)
+            ok = marker["tree"]
         except (OSError, KeyError, ValueError):
             ok = None
+        script = os.path.abspath(__file__).replace("\\", "/")
         if ok and ok in {worktree_tree(cwd), head_tree(cwd)}:
+            count = marker.get("findings_open") or 0
+            if count > 0 and not marker.get("skipped"):
+                print(FINDINGS_BLOCK.format(count=count, script=script), file=sys.stderr)
+                return 2
             return 0
-        print(BLOCK.format(script=os.path.abspath(__file__).replace("\\", "/")), file=sys.stderr)
+        print(BLOCK.format(script=script), file=sys.stderr)
         return 2
     except Exception:
         return 0  # fail open: never break unrelated work

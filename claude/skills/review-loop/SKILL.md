@@ -4,7 +4,7 @@ description: Simplify the current changes, then run an independent Opus review-f
 argument-hint: "[scope: staged | branch | path]"
 ---
 
-Run a bounded review-fix loop on: $ARGUMENTS (default: all uncommitted changes, `git diff HEAD`).
+Run a bounded review-fix loop on: $ARGUMENTS (default: everything on this branch since it left the default branch: `git diff $(git merge-base origin/HEAD HEAD)`, plus the untracked files in `git status --short`; if `origin/HEAD` is unset, use `origin/main`).
 
 You orchestrate from the main thread. Do not change models or effort levels; if you think a different model or effort is needed, ask the user first.
 
@@ -34,7 +34,7 @@ After round 5, stop regardless of remaining findings.
 When the loop ends clean and the change is large or risky (security/auth, data migrations, concurrency, public API changes), tell the user why and ask whether to run `reviewer-deep` once. Run it only after they approve. Treat its findings like any others (verify, fix real high/med ones, run tests), then stop; do not start another loop. Skip this step in unattended or `/goal` runs.
 
 ## Record the review (last step, always)
-When the loop ends for any reason, run `python3 ~/.claude/hooks/review-gate.py --mark --findings <open high/med count>` (`python` on Windows). This is what lets the PR gate hook allow `gh pr create`. Run it after the final fix and test run, since any later edit invalidates it. If the user chose to skip the review, use `--skip "<their reason>"` instead.
+When the loop ends, run the project's tests one last time and show the result. Record nothing if the diff was empty or any test fails: say so, and leave the gate blocking. Otherwise, run `python3 ~/.claude/hooks/review-gate.py --mark --findings <open high/med count>` (`python` on Windows). This is what lets the PR gate hook allow `gh pr create`, but only with 0 open findings. Run it after the final fix and test run, since any later edit invalidates it. If the user chose to skip the review, use `--skip "<their reason>"` instead; only that gets a PR past open findings or failing tests.
 
 ## Rules
 - Never commit, push, or stash. Leave all changes in the working tree.
@@ -42,4 +42,4 @@ When the loop ends for any reason, run `python3 ~/.claude/hooks/review-gate.py -
 - Re-read any file yourself before editing it; do not rely on a summary alone.
 
 ## Final report
-After recording, print a table: rounds used, findings fixed, findings rejected (with reason), findings still open, and test status.
+After recording, or deciding not to, print a table: rounds used, findings fixed, findings rejected (with reason), findings still open, and test status.
