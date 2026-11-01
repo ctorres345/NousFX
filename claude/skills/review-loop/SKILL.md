@@ -4,7 +4,7 @@ description: Simplify the current changes, then run an independent Opus review-f
 argument-hint: "[scope: staged | branch | path]"
 ---
 
-Run a bounded review-fix loop on: $ARGUMENTS (default: everything on this branch since it left the default branch: `git diff $(git merge-base origin/HEAD HEAD)`, plus the untracked files in `git status --short`; if `origin/HEAD` is unset, use `origin/main`).
+Run a bounded review-fix loop on: $ARGUMENTS (default: everything on this branch since it left the default branch, plus untracked files. Run `git merge-base origin/HEAD HEAD || git merge-base origin/main HEAD` first; it prints the base hash. If it fails, stop and record nothing: a bare `git diff` would review only part of the branch, so run `git remote set-head origin -a` or `git fetch --unshallow`, then retry. Then use `git diff <base hash>` and `git ls-files --others --exclude-standard`, with the literal hash, and give that hash to the reviewer).
 
 You orchestrate from the main thread. Do not change models or effort levels; if you think a different model or effort is needed, ask the user first.
 
@@ -16,7 +16,7 @@ Invoke the `simplify` skill via the Skill tool on the same scope, so the reviewe
 
 For round N = 1..5:
 
-1. Print `Round N/5`. Get the diff for the scope. If it is empty, stop and say so.
+1. Print `Round N/5`. Get the diff for the scope. If it is empty and there are no untracked files, stop and say so.
 2. Call the `reviewer` subagent with: the objective (find real bugs and security issues), the scope or diff, and the required output format (`ID | severity | file:line | problem | suggested fix`, or `NO FINDINGS`). Show the reviewer's output in the conversation. If the work is based on a prototype or design (see "Prototype fidelity" in CLAUDE.md), also give the reviewer the prototype (link or the saved source file path) and ask it to list visual deviations (colors, sizes, radii, spacing, icons, states, light and dark) as findings, severity `med` unless purely cosmetic; skip this only if there is no prototype.
 3. If the result is `NO FINDINGS`, or contains only `low` findings, stop the loop and report success. Clean means no `high` or `med` findings; list any `low` items in the final report.
 4. For each `high` and `med` finding, verify it yourself against the code. The reviewer can be wrong.
@@ -33,8 +33,8 @@ After round 5, stop regardless of remaining findings.
 ## Optional deep pass (interactive only)
 When the loop ends clean and the change is large or risky (security/auth, data migrations, concurrency, public API changes), tell the user why and ask whether to run `reviewer-deep` once. Run it only after they approve. Treat its findings like any others (verify, fix real high/med ones, run tests), then stop; do not start another loop. Skip this step in unattended or `/goal` runs.
 
-## Record the review (last step, always)
-When the loop ends, run the project's tests one last time and show the result. Record nothing if the diff was empty or any test fails: say so, and leave the gate blocking. Otherwise, run `python3 ~/.claude/hooks/review-gate.py --mark --findings <open high/med count>` (`python` on Windows). This is what lets the PR gate hook allow `gh pr create`, but only with 0 open findings. Run it after the final fix and test run, since any later edit invalidates it. If the user chose to skip the review, use `--skip "<their reason>"` instead; only that gets a PR past open findings or failing tests.
+## Record the review (last step)
+When the loop ends, run the project's tests one last time and show the result. Record nothing if there was nothing to review or any test fails: say so, and leave the gate blocking. Otherwise, run `python3 ~/.claude/hooks/review-gate.py --mark --findings <open high/med count>` (`python` on Windows). This is what lets the PR gate hook allow `gh pr create`, but only with 0 open findings. Run it after the final fix and test run, since any later edit invalidates it. If the user chose to skip the review, use `--skip "<their reason>"` instead; only that gets a PR past open findings or failing tests.
 
 ## Rules
 - Never commit, push, or stash. Leave all changes in the working tree.
