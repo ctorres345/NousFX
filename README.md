@@ -20,7 +20,7 @@ Opus/Sonnet main session with Haiku 5.5 subagents for noisy work.
 | `claude/skills/handoff/SKILL.md` | `/handoff`: writes `.claude/handoff.md` so the next session starts cheap instead of carrying old context |
 | `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list; applies only approved fixes and logs them |
 | `claude/skills/project-setup/` | Sets up or audits a repo with the shared workflow: ticket template, work labels, review gate, shared `.claude` files, runbook and secret checks |
-| `claude/hooks/review-gate.py` | PreToolUse hook: blocks `gh pr create` until `/review-loop` has recorded a review of the current code with 0 open findings; `--mark` records one |
+| `claude/hooks/review-gate.py` | PreToolUse hook: blocks `gh pr create` until `/review-loop` has recorded a review of the current code with 0 open findings; `--mark --findings <count>` records one, and `--mark` alone is refused |
 | `claude/CLAUDE.delegation.md` | Delegation policy appended to `~/.claude/CLAUDE.md` |
 
 ### Hands-off review loop with `/goal`
@@ -43,7 +43,7 @@ Notes:
 Copies the files into `~/.claude/` (override with `CLAUDE_HOME`), backs up anything it replaces, and keeps the "Delegation policy" section of `CLAUDE.md` current (the rest of that file is untouched). Safe to re-run after pulling updates.
 
 ### PR review gate
-`install.sh` copies `claude/hooks/review-gate.py` to `~/.claude/hooks/` and registers it in `~/.claude/settings.json` (backed up first; other hooks untouched). It blocks `gh pr create` and create-pull-request MCP tools unless the branch is named `cesar/<JIRA-KEY>` (exception: `review-gate.py --allow-branch "reason"`, with the user's approval) and a review marker matches the code (a git tree hash of the working tree or `HEAD`). The marker lives in the git dir, so it is never committed. Any error lets the call through. Hooks load at session start, so restart running sessions. A PR opened in the GitHub web UI is not caught.
+`install.sh` copies `claude/hooks/review-gate.py` to `~/.claude/hooks/` and registers it in `~/.claude/settings.json` (backed up first; other hooks untouched). It blocks `gh pr create` and create-pull-request MCP tools unless the branch is named `cesar/<JIRA-KEY>` (exception: `review-gate.py --allow-branch "reason"`, with the user's approval) and a review marker matches the code (a git tree hash of the working tree or `HEAD`). The marker lives in the git dir, so it is never committed. An error while checking a create blocks it. The call passes only outside a git repo, when the folder is missing, or when git is not installed. Hooks load at session start, so restart running sessions. A PR opened in the GitHub web UI is not caught.
 
 ### Fable (optional)
 `reviewer-deep` needs Fable access (included on Max up to 50% of the weekly limit; terms may change). If you lose access, delete `claude/agents/reviewer-deep.md` and `claude/agents/architect.md`, the "Optional deep pass" section in the review-loop skill, and their lines in `CLAUDE.delegation.md`.
