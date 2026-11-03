@@ -188,3 +188,12 @@ Tracked in Jira project **NFX**.
   For each problem it shows before/after prototypes. You approve once which fixes happen now and which become Jira tickets; tickets carry inline screenshots and a spec table. It exports to Obsidian and Figma. It learns from every project, but only saves a lesson after you approve it. Every integration is optional, so it works with only Claude Code installed.
 - **Plugin marketplace.** Install with `/plugin marketplace add ctorres345/NousFX`. Third-party skills will be pinned by commit and checksum. This replaces the copy-based `install.sh`.
 - **Contributing guide** with a skill-writing checklist.
+- **Plugins named after the author's cats.** Only the first two are planned; the rest are ideas for later.
+
+  | Plugin | Role | Would hold |
+  |---|---|---|
+  | **Mandy** (`mandy`, mdy) | Core development | Agents, `review-loop`, the PR review gate |
+  | **Via** (Octavia) | Designer | `/via` setup, spec, check, audit and export |
+  | Cassie (Cassiopeia) | Planner and navigator | Grilling, spec to tickets, wayfinder, roadmap, `jira-sync` |
+  | Rosalia | Guardian | Secret checks, git guardrails, skill checksums, outbound rules |
+  | Misty | Memory and context | Handoff, compaction, usage report, graphify |
