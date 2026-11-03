@@ -8,8 +8,27 @@ DEST="${CLAUDE_HOME:-$HOME/.claude}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 MARKER="# Delegation policy"
 
+# Print the first symlink on the way from $DEST to $DEST/<rel>, if any. A linked skill or hook
+# (for example one from ~/.agents/skills) belongs to someone else; writing through it would overwrite it.
+linked_path() {
+  local path="$DEST" part parts
+  IFS=/ read -ra parts <<< "$1"
+  for part in "${parts[@]}"; do
+    path="$path/$part"
+    if [ -L "$path" ]; then
+      echo "${path#"$DEST"/}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 install_file() {
-  local rel="$1"
+  local rel="$1" link
+  if link="$(linked_path "$rel")"; then
+    echo "warning: skipped $rel ($link is a symlink, left untouched)" >&2
+    return
+  fi
   mkdir -p "$(dirname "$DEST/$rel")"
   if [ -e "$DEST/$rel" ] && ! cmp -s "$SRC/$rel" "$DEST/$rel"; then
     cp "$DEST/$rel" "$DEST/$rel.bak-$STAMP"
