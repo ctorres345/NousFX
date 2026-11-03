@@ -33,7 +33,7 @@ Then start a **new** Claude Code session (hooks and agents load at session start
 
 `install.sh` copies the files into `~/.claude/` (override with `CLAUDE_HOME`) and backs up anything it replaces as `*.bak-<stamp>`. It keeps the "Delegation policy" section of `~/.claude/CLAUDE.md` current and leaves the rest of that file alone. It also registers the review gate in `~/.claude/settings.json`, after backing that up too.
 
-> ⚠️ **Known issue:** `install.sh` currently writes through symlinks and can overwrite a newer `handoff` skill. Its `review-gate.py` is also older than some installed copies. Check `git diff` against `~/.claude` before re-running it. The plugin-based install in the [Roadmap](#roadmap) fixes this.
+> ⚠️ **Known issue:** `install.sh` currently writes through symlinks and can overwrite a newer `handoff` skill. Check `git diff` against `~/.claude` before re-running it. The plugin-based install in the [Roadmap](#roadmap) fixes this.
 
 ## How to use it day to day
 
@@ -91,7 +91,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/skills/handoff/` | `/handoff`: session handoff note |
 | `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list. Applies only approved fixes |
 | `claude/skills/project-setup/` | Sets up or audits a repo with the shared workflow |
-| `claude/hooks/review-gate.py` | PreToolUse hook that blocks `gh pr create` until a review is recorded |
+| `claude/hooks/review-gate.py` | PreToolUse hook that blocks `gh pr create` until a review is recorded. `--mark --findings <count>` records one; `--mark` alone is refused |
 | `claude/CLAUDE.delegation.md` | Delegation policy merged into `~/.claude/CLAUDE.md` |
 | `claude/templates/pull_request_template.md` | Standard PR body. Copy it to `.github/` per repo |
 | `scripts/usage-report.py` | Read-only token and cost report |
@@ -112,7 +112,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
   - a review marker matches the code: a git tree hash of the working tree or `HEAD`.
 - The marker lives in the git dir, so it is never committed.
 - Limits to know:
-  - Any internal error lets the call through.
+  - An error while checking a create blocks it. The call passes only outside a git repo, when the folder is missing, or when git is not installed.
   - A PR opened in the GitHub web UI is not caught.
   - Hooks load at session start, so restart running sessions after installing.
 
