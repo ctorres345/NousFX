@@ -1,8 +1,8 @@
 # NousFX
 
-A shareable framework for building software with Claude Code. It holds the agents, skills, hooks and policies one developer uses across every device and project, packaged so friends can pick it up too.
+A shareable framework for building software with Claude Code. It holds the agents, skills, hooks and policies I use on every device and project, packaged so my friends can pick them up too.
 
-> **Why "NousFX"?** In Greek philosophy, *nous* (νοῦς) is the intellect, the mind that understands. For Anaxagoras it was the cosmic mind that set the primordial mixture in motion and brought order out of chaos. That is the job of this repo: put a thinking structure around AI-assisted work so a messy stream of prompts becomes a repeatable process. **FX** stands for framework.
+> **Why "NousFX"?** In Greek philosophy, *nous* (νοῦς) is the intellect, the mind that understands. For Anaxagoras it was the cosmic mind that set the primordial mixture in motion and brought order out of chaos. That is what I want from this repo: a thinking structure around AI-assisted work, so a messy stream of prompts becomes a repeatable process. **FX** stands for framework.
 
 ## What you get
 
@@ -56,7 +56,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | Too big for one session | `/wayfinder` | You | A map of child tickets worked one at a time |
 
 ### 3. Build a ticket
-- The branch is always `cesar/<TICKET-KEY>` (for example `cesar/NFX-12`), cut from the default branch. Adapt the prefix to your name.
+- The branch is always `cesar/<TICKET-KEY>` (for example `cesar/NFX-12`), cut from the default branch. The gate currently hard-codes my `cesar/` prefix, so to use your own name, edit `BRANCH_OK` in `claude/hooks/review-gate.py`.
 - Claude reads the ticket's `is blocked by` links first and only starts when all of its blockers are Done.
 - `tdd` is used when test-first fits, and `prototype` for UI or state questions that a throwaway build answers faster.
 - UI tickets: the prototype is the spec. The ticket lists concrete values (colors, sizes, radii, states), and the PR includes screenshots.
@@ -108,7 +108,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 
 ## The PR review gate
 - Blocks `gh pr create` (40+ ways of writing it) and create-pull-request MCP tools unless both hold:
-  - the branch is named `<prefix>/<JIRA-KEY>`. `review-gate.py --allow-branch "reason"` records an approved exception.
+  - the branch is named `cesar/<JIRA-KEY>` (change `BRANCH_OK` for your own prefix). `review-gate.py --allow-branch "reason"` records an approved exception.
   - a review marker matches the code: a git tree hash of the working tree or `HEAD`.
 - The marker lives in the git dir, so it is never committed.
 - Limits to know:
@@ -177,7 +177,7 @@ Read-only. Costs are relative weights at list price, not a bill. It shows:
 ## Roadmap
 Tracked in Jira project **NFX**.
 
-- **Via, the designer** (named after Octavia, the author's cat). `ui-review` grows into a designer:
+- **Via, the designer** (named after Octavia, one of my cats). `ui-review` grows into a designer:
 
   | Command | What it does |
   |---|---|
@@ -188,7 +188,7 @@ Tracked in Jira project **NFX**.
   For each problem it shows before/after prototypes. You approve once which fixes happen now and which become Jira tickets; tickets carry inline screenshots and a spec table. It exports to Obsidian and Figma. It learns from every project, but only saves a lesson after you approve it. Every integration is optional, so it works with only Claude Code installed.
 - **Plugin marketplace.** Install with `/plugin marketplace add ctorres345/NousFX`. Third-party skills will be pinned by commit and checksum. This replaces the copy-based `install.sh`.
 - **Contributing guide** with a skill-writing checklist.
-- **Plugins named after the author's cats.** Only the first two are planned; the rest are ideas for later.
+- **Plugins named after my cats.** Only the first two are planned; the rest are ideas for later.
 
   | Plugin | Role | Would hold |
   |---|---|---|
