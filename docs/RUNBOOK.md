@@ -51,6 +51,12 @@ UI skills that `ui-review` uses are not in this repo (see the README). Missing o
 
    Symlinked skills such as `handoff` can show up as different. That is fine: the install skips them.
 
+   The install also replaces the "Delegation policy" section of `~/.claude/CLAUDE.md` with `claude/CLAUDE.delegation.md`. No output here means they already match. This assumes the section is the last one in the file, where the install always leaves it:
+
+   ```bash
+   awk '$0 == "# Delegation policy" { s = 1 } s && /^# / && $0 != "# Delegation policy" { s = 0 } s' ~/.claude/CLAUDE.md | diff - claude/CLAUDE.delegation.md
+   ```
+
 3. Run the install:
 
    ```bash
@@ -77,7 +83,7 @@ UI skills that `ui-review` uses are not in this repo (see the README). Missing o
    python3 -I ~/.claude/hooks/test_review_gate.py
    ```
 
-3. A live check: `gh pr create` blocks (exit 2) and other commands pass (exit 0). Run it from this repo.
+3. A live check: `gh pr create` blocks (exit 2) and other commands pass (exit 0). Run it from this repo on `main`, where the branch-name rule blocks it. On a ticket branch whose code a review already recorded, exit 0 is correct.
 
    ```bash
    for c in 'gh pr create' 'ls'; do printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$PWD" "$c" | python3 ~/.claude/hooks/review-gate.py >/dev/null 2>&1; echo "$c -> exit $?"; done
@@ -93,19 +99,31 @@ UI skills that `ui-review` uses are not in this repo (see the README). Missing o
 
 Every replaced file has a `.bak-<stamp>` copy, and all files from one run share the same stamp.
 
-1. Find the stamp of the run to undo:
+1. Find the stamp of the run to undo. Every run backs up `settings.json`, so its backups list every run, newest last. Undo runs newest first, one stamp at a time: an older stamp brings back the state from before that run and drops every later install.
 
    ```bash
-   find ~/.claude -name '*.bak-*' -mtime -1 | sort
+   ls ~/.claude/settings.json.bak-2* | sed 's/.*\.bak-//' | tail -5
    ```
 
-2. Restore that run's files (replace `<stamp>`, for example `20261103-160812`):
+2. Restore that run's agents, skills and hooks (replace `<stamp>` in both places, for example `20261103-160825`). `find` does not follow symlinked skills, so linked targets stay untouched:
 
    ```bash
-   find ~/.claude -name '*.bak-<stamp>' | while read -r f; do cp "$f" "${f%.bak-<stamp>}"; done
+   find ~/.claude/agents ~/.claude/skills ~/.claude/hooks -name '*.bak-<stamp>' | while read -r f; do cp "$f" "${f%.bak-<stamp>}"; done
    ```
 
-3. Start a new session. Files the install added for the first time are not removed; delete them by hand if they cause trouble.
+3. Do not restore `settings.json` or `CLAUDE.md` blindly. Their backup is from before that run, so restoring it drops every later edit, such as the `model` keys or hooks other tools added. Diff first, then copy back only what the install changed:
+
+   ```bash
+   diff ~/.claude/settings.json.bak-<stamp> ~/.claude/settings.json
+   ```
+
+   ```bash
+   diff ~/.claude/CLAUDE.md.bak-<stamp> ~/.claude/CLAUDE.md
+   ```
+
+   A `CLAUDE.md` backup exists only if that run changed the delegation section. If there is no `settings.json` backup, it was a first install: remove the `review-gate.py` entry under `hooks.PreToolUse` in `settings.json` by hand.
+
+4. Start a new session. Files the install added for the first time are not removed; delete them by hand if they cause trouble.
 
 ## Check token usage
 
