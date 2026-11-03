@@ -35,6 +35,8 @@ Then start a **new** Claude Code session (hooks and agents load at session start
 
 `install.sh` does not write agents, skills or hooks through a symlink. If one in `~/.claude/` is a link (for example a skill linked from `~/.agents/skills`), it warns, skips that file and leaves the target alone. `CLAUDE.md` and `settings.json` are still written through a link on purpose, so a dotfiles-managed copy keeps getting updates.
 
+Re-installing after a merge, checking the gate and rolling back an install are in [docs/RUNBOOK.md](docs/RUNBOOK.md).
+
 ## How to use it day to day
 
 ### 1. Set up a project once
