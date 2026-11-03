@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
 # Installs the shared Claude Code config into ~/.claude (agents, skills, hooks, delegation policy).
 # Existing files are backed up as <file>.bak-<timestamp> before being replaced.
+# Agents, skills and hooks reached through a symlink are skipped. CLAUDE.md and settings.json
+# are still written through one, so a dotfiles-managed copy keeps getting updates.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/claude" && pwd)"
 DEST="${CLAUDE_HOME:-$HOME/.claude}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 MARKER="# Delegation policy"
+SKIPPED=0
 
-# Print the first symlink on the way from $DEST to $DEST/<rel>, if any. A linked skill or hook
+# Print the symlink on the way from $DEST to $DEST/<rel>, if any. A linked skill or hook
 # (for example one from ~/.agents/skills) belongs to someone else; writing through it would overwrite it.
 linked_path() {
-  local path="$DEST" part parts
-  IFS=/ read -ra parts <<< "$1"
-  for part in "${parts[@]}"; do
-    path="$path/$part"
-    if [ -L "$path" ]; then
-      echo "${path#"$DEST"/}"
+  local rel="$1"
+  while [ "$rel" != . ]; do
+    if [ -L "$DEST/$rel" ]; then
+      echo "$rel"
       return 0
     fi
+    rel="$(dirname "$rel")"
   done
   return 1
 }
@@ -27,6 +29,7 @@ install_file() {
   local rel="$1" link
   if link="$(linked_path "$rel")"; then
     echo "warning: skipped $rel ($link is a symlink, left untouched)" >&2
+    SKIPPED=$((SKIPPED + 1))
     return
   fi
   mkdir -p "$(dirname "$DEST/$rel")"
@@ -83,5 +86,9 @@ PYEOF
 
 if command -v claude >/dev/null 2>&1; then
   echo "Claude Code version: $(claude --version) (Haiku 5.5 needs 2.1.293 or later)"
+fi
+if [ "$SKIPPED" -gt 0 ]; then
+  echo "warning: $SKIPPED file(s) skipped behind symlinks. Update them at the link target; a skipped" \
+    "hooks/pr_create_parser.py makes the review gate block every gh pr command." >&2
 fi
 echo "Done. Run /agents in a new session to confirm."

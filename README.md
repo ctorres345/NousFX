@@ -33,7 +33,7 @@ Then start a **new** Claude Code session (hooks and agents load at session start
 
 `install.sh` copies the files into `~/.claude/` (override with `CLAUDE_HOME`) and backs up anything it replaces as `*.bak-<stamp>`. It keeps the "Delegation policy" section of `~/.claude/CLAUDE.md` current and leaves the rest of that file alone. It also registers the review gate in `~/.claude/settings.json`, after backing that up too.
 
-`install.sh` never writes through a symlink. If a skill or hook in `~/.claude/` is a link (for example a skill linked from `~/.agents/skills`), it warns, skips that file and leaves the target alone.
+`install.sh` does not write agents, skills or hooks through a symlink. If one in `~/.claude/` is a link (for example a skill linked from `~/.agents/skills`), it warns, skips that file and leaves the target alone. `CLAUDE.md` and `settings.json` are still written through a link on purpose, so a dotfiles-managed copy keeps getting updates.
 
 ## How to use it day to day
 

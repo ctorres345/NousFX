@@ -166,11 +166,11 @@ class Base(unittest.TestCase):
         return subprocess.run([sys.executable, GATE, "--mark", *args], cwd=cwd or self.repo,
                               capture_output=True, text=True)
 
-    def run_gate(self, command=None, cwd=None, tool="Bash", env=None):
+    def run_gate(self, command=None, cwd=None, tool="Bash", env=None, gate=GATE):
         payload = {"tool_name": tool, "cwd": cwd or self.repo, "tool_input": {}}
         if command is not None:
             payload["tool_input"]["command"] = command
-        return subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(),
+        return subprocess.run([sys.executable, gate], input=json.dumps(payload).encode(),
                               capture_output=True, env={**os.environ, **(env or {})},
                               cwd=self.tmp).returncode
 
@@ -217,12 +217,10 @@ class Detection(Base):
         os.makedirs(lone)
         shutil.copy(GATE, lone)
         self.mark("--findings", "0")
-        for command, want in (("gh pr create", BLOCKED), ("echo 'gh pr create'", BLOCKED), ("ls", ALLOWED)):
+        for command, want in (("gh pr create", BLOCKED), ("echo 'gh pr create'", BLOCKED),
+                              ("g\"\"h \"pr\" cre'ate'", BLOCKED), ("GH PR create", BLOCKED), ("ls", ALLOWED)):
             with self.subTest(command=command):
-                payload = {"tool_name": "Bash", "cwd": self.repo, "tool_input": {"command": command}}
-                r = subprocess.run([sys.executable, os.path.join(lone, "review-gate.py")],
-                                   input=json.dumps(payload).encode(), capture_output=True)
-                self.assertEqual(r.returncode, want)
+                self.assertEqual(self.run_gate(command, gate=os.path.join(lone, "review-gate.py")), want)
 
 
 class WhichRepo(Base):

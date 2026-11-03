@@ -29,11 +29,13 @@ import sys
 import tempfile
 import time
 
+SCRIPT = os.path.abspath(__file__).replace("\\", "/")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # found even under python3 -P
+sys.dont_write_bytecode = True  # a __pycache__ in a project's .claude/hooks would change the tree hash
 try:
     from pr_create_parser import CD_MENTION, create_dirs, mentions_create
     PARSER_ERROR = None
-except ImportError as e:  # a crash exits 1, which lets the call through: block creates instead
+except Exception as e:  # missing or broken: a crash exits 1, which lets the call through
     PARSER_ERROR = e
 
 BRANCH_OK = re.compile(r"^cesar/[A-Z][A-Z0-9]+-\d+$")
@@ -64,6 +66,12 @@ so the gate cannot tell which repo to check. Run it from the repo, or `cd` to a 
 ERROR_BLOCK = """\
 Blocked: the review gate could not check this repo: {error}
 Fix the problem and try again. If the user explicitly approves skipping the review: python3 "{script}" --mark --skip "<reason>"
+"""
+
+PARSER_BLOCK = """\
+Blocked: the review gate cannot load pr_create_parser.py next to {script}: {error}
+Until it loads, every command mentioning `gh` and `pr` is blocked, and --mark --skip does not help.
+Reinstall the gate and its parser together (re-run install.sh, or copy both files).
 """
 
 BRANCH_BLOCK = """\
@@ -160,12 +168,12 @@ def branch_blocked(cwd):
                 return None
     except (OSError, KeyError, ValueError):
         pass
-    return BRANCH_BLOCK.format(branch=branch, script=os.path.abspath(__file__).replace("\\", "/"))
+    return BRANCH_BLOCK.format(branch=branch, script=SCRIPT)
 
 
 def check_repo(cwd):
     """Exit code for a create running in cwd."""
-    script = os.path.abspath(__file__).replace("\\", "/")
+    script = SCRIPT
     if cwd is None:
         print(CD_BLOCK, file=sys.stderr)
         return 2
@@ -215,10 +223,9 @@ def gate():
     if MCP_PR_CREATE.search(tool):
         dirs = [cwd]
     elif PARSER_ERROR:
-        if not re.search(r"\bgh\b.*\bpr\b", str(command), re.S):
-            return 0
-        print(ERROR_BLOCK.format(error=PARSER_ERROR, script=os.path.abspath(__file__).replace("\\", "/")),
-              file=sys.stderr)
+        if not re.search(r"\bgh\b.*\bpr\b", re.sub(r"[\"'\\`]", "", str(command)), re.S | re.I):
+            return 0  # quotes are dropped first, so `g""h "pr" cre'ate'` is still caught
+        print(PARSER_BLOCK.format(error=PARSER_ERROR, script=SCRIPT), file=sys.stderr)
         return 2
     else:
         try:
