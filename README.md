@@ -41,6 +41,18 @@ Re-installing after a merge, checking the gate and rolling back an install are i
 
 Via is a plugin in this repo's marketplace. It is at version 0.1.0: only `/via setup` works so far, and the other modes say they are not built yet.
 
+**Step 1. Pick where it should work.**
+
+| I want Via in... | Scope | Who gets it |
+|---|---|---|
+| All my projects | `user` (default) | Only me |
+| One project, shared with my team | `project` | Everyone who opens that project |
+| One project, only for me | `local` | Only me, not shared |
+
+Not sure? Use `user`.
+
+**Step 2. Add the marketplace and install.** Run both in a terminal. For `project` or `local`, run them inside that project's folder and add `--scope project` (or `--scope local`) to each command.
+
 ```bash
 claude plugin marketplace add ctorres345/NousFX
 ```
@@ -49,9 +61,25 @@ claude plugin marketplace add ctorres345/NousFX
 claude plugin install via@nousfx
 ```
 
-Then run `/reload-plugins` and `/via setup`. It checks which integrations you have (Gemini, Jira, Figma, Obsidian, simulators, a browser, design skills), says why each matters and links the fix. It saves the result to `~/.claude/via.json`, which holds statuses and paths only, never keys. Running it again changes nothing when nothing changed.
+For example, for one shared project:
 
-A plugin can ship hooks that run code on your machine. Via 0.1.0 has none, but read `plugins/via/` before you install a later version.
+```bash
+claude plugin marketplace add ctorres345/NousFX --scope project
+claude plugin install via@nousfx --scope project
+```
+
+**Step 3. Start it.** Open Claude Code, run `/reload-plugins`, then `/via setup`.
+
+**What `/via setup` does**
+- Checks which integrations you have: Gemini, Jira, Figma, Obsidian, simulators, a browser and design skills.
+- Says why each one matters and links the fix.
+- Saves the result to `~/.claude/via.json`.
+- Changes nothing when you run it again and nothing changed.
+
+**Good to know**
+- `~/.claude/via.json` is always yours alone, whichever scope you pick. It holds statuses and paths, never keys.
+- To remove Via, run `claude plugin uninstall via` with the same `--scope` you installed with.
+- A plugin can ship hooks that run code on your machine. Via 0.1.0 has none, but read `plugins/via/` before you install a later version, especially at `project` scope, where it runs for everyone on the project.
 
 ## How to use it day to day
 

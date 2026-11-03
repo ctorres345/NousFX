@@ -100,7 +100,17 @@ UI skills that `ui-review` uses are not in this repo (see the README). Missing o
 
 Via comes from the marketplace in this repo, not from `install.sh`.
 
-1. Add the marketplace (first time only). From GitHub:
+1. Pick the scope. Not sure? Use `user`.
+
+   | Scope | Via works in | Shared with the team |
+   |---|---|---|
+   | `user` (default) | All my projects | No |
+   | `project` | One project | Yes, through that project's settings |
+   | `local` | One project | No |
+
+   For `project` or `local`, run every command below inside that project's folder and add `--scope project` (or `--scope local`) to the `marketplace add`, `install`, `update` and `uninstall` commands. Update and uninstall must use the same scope as the install.
+
+2. Add the marketplace (first time only). From GitHub:
 
    ```bash
    claude plugin marketplace add ctorres345/NousFX
@@ -112,7 +122,7 @@ Via comes from the marketplace in this repo, not from `install.sh`.
    claude plugin marketplace add ./
    ```
 
-2. Install (first time only):
+3. Install (first time only):
 
    ```bash
    claude plugin install via@nousfx
@@ -128,9 +138,9 @@ Via comes from the marketplace in this repo, not from `install.sh`.
    claude plugin update via@nousfx
    ```
 
-3. In a Claude Code session run `/reload-plugins`, then `/via setup`. Check the table lists each integration and ends with the `Via integrations:` line.
-4. Run `/via setup` again. The answer must say the config is `unchanged`.
-5. To remove it: `claude plugin uninstall via`. `~/.claude/via.json` stays; delete it by hand if you want it gone.
+4. In a Claude Code session run `/reload-plugins`, then `/via setup`. Check the table lists each integration and ends with the `Via integrations:` line.
+5. Run `/via setup` again. The answer must say the config is `unchanged`.
+6. To remove it: `claude plugin uninstall via` (with the same scope). `~/.claude/via.json` stays and is the same for every scope; delete it by hand if you want it gone.
 
 Before releasing a change, run `python3 plugins/via/scripts/test_via_setup.py` and `claude plugin validate . --strict`.
 
