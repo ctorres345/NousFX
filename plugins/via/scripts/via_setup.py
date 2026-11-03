@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Via setup doctor: detect integrations and keep the personal config in step.
+
+Prints a JSON report on stdout. Claude passes what only it can see (loaded MCP tools, browser,
+skills) as flags; this script detects the rest from the shell.
+
+Usage: via_setup.py [--config PATH] [--atlassian present|missing]
+                    [--figma authorized|needs-auth|missing] [--browser chrome|builtin|none]
+                    [--skills a,b,c]
+
+The config (default ~/.claude/via.json, or VIA_CONFIG) holds statuses and paths only, never keys.
+Exit 0 on success, 1 when the config cannot be written safely, 2 on bad arguments.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE = os.path.join(HERE, "..", "assets", "via.example.json")
+
+# Same pattern the gemini-review scripts use to stop on a secret.
+SECRET_RE = re.compile(
+    r"(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|AQ\.[0-9A-Za-z_-]{20,}|gh[pousr]_[0-9A-Za-z]{36}"
+    r"|github_pat_[0-9A-Za-z_]{20,}|glpat-[0-9A-Za-z_-]{20,}|(^|[^0-9A-Za-z_-])sk-[0-9A-Za-z_-]{20,}"
+    r"|[sr]k_live_[0-9A-Za-z]{10,}|xox[baprs]-[0-9A-Za-z-]{10,}"
+    r"|eyJ[0-9A-Za-z_-]{10,}\.eyJ[0-9A-Za-z_-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY)"
+)
+
+# Design skills Via's platform sets rely on (the full per-platform list comes with later tickets).
+WANTED_SKILLS = [
+    "ui-ux-pro-max", "design:accessibility-review", "design:design-critique", "design:ux-copy",
+    "material-3:material-3", "adaptive", "edge-to-edge", "jetpack-compose-performance",
+]
+
+FIX = {
+    "gemini": ("The Argon second opinion needs the gemini-api CLI and a key in the OS keychain. Without it Via falls back to a Claude reviewer.",
+               "https://ai.google.dev/gemini-api/docs/api-key"),
+    "atlassian": ("Files findings as Jira tickets with inline screenshots. Without it Via writes markdown tickets.",
+                  "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/"),
+    "figma": ("Needed only for /via export figma. Authorize the connector with /mcp.",
+              "https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server"),
+    "obsidian": ("Each run can write a note into your vault. Set obsidian.vault_path in the config.",
+                 "https://help.obsidian.md/Getting+started/Create+a+vault"),
+    "simulators": ("Via screenshots screens on an emulator or simulator. Without one it says so and skips visual checks.",
+                   "https://developer.android.com/studio/run/managing-avds"),
+    "browser": ("Web screenshots need a browser Claude can drive.",
+                "https://code.claude.com/docs/en/chrome"),
+    "skills": ("Via runs the design skills installed here and reports the ones it skipped.",
+               "https://code.claude.com/docs/en/skills"),
+}
+
+
+def has_secret(value):
+    return bool(SECRET_RE.search(str(value)))
+
+
+def find_gemini(home):
+    local = os.path.join(home, ".local", "bin", "gemini-api")
+    if os.access(local, os.X_OK):
+        return local
+    return shutil.which("gemini-api")
+
+
+def detect_gemini(home):
+    cli = find_gemini(home)
+    if not cli:
+        return "missing"
+    try:
+        out = subprocess.run([cli, "whoami", "--output-format", "json"], capture_output=True,
+                             text=True, timeout=10, env={"HOME": home, "PATH": os.environ.get("PATH", "")})
+        creds = json.loads(out.stdout).get("credentials", {})
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return "no-key"
+    # Only the source is read. The masked value in the output is dropped, never stored or printed.
+    for name in ("api-key", "access-token"):
+        if isinstance(creds.get(name), dict) and creds[name].get("source") not in (None, "unset"):
+            return "present"
+    return "no-key"
+
+
+def find_vault(home):
+    roots = [os.path.join(home, "Documents"),
+             os.path.join(home, "Library", "Mobile Documents", "iCloud~md~obsidian", "Documents")]
+    for root in roots:
+        try:
+            for entry in sorted(os.listdir(root)):
+                if os.path.isdir(os.path.join(root, entry, ".obsidian")):
+                    return os.path.join(root, entry)
+        except OSError:
+            continue
+    return None
+
+
+def detect_obsidian(home, configured):
+    if configured and os.path.isdir(configured):
+        return "present", configured
+    found = find_vault(home)
+    return ("detected", found) if found else ("missing", None)
+
+
+def detect_simulators():
+    tools = [t for t in ("xcrun", "adb", "emulator") if shutil.which(t)]
+    return ("present" if tools else "missing"), tools
+
+
+def load_config(path):
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                cfg = json.load(f)
+        except (OSError, ValueError):
+            sys.exit("Stopped: %s is not valid JSON. Fix or delete it, nothing was changed." % path)
+        if not isinstance(cfg, dict):
+            sys.exit("Stopped: %s is not a JSON object. Nothing was changed." % path)
+        return cfg
+    return {}
+
+
+def write_atomic(path, text):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".via-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--config")
+    ap.add_argument("--atlassian", choices=["present", "missing"], default="missing")
+    ap.add_argument("--figma", choices=["authorized", "needs-auth", "missing"], default="missing")
+    ap.add_argument("--browser", choices=["chrome", "builtin", "none"], default="none")
+    ap.add_argument("--skills", default="")
+    args = ap.parse_args()
+
+    for value in (args.config or "", args.skills):
+        if has_secret(value):
+            print("Stopped: an argument looks like a secret. Nothing was written.", file=sys.stderr)
+            return 2
+
+    home = os.path.expanduser("~")
+    path = args.config or os.environ.get("VIA_CONFIG") or os.path.join(home, ".claude", "via.json")
+    if os.path.islink(path):
+        print("Stopped: %s is a symlink. Nothing was written." % path, file=sys.stderr)
+        return 1
+
+    cfg = load_config(path)
+    with open(TEMPLATE) as f:
+        template = json.load(f)
+    for key, default in template.items():
+        cfg.setdefault(key, default)
+
+    simulators, sim_tools = detect_simulators()
+    obsidian, vault = detect_obsidian(home, (cfg.get("obsidian") or {}).get("vault_path"))
+    installed = {s for s in args.skills.split(",") if s}
+    wanted = set(WANTED_SKILLS)
+    skills = "present" if wanted <= installed else "partial" if installed & wanted else "missing"
+    status = {
+        "gemini": detect_gemini(home),
+        "atlassian": args.atlassian,
+        "figma": {"authorized": "present"}.get(args.figma, args.figma),
+        "obsidian": obsidian,
+        "simulators": simulators,
+        "browser": "missing" if args.browser == "none" else "present",
+        "skills": skills,
+    }
+
+    report = {}
+    for name, st in status.items():
+        why, url = FIX[name]
+        report[name] = {"status": st, "why": why, "fix_url": url}
+    if vault:
+        report["obsidian"]["path"] = vault
+    if sim_tools:
+        report["simulators"]["tools"] = sim_tools
+    if skills == "partial":
+        report["skills"]["missing"] = sorted(wanted - installed)
+
+    cfg["integrations"] = status
+    cfg["figma"] = dict(cfg.get("figma") or {}, state=args.figma)
+
+    text = json.dumps(cfg, indent=2) + "\n"
+    if has_secret(text):
+        print("Stopped: the config would hold a secret. Nothing was written.", file=sys.stderr)
+        return 2
+    try:
+        current = open(path).read()
+    except OSError:
+        current = None
+    if current == text:
+        outcome = "unchanged"
+    else:
+        write_atomic(path, text)
+        outcome = "written"
+
+    ok = {"present", "detected"}
+    summary = "Via integrations: " + " · ".join(
+        "%s %s" % (n, "✓" if s in ok else s if s in ("needs-auth", "no-key", "partial") else "✗")
+        for n, s in status.items())
+    json.dump({"integrations": report, "config": outcome, "config_path": path, "summary": summary},
+              sys.stdout, indent=2, ensure_ascii=False)
+    print()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

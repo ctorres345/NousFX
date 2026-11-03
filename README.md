@@ -37,6 +37,22 @@ Then start a **new** Claude Code session (hooks and agents load at session start
 
 Re-installing after a merge, checking the gate and rolling back an install are in [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
+### Install Via (early preview)
+
+Via is a plugin in this repo's marketplace. It is at version 0.1.0: only `/via setup` works so far, and the other modes say they are not built yet.
+
+```bash
+claude plugin marketplace add ctorres345/NousFX
+```
+
+```bash
+claude plugin install via@nousfx
+```
+
+Then run `/reload-plugins` and `/via setup`. It checks which integrations you have (Gemini, Jira, Figma, Obsidian, simulators, a browser, design skills), says why each matters and links the fix. It saves the result to `~/.claude/via.json`, which holds statuses and paths only, never keys. Running it again changes nothing when nothing changed.
+
+A plugin can ship hooks that run code on your machine. Via 0.1.0 has none, but read `plugins/via/` before you install a later version.
+
 ## How to use it day to day
 
 ### 1. Set up a project once
