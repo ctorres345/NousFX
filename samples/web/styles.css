@@ -1,0 +1,41 @@
+:root {
+  --surface: #ffffff;
+  --on-surface: #1b1b1f;
+  --primary: #3f51b5;
+  --on-primary: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #121212;
+    --on-surface: #e6e1e5;
+    --primary: #9fa8da;
+    --on-primary: #1a1a2e;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--on-surface);
+  font-family: system-ui, sans-serif;
+}
+
+.home {
+  padding: 48px 24px;
+}
+
+.subtitle {
+  color: #bbbbbb; /* weak contrast on purpose */
+  font-size: 14px;
+}
+
+.start {
+  width: 96px;
+  height: 28px; /* below the touch target on purpose */
+  border: 0;
+  border-radius: 14px;
+  background: var(--primary);
+  color: var(--on-primary);
+  font-size: 12px;
+}

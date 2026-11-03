@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Via run record (findings.json)",
+  "description": "Written by Claude into the run folder, then merged by via_run.py. Claude never writes id, status or merged_at: via_run.py adds them. via_run.py is the source of truth for validation; this file documents the same rules.",
+  "type": "object",
+  "required": ["version", "mode", "scope", "platforms", "findings"],
+  "properties": {
+    "version": { "const": 1 },
+    "mode": { "enum": ["check", "audit"] },
+    "scope": {
+      "description": "\"all\", or the screens this run covered. A finding is marked fixed only when its screen is in scope.",
+      "oneOf": [
+        { "const": "all" },
+        { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      ]
+    },
+    "platforms": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "skills": {
+      "type": "object",
+      "properties": {
+        "run": { "type": "array", "items": { "type": "string" } },
+        "skipped": { "type": "array", "items": { "$ref": "#/definitions/skipped" } }
+      }
+    },
+    "integrations": {
+      "type": "object",
+      "properties": {
+        "used": { "type": "array", "items": { "type": "string" } },
+        "skipped": { "type": "array", "items": { "$ref": "#/definitions/skipped" } }
+      }
+    },
+    "screenshots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "screen", "theme", "size", "redacted"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "screen": { "type": "string", "minLength": 1 },
+          "theme": { "type": "string", "minLength": 1 },
+          "size": { "type": "string", "minLength": 1 },
+          "redacted": { "type": "boolean" }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["screen", "severity", "location", "rule", "issue", "fix", "source"],
+        "properties": {
+          "id": { "description": "Set by via_run.py: VIA-<screen>-<8 hex>, with -2, -3 for same screen, rule and file.", "type": "string" },
+          "screen": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["high", "med", "low"] },
+          "location": {
+            "type": "object",
+            "required": ["file"],
+            "properties": {
+              "file": { "type": "string", "minLength": 1 },
+              "line": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "rule": { "description": "A short stable name for the kind of problem, such as contrast. Part of the ID.", "type": "string", "minLength": 1 },
+          "issue": { "type": "string", "minLength": 1 },
+          "fix": { "type": "string", "minLength": 1 },
+          "source": { "description": "The skill or second opinion that raised it.", "type": "string", "minLength": 1 },
+          "verdict": { "description": "Second-opinion verdict after checking against code and screenshots.", "enum": ["real", "wrong", "unsure", null] },
+          "route": { "enum": ["fix-now", "ticket", null] },
+          "status": { "description": "Set by via_run.py: new, open or rejected.", "enum": ["new", "open", "rejected"] },
+          "ticket": { "type": "string" }
+        }
+      }
+    },
+    "lessons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "scope", "source"],
+        "properties": {
+          "text": { "type": "string", "minLength": 1 },
+          "scope": { "enum": ["project", "general"] },
+          "source": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "token_cost": { "type": ["number", "object"] },
+    "merged_at": { "description": "Set by via_run.py merge. `pass` refuses a run without it.", "type": "string" }
+  },
+  "definitions": {
+    "skipped": {
+      "type": "object",
+      "required": ["name", "reason"],
+      "properties": { "name": { "type": "string" }, "reason": { "type": "string" } }
+    }
+  }
+}

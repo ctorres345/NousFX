@@ -1,1 +1,6 @@
 .DS_Store
+
+# Sample apps: build output
+samples/**/build/
+samples/**/.gradle/
+samples/**/.dart_tool/

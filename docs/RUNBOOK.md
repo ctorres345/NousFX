@@ -132,7 +132,7 @@ Via comes from the marketplace in this repo, not from `install.sh`.
 4. Run `/via setup` again. The answer must say the config is `unchanged`.
 5. To remove it: `claude plugin uninstall via`. `~/.claude/via.json` stays; delete it by hand if you want it gone.
 
-Before releasing a change, run `python3 plugins/via/scripts/test_via_setup.py` and `claude plugin validate . --strict`.
+Before releasing a change, run `python3 plugins/via/scripts/test_via_setup.py`, `python3 plugins/via/scripts/test_via_run.py` and `claude plugin validate . --strict`.
 
 ## Roll back an install
 
