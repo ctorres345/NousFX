@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "integrations": {},
+  "obsidian": {
+    "vault_path": null
+  },
+  "figma": {
+    "state": "missing"
+  },
+  "jira": {
+    "site": null
+  },
+  "outbound_allowlist": {},
+  "capture": {
+    "themes": ["light", "dark"],
+    "font_scale": "largest",
+    "max_second_opinion_shots": 8
+  }
+}

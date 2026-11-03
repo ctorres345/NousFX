@@ -6,6 +6,7 @@ The steps I repeat by hand for NousFX. Each one installs into my own `~/.claude/
 |---|---|
 | Setting up a new machine | [Install on a new device](#install-on-a-new-device) |
 | After merging a PR that touches `claude/` | [Re-install after a merge](#re-install-after-a-merge) |
+| Installing or updating Via | [Install or update Via](#install-or-update-via) |
 | Something broke after an install | [Roll back an install](#roll-back-an-install) |
 | About once a week | [Check token usage](#check-token-usage) |
 
@@ -94,6 +95,44 @@ UI skills that `ui-review` uses are not in this repo (see the README). Missing o
    ```bash
    grep -c 'review-gate.py' ~/.claude/settings.json
    ```
+
+## Install or update Via
+
+Via comes from the marketplace in this repo, not from `install.sh`.
+
+1. Add the marketplace (first time only). From GitHub:
+
+   ```bash
+   claude plugin marketplace add ctorres345/NousFX
+   ```
+
+   Or from a local clone, run this inside it:
+
+   ```bash
+   claude plugin marketplace add ./
+   ```
+
+2. Install (first time only):
+
+   ```bash
+   claude plugin install via@nousfx
+   ```
+
+   To update after a merge to `main`, refresh the marketplace and then update the plugin. Installing again does not upgrade it:
+
+   ```bash
+   claude plugin marketplace update nousfx
+   ```
+
+   ```bash
+   claude plugin update via@nousfx
+   ```
+
+3. In a Claude Code session run `/reload-plugins`, then `/via setup`. Check the table lists each integration and ends with the `Via integrations:` line.
+4. Run `/via setup` again. The answer must say the config is `unchanged`.
+5. To remove it: `claude plugin uninstall via`. `~/.claude/via.json` stays; delete it by hand if you want it gone.
+
+Before releasing a change, run `python3 plugins/via/scripts/test_via_setup.py` and `claude plugin validate . --strict`.
 
 ## Roll back an install
 
