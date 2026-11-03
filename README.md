@@ -67,7 +67,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 |---|---|
 | `ui-review` | Runs automatically for UI changes. It detects the platform (Compose, Flutter, SwiftUI, web), runs the matching design skills, takes light and dark screenshots, and asks Argon for a second opinion when configured |
 | `review-loop` | `/simplify`, then up to 5 rounds of the Opus `reviewer`, fixing the real high and medium findings. It records the result for the gate |
-| PR gate | `gh pr create` is blocked until a review matches the current code and the branch name has a Jira key |
+| PR gate | `gh pr create` is blocked until a review with 0 open high/med findings matches the current code and the branch name has a Jira key |
 | PR body | Uses `claude/templates/pull_request_template.md` (ticket, what and why, how to test, screenshots) |
 
 ### 5. Keep sessions cheap
@@ -91,7 +91,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/skills/handoff/` | `/handoff`: session handoff note |
 | `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list. Applies only approved fixes |
 | `claude/skills/project-setup/` | Sets up or audits a repo with the shared workflow |
-| `claude/hooks/review-gate.py` | PreToolUse hook that blocks `gh pr create` until a review is recorded. `--mark --findings <count>` records one; `--mark` alone is refused |
+| `claude/hooks/review-gate.py` | PreToolUse hook that blocks `gh pr create` until a review with 0 open high/med findings (or an approved `--mark --skip`) is recorded. `--mark --findings <count>` records one; `--mark` alone is refused |
 | `claude/CLAUDE.delegation.md` | Delegation policy merged into `~/.claude/CLAUDE.md` |
 | `claude/templates/pull_request_template.md` | Standard PR body. Copy it to `.github/` per repo |
 | `scripts/usage-report.py` | Read-only token and cost report |
@@ -107,11 +107,13 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 - Claude plugins: `design:accessibility-review`, `design:design-critique`, `design:ux-copy` and `anthropic-skills:frontend-design`.
 
 ## The PR review gate
-- Blocks `gh pr create` (40+ ways of writing it) and create-pull-request MCP tools unless both hold:
+- Blocks `gh pr create` (including wrappers such as `bash -c`, `eval` and `$(...)`) and create-pull-request MCP tools unless all three hold:
   - the branch is named `cesar/<JIRA-KEY>` (change `BRANCH_OK` for your own prefix). `review-gate.py --allow-branch "reason"` records an approved exception.
   - a review marker matches the code: a git tree hash of the working tree or `HEAD`.
+  - that review has 0 open high/med findings (`--mark --findings <count>`), or you approved a skip (`--mark --skip "<reason>"`).
 - The marker lives in the git dir, so it is never committed.
 - Limits to know:
+  - It does not catch every form, for example PRs created from script files, `gh api`, shell functions, remote shells or `find -exec`.
   - An error while checking a create blocks it. The call passes only outside a git repo, when the folder is missing, or when git is not installed.
   - A PR opened in the GitHub web UI is not caught.
   - Hooks load at session start, so restart running sessions after installing.
