@@ -1,11 +1,11 @@
 # Issue tracker: Jira
 
-Tickets live in Jira project `CLAU` on cjthdev.atlassian.net (cloudId `3b0b1388-2d20-4fda-afae-c83d656697f9`), through the Atlassian MCP.
+Tickets live in Jira project `NFX` on cjthdev.atlassian.net (cloudId `3b0b1388-2d20-4fda-afae-c83d656697f9`), through the Atlassian MCP.
 
 ## Conventions
 
 - **Issue types**: Epic, Story, Bug, Task, Subtask. Epics are milestones (M1 Via core, M2 gate and exports, M3 share-ready), features are Stories, defects are Bugs, chores and spikes are Tasks.
-- **Create**: `createJiraIssue` (project `CLAU`).
+- **Create**: `createJiraIssue` (project `NFX`).
 - **Read**: `getJiraIssue`. **List/search**: `searchJiraIssuesUsingJql`.
 - **Comment**: `addCommentToJiraIssue`. **Move**: `transitionJiraIssue`.
 - **Edit**: `editJiraIssue`. It replaces `labels` whole, so pass the full list.
@@ -15,7 +15,7 @@ Tickets live in Jira project `CLAU` on cjthdev.atlassian.net (cloudId `3b0b1388-
 
 ## Rules
 
-- Branch for a ticket: `cesar/CLAU-<n>` from `main`. The PR names the key.
+- Branch for a ticket: `cesar/NFX-<n>` from `main`. The PR names the key.
 - UI/UX tickets (for example Via's prototype template) need an acceptance criterion that the PR includes screenshots (before/after, light and dark where theming applies, relevant sizes), or a screen recording for motion or flows.
 - Write and check tickets with [`ticket-template.md`](ticket-template.md).
 - The shared harness lives in `claude/` and `plugins/`; commit it. Keep personal state out of git: handoffs, personal paths, API keys and anything holding a secret. Personal settings go in `~/.claude/via.json` and similar files under `~/.claude/`.
@@ -27,7 +27,7 @@ Tickets live in Jira project `CLAU` on cjthdev.atlassian.net (cloudId `3b0b1388-
 
 ## When a skill says "publish to the issue tracker"
 
-Create a Jira issue in project `CLAU`.
+Create a Jira issue in project `NFX`.
 
 ## When a skill says "fetch the relevant ticket"
 

@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Jira project CLAU via the Atlassian MCP. See `docs/agents/issue-tracker.md`.
+Jira project NFX via the Atlassian MCP. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
