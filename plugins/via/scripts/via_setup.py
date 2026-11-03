@@ -9,7 +9,7 @@ Usage: via_setup.py [--config PATH] [--atlassian present|missing]
                     [--skills a,b,c]
 
 The config (default ~/.claude/via.json, or VIA_CONFIG) holds statuses and paths only, never keys.
-Exit 0 on success, 1 when the config cannot be written safely, 2 on bad arguments.
+Exit 0 on success, 1 when the config is unsafe or cannot be written, 2 on a secret-shaped argument.
 """
 import argparse
 import json
@@ -32,10 +32,10 @@ SECRET_RE = re.compile(
 )
 
 # Design skills Via's platform sets rely on (the full per-platform list comes with later tickets).
-WANTED_SKILLS = [
+WANTED_SKILLS = {
     "ui-ux-pro-max", "design:accessibility-review", "design:design-critique", "design:ux-copy",
     "material-3:material-3", "adaptive", "edge-to-edge", "jetpack-compose-performance",
-]
+}
 
 FIX = {
     "gemini": ("The Argon second opinion needs the gemini-api CLI and a key in the OS keychain. Without it Via falls back to a Claude reviewer.",
@@ -55,6 +55,10 @@ FIX = {
 }
 
 
+# Status shown in the summary line. Anything unlisted (needs-auth, no-key, partial) prints as is.
+GLYPH = {"present": "✓", "detected": "✓", "missing": "✗"}
+
+
 def has_secret(value):
     return bool(SECRET_RE.search(str(value)))
 
@@ -72,13 +76,16 @@ def detect_gemini(home):
         return "missing"
     try:
         out = subprocess.run([cli, "whoami", "--output-format", "json"], capture_output=True,
-                             text=True, timeout=10, env={"HOME": home, "PATH": os.environ.get("PATH", "")})
-        creds = json.loads(out.stdout).get("credentials", {})
+                             text=True, timeout=10)
+        creds = json.loads(out.stdout).get("credentials")
     except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return "no-key"
+    if not isinstance(creds, dict):
         return "no-key"
     # Only the source is read. The masked value in the output is dropped, never stored or printed.
     for name in ("api-key", "access-token"):
-        if isinstance(creds.get(name), dict) and creds[name].get("source") not in (None, "unset"):
+        entry = creds.get(name)
+        if isinstance(entry, dict) and entry.get("source") not in (None, "unset"):
             return "present"
     return "no-key"
 
@@ -97,7 +104,7 @@ def find_vault(home):
 
 
 def detect_obsidian(home, configured):
-    if configured and os.path.isdir(configured):
+    if isinstance(configured, str) and configured and os.path.isdir(os.path.expanduser(configured)):
         return "present", configured
     found = find_vault(home)
     return ("detected", found) if found else ("missing", None)
@@ -109,16 +116,21 @@ def detect_simulators():
 
 
 def load_config(path):
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                cfg = json.load(f)
-        except (OSError, ValueError):
-            sys.exit("Stopped: %s is not valid JSON. Fix or delete it, nothing was changed." % path)
-        if not isinstance(cfg, dict):
-            sys.exit("Stopped: %s is not a JSON object. Nothing was changed." % path)
-        return cfg
-    return {}
+    """Return (parsed config, raw text). A missing file gives ({}, None)."""
+    try:
+        with open(path) as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return {}, None
+    except OSError as e:
+        sys.exit("Stopped: cannot read %s (%s). Nothing was changed." % (path, e))
+    try:
+        cfg = json.loads(raw)
+    except ValueError:
+        cfg = None
+    if not isinstance(cfg, dict):
+        sys.exit("Stopped: %s is not a JSON object. Fix or delete it, nothing was changed." % path)
+    return cfg, raw
 
 
 def write_atomic(path, text):
@@ -142,7 +154,7 @@ def main():
     ap.add_argument("--atlassian", choices=["present", "missing"], default="missing")
     ap.add_argument("--figma", choices=["authorized", "needs-auth", "missing"], default="missing")
     ap.add_argument("--browser", choices=["chrome", "builtin", "none"], default="none")
-    ap.add_argument("--skills", default="")
+    ap.add_argument("--skills", nargs="?", const="", default="")
     args = ap.parse_args()
 
     for value in (args.config or "", args.skills):
@@ -151,64 +163,64 @@ def main():
             return 2
 
     home = os.path.expanduser("~")
-    path = args.config or os.environ.get("VIA_CONFIG") or os.path.join(home, ".claude", "via.json")
+    path = os.path.abspath(args.config or os.environ.get("VIA_CONFIG") or os.path.join(home, ".claude", "via.json"))
     if os.path.islink(path):
         print("Stopped: %s is a symlink. Nothing was written." % path, file=sys.stderr)
         return 1
 
-    cfg = load_config(path)
+    cfg, current = load_config(path)
     with open(TEMPLATE) as f:
         template = json.load(f)
     for key, default in template.items():
         cfg.setdefault(key, default)
+        if isinstance(default, dict) and not isinstance(cfg[key], dict):
+            print("Stopped: \"%s\" in %s must be an object. Fix or delete the file, nothing was changed." % (key, path),
+                  file=sys.stderr)
+            return 1
 
     simulators, sim_tools = detect_simulators()
-    obsidian, vault = detect_obsidian(home, (cfg.get("obsidian") or {}).get("vault_path"))
+    obsidian, vault = detect_obsidian(home, cfg["obsidian"].get("vault_path"))
     installed = {s for s in args.skills.split(",") if s}
-    wanted = set(WANTED_SKILLS)
-    skills = "present" if wanted <= installed else "partial" if installed & wanted else "missing"
+    skills = "present" if WANTED_SKILLS <= installed else "partial" if installed & WANTED_SKILLS else "missing"
     status = {
         "gemini": detect_gemini(home),
         "atlassian": args.atlassian,
-        "figma": {"authorized": "present"}.get(args.figma, args.figma),
+        "figma": "present" if args.figma == "authorized" else args.figma,
         "obsidian": obsidian,
         "simulators": simulators,
         "browser": "missing" if args.browser == "none" else "present",
         "skills": skills,
     }
 
-    report = {}
-    for name, st in status.items():
-        why, url = FIX[name]
-        report[name] = {"status": st, "why": why, "fix_url": url}
+    report = {name: {"status": st, "why": FIX[name][0], "fix_url": FIX[name][1]}
+              for name, st in status.items()}
     if vault:
         report["obsidian"]["path"] = vault
     if sim_tools:
         report["simulators"]["tools"] = sim_tools
     if skills == "partial":
-        report["skills"]["missing"] = sorted(wanted - installed)
+        report["skills"]["missing"] = sorted(WANTED_SKILLS - installed)
 
     cfg["integrations"] = status
-    cfg["figma"] = dict(cfg.get("figma") or {}, state=args.figma)
+    cfg["figma"]["state"] = args.figma
 
     text = json.dumps(cfg, indent=2) + "\n"
     if has_secret(text):
-        print("Stopped: the config would hold a secret. Nothing was written.", file=sys.stderr)
-        return 2
-    try:
-        current = open(path).read()
-    except OSError:
-        current = None
+        print("Stopped: %s holds a secret-shaped value. Remove it by hand; nothing was written." % path,
+              file=sys.stderr)
+        return 1
     if current == text:
         outcome = "unchanged"
     else:
-        write_atomic(path, text)
+        try:
+            write_atomic(path, text)
+        except OSError as e:
+            print("Stopped: cannot write %s (%s). Nothing was changed." % (path, e), file=sys.stderr)
+            return 1
         outcome = "written"
 
-    ok = {"present", "detected"}
     summary = "Via integrations: " + " · ".join(
-        "%s %s" % (n, "✓" if s in ok else s if s in ("needs-auth", "no-key", "partial") else "✗")
-        for n, s in status.items())
+        "%s %s" % (n, GLYPH.get(st, st)) for n, st in status.items())
     json.dump({"integrations": report, "config": outcome, "config_path": path, "summary": summary},
               sys.stdout, indent=2, ensure_ascii=False)
     print()

@@ -25,20 +25,30 @@ def read(path, mode="r"):
 
 class ViaSetupTest(unittest.TestCase):
     def setUp(self):
-        self.home = tempfile.mkdtemp()
-        self.bin = tempfile.mkdtemp()
+        self.home = self.tempdir()
+        self.bin = self.tempdir()
         self.config = os.path.join(self.home, ".claude", "via.json")
 
-    def fake_gemini(self, source="keyring"):
+    def tempdir(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        return d.name
+
+    def fake_gemini(self, source="keyring", env_source=None, creds=None):
         path = os.path.join(self.home, ".local", "bin", "gemini-api")
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        body = {"credentials": {"api-key": {"source": source, "value": FAKE_KEY[:2] + "******99"}}}
+        def doc(src):
+            return json.dumps(creds if creds is not None else
+                              {"credentials": {"api-key": {"source": src, "value": FAKE_KEY[:2] + "******99"}}})
+        script = "#!/bin/sh\n"
+        if env_source:
+            script += 'if [ -n "$GEMINI_API_KEY" ]; then echo \'%s\'; exit 0; fi\n' % doc(env_source)
         with open(path, "w") as f:
-            f.write("#!/bin/sh\necho '%s'\n" % json.dumps(body))
+            f.write(script + "echo '%s'\n" % doc(source))
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
-    def run_setup(self, *args):
-        env = {"HOME": self.home, "PATH": self.bin}
+    def run_setup(self, *args, **extra_env):
+        env = {"HOME": self.home, "PATH": self.bin, **extra_env}
         return subprocess.run([sys.executable, SCRIPT, *args], env=env, capture_output=True, text=True)
 
     def report(self, *args):
@@ -112,6 +122,51 @@ class ViaSetupTest(unittest.TestCase):
         self.assertEqual(i["browser"]["status"], "present")
         self.assertEqual(i["skills"]["status"], "partial")
         self.assertEqual(json.loads(read(self.config))["figma"]["state"], "needs-auth")
+
+    def test_gemini_key_from_an_env_var_counts_as_present(self):
+        self.fake_gemini("unset", env_source="env")
+        r = self.run_setup(GEMINI_API_KEY="set-in-env")
+        self.assertEqual(json.loads(r.stdout)["integrations"]["gemini"]["status"], "present")
+
+    def test_odd_whoami_output_does_not_crash_the_doctor(self):
+        for creds in ({"credentials": None}, {"credentials": ["x"]}, {"credentials": "x"}, {"other": 1}):
+            self.fake_gemini(creds=creds)
+            self.assertEqual(self.report()["integrations"]["gemini"]["status"], "no-key")
+
+    def test_a_non_object_section_in_the_config_stops_with_a_message(self):
+        os.makedirs(os.path.dirname(self.config))
+        with open(self.config, "w") as f:
+            json.dump({"obsidian": "oops"}, f)
+        r = self.run_setup()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("must be an object", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_vault_path_with_a_tilde_is_expanded_and_a_non_string_is_ignored(self):
+        os.makedirs(os.path.join(self.home, "Vault", ".obsidian"))
+        os.makedirs(os.path.dirname(self.config))
+        for value, expected in (("~/Vault", "present"), (["x"], "missing"), (5, "missing")):
+            with open(self.config, "w") as f:
+                json.dump({"obsidian": {"vault_path": value}}, f)
+            self.assertEqual(self.report()["integrations"]["obsidian"]["status"], expected, value)
+
+    def test_an_empty_skills_flag_is_accepted(self):
+        self.assertEqual(self.report("--skills")["integrations"]["skills"]["status"], "missing")
+
+    def test_a_bare_config_filename_works(self):
+        env = {"HOME": self.home, "PATH": self.bin}
+        r = subprocess.run([sys.executable, SCRIPT, "--config", "via.json"], env=env, cwd=self.home,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.home, "via.json")))
+
+    def test_an_unwritable_config_folder_exits_1_without_a_traceback(self):
+        os.makedirs(os.path.dirname(self.config))
+        os.chmod(os.path.dirname(self.config), 0o500)
+        self.addCleanup(os.chmod, os.path.dirname(self.config), 0o700)
+        r = self.run_setup()
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("Traceback", r.stderr)
 
     def test_a_symlinked_config_is_refused(self):
         os.makedirs(os.path.dirname(self.config))

@@ -100,20 +100,32 @@ UI skills that `ui-review` uses are not in this repo (see the README). Missing o
 
 Via comes from the marketplace in this repo, not from `install.sh`.
 
-1. Add the marketplace (first time only), using `./` from a local clone or `ctorres345/NousFX` from GitHub:
+1. Add the marketplace (first time only). From GitHub:
 
    ```bash
    claude plugin marketplace add ctorres345/NousFX
    ```
 
-2. Install, or update after a merge to `main`:
+   Or from a local clone, run this inside it:
+
+   ```bash
+   claude plugin marketplace add ./
+   ```
+
+2. Install (first time only):
 
    ```bash
    claude plugin install via@nousfx
    ```
 
+   To update after a merge to `main`, refresh the marketplace and then update the plugin. Installing again does not upgrade it:
+
    ```bash
    claude plugin marketplace update nousfx
+   ```
+
+   ```bash
+   claude plugin update via@nousfx
    ```
 
 3. In a Claude Code session run `/reload-plugins`, then `/via setup`. Check the table lists each integration and ends with the `Via integrations:` line.
