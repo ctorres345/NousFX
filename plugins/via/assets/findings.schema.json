@@ -63,10 +63,10 @@
           "rule": { "description": "A short stable name for the kind of problem, such as contrast. Part of the ID.", "type": "string", "minLength": 1 },
           "issue": { "type": "string", "minLength": 1 },
           "fix": { "type": "string", "minLength": 1 },
-          "source": { "description": "The skill or second opinion that raised it.", "type": "string", "minLength": 1 },
-          "verdict": { "description": "Second-opinion verdict after checking against code and screenshots.", "enum": ["real", "wrong", "unsure", null] },
+          "source": { "description": "The skill or second opinion that raised it. A second opinion is named second-opinion:<who>, for example second-opinion:claude.", "type": "string", "minLength": 1 },
+          "verdict": { "description": "Second-opinion verdict after checking against code and screenshots. Required when source starts with second-opinion, and a wrong one then becomes status dismissed: kept here as evidence, never added to the ledger. On any other source the verdict is informational.", "enum": ["real", "wrong", "unsure", null] },
           "route": { "enum": ["fix-now", "ticket", null] },
-          "status": { "description": "Set by via_run.py: new, open or rejected.", "enum": ["new", "open", "rejected"] },
+          "status": { "description": "Set by via_run.py: new, open, rejected, or dismissed (a second-opinion finding with verdict wrong).", "enum": ["new", "open", "rejected", "dismissed"] },
           "ticket": { "type": "string" }
         }
       }

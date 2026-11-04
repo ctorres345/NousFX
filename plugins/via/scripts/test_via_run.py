@@ -287,6 +287,76 @@ class ViaRunTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "via-check-ok")))
 
+    # --- second-opinion verdicts ---
+
+    def test_a_second_opinion_finding_without_a_verdict_is_refused(self):
+        for source in ("second-opinion:claude", "second-opinion:argon"):
+            with self.subTest(source=source):
+                self.assert_refused_without_writing(
+                    json.dumps(record([finding(source=source)])), 1)
+
+    def test_a_second_opinion_finding_with_a_null_verdict_is_refused(self):
+        self.assert_refused_without_writing(
+            json.dumps(record([finding(source="second-opinion:claude", verdict=None)])), 1)
+
+    def test_real_and_unsure_second_opinion_findings_merge_like_any_other(self):
+        _, summary, merged = self.merge(record([
+            finding(source="second-opinion:claude", verdict="real"),
+            finding(rule="touch-target", source="second-opinion:claude", verdict="unsure")]))
+        self.assertEqual(summary["new"], 2)
+        self.assertEqual(set(self.statuses(merged).values()), {"new"})
+
+    def test_a_wrong_second_opinion_finding_is_dismissed_and_kept_out_of_the_ledger(self):
+        _, summary, merged = self.merge(record([
+            finding(),
+            finding(rule="spacing", source="second-opinion:claude", verdict="wrong")]))
+        self.assertEqual(summary["new"], 1)
+        dismissed = [f for f in merged["findings"] if f["rule"] == "spacing"][0]
+        self.assertEqual(dismissed["status"], "dismissed")
+        self.assertNotIn("id", dismissed)
+        ledger = read(os.path.join(self.repo, LEDGER))
+        self.assertNotIn("spacing", ledger)
+        self.assertEqual(len(set(re.findall(r"VIA-home-[0-9a-f]{8}", ledger))), 1)
+
+    def test_a_dismissed_finding_does_not_count_in_pass(self):
+        run_dir, _, _ = self.merge(record([
+            finding(rule="spacing", severity="high", source="second-opinion:claude", verdict="wrong")]))
+        self.ok("pass", run_dir)
+        self.assertEqual(self.pass_record()["findings_open"], 0)
+
+    def test_a_dismissed_finding_does_not_stop_an_old_one_from_being_marked_fixed(self):
+        self.merge(record([finding()]))
+        _, summary, _ = self.merge(record([
+            finding(rule="spacing", source="second-opinion:claude", verdict="wrong")]))
+        self.assertEqual(summary["fixed"], 1)
+
+    def test_a_finding_already_in_the_ledger_that_is_now_judged_wrong_is_not_marked_fixed(self):
+        _, _, first = self.merge(record([finding(source="second-opinion:claude", verdict="unsure")]))
+        old_id = first["findings"][0]["id"]
+        _, summary, second = self.merge(record([finding(source="second-opinion:claude", verdict="wrong")]))
+        self.assertEqual((summary["fixed"], summary["dismissed"]), (0, 1))
+        self.assertEqual(second["findings"][0]["status"], "dismissed")
+        self.assertNotIn("id", second["findings"][0])
+        ledger = read(os.path.join(self.repo, LEDGER))
+        self.assertIn(old_id, ledger)
+        self.assertNotIn("fixed", json.dumps(re.findall(r'"status": "[a-z]+"', ledger)))
+
+    def test_a_dismissed_sibling_never_takes_the_ledger_id_a_live_finding_should_keep(self):
+        _, _, first = self.merge(record([finding(line=10, issue="Low contrast on the subtitle.")]))
+        old_id = first["findings"][0]["id"]
+        _, summary, second = self.merge(record([
+            finding(line=11, issue="Subtitle contrast is too low."),
+            finding(line=10, source="second-opinion:claude", verdict="wrong")]))
+        live = [f for f in second["findings"] if f["status"] != "dismissed"][0]
+        self.assertEqual(live["id"], old_id)
+        self.assertEqual((summary["new"], summary["open"], summary["dismissed"]), (0, 1, 1))
+        self.assertEqual(len(set(re.findall(r"VIA-home-[0-9a-f]{8}(?:-\d+)?", read(os.path.join(self.repo, LEDGER))))), 1)
+
+    def test_a_wrong_verdict_from_another_source_is_an_ordinary_finding(self):
+        _, summary, merged = self.merge(record([finding(verdict="wrong")]))
+        self.assertEqual(summary["new"], 1)
+        self.assertEqual(merged["findings"][0]["status"], "new")
+
     # --- refusals: nothing is written ---
 
     def assert_refused_without_writing(self, rec_text, code):
