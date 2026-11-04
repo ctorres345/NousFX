@@ -89,7 +89,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | PR body | Uses `claude/templates/pull_request_template.md` (ticket, what and why, how to test, screenshots) |
 
 ### 5. Keep sessions cheap
-- `/handoff` writes `.claude/handoff.md`, so the next session starts from a short note instead of a huge context.
+- `/handoff` writes `.claude/handoff.md` (it asks once to create and gitignore the file if the project has none), so the next session starts from a short note instead of a huge context.
 - One task per session. Use `/compact focus on <topic>` at milestones.
 - `python3 -I scripts/usage-report.py --days 14` shows where tokens go.
 

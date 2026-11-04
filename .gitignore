@@ -4,3 +4,6 @@
 samples/**/build/
 samples/**/.gradle/
 samples/**/.dart_tool/
+
+# Personal state
+.claude/handoff.md
