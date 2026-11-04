@@ -56,6 +56,15 @@ class ViaSetupTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
 
+    def test_a_config_outside_the_claude_folder_is_refused(self):
+        elsewhere = os.path.join(self.tempdir(), "via.json")
+        r = self.run_setup("--config", elsewhere)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn(".claude", r.stderr)
+        self.assertFalse(os.path.exists(elsewhere))
+        r = self.run_setup(VIA_CONFIG=elsewhere)
+        self.assertEqual(r.returncode, 1, r.stdout)
+
     def test_nothing_configured_lists_every_integration_as_missing_with_a_fix_link(self):
         rep = self.report()
         self.assertEqual(set(rep["integrations"]), INTEGRATIONS)
@@ -155,10 +164,12 @@ class ViaSetupTest(unittest.TestCase):
 
     def test_a_bare_config_filename_works(self):
         env = {"HOME": self.home, "PATH": self.bin}
-        r = subprocess.run([sys.executable, SCRIPT, "--config", "via.json"], env=env, cwd=self.home,
+        folder = os.path.join(self.home, ".claude")  # a config must live inside ~/.claude
+        os.makedirs(folder)
+        r = subprocess.run([sys.executable, SCRIPT, "--config", "via.json"], env=env, cwd=folder,
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(os.path.exists(os.path.join(self.home, "via.json")))
+        self.assertTrue(os.path.exists(os.path.join(folder, "via.json")))
 
     def test_an_unwritable_config_folder_exits_1_without_a_traceback(self):
         os.makedirs(os.path.dirname(self.config))

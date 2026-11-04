@@ -17,6 +17,7 @@ Substitute the real plugin path for `${CLAUDE_PLUGIN_ROOT}` in the command, beca
 
 ## 3. Report
 - Print a table: integration | status | why it matters | fix link. Use the script's JSON.
+- Outbound allow-list: tell the user that a project sends nothing to Gemini, Jira, Figma, Artifacts or Obsidian until it is listed in `outbound_allowlist` in `~/.claude/via.json` (key `owner/repo`, value `{"destinations": [...]}`, plus `gemini_code_paths` for the legacy Argon code review). Add a project only when the user says so in chat. The file must stay inside `~/.claude`: the scripts refuse a config kept in a project.
 - If an Obsidian vault shows as `detected`, tell the user the path and ask before setting `obsidian.vault_path`.
 - Print the script's `summary` line as the last line.
 - Say whether the config was `written` or `unchanged`.

@@ -595,6 +595,71 @@ class ViaRunTest(unittest.TestCase):
         self.assertEqual((got["Reject me, reworded"]["id"], got["Reject me, reworded"]["status"]), (rid, "rejected"))
         self.assertEqual(summary["new"], 0)
 
+    # --- NFX-9: redaction review, token cost, and the shots allowed to leave the run folder ---
+
+    def shot(self, name="home-light-phone.png", **extra):
+        return {"path": name, "screen": "home", "theme": "light", "size": "phone", "redacted": True, **extra}
+
+    def rejected(self, rec, text):
+        run_dir = self.new_run(rec)
+        r = self.run_cli("merge", run_dir)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn(text, r.stderr)
+
+    def test_a_screenshot_review_must_be_kept_or_dropped(self):
+        self.merge(record([], screenshots=[self.shot(review="kept"), self.shot("b.png", review="dropped"),
+                                           self.shot("c.png")]))
+        self.rejected(record([], screenshots=[self.shot(review="maybe")]), "review")
+
+    def test_token_cost_takes_a_number_or_a_well_formed_second_opinion_object(self):
+        self.merge(record([], token_cost=1234))
+        self.merge(record([], token_cost={"second_opinion": {"who": "argon", "input_tokens": 900,
+                                                             "output_tokens": 120}}))
+        self.merge(record([], token_cost={"second_opinion": {"who": "claude", "input_tokens": None,
+                                                             "output_tokens": None}}))
+        for bad in (-1, True, {"second_opinion": "argon"}, {"second_opinion": {"who": "argon", "input_tokens": -5,
+                                                                               "output_tokens": 1}},
+                    {"second_opinion": {"who": "", "input_tokens": 1, "output_tokens": 1}},
+                    {"second_opinion": {"who": "argon", "input_tokens": 1.5, "output_tokens": 1}}):
+            with self.subTest(bad=bad):
+                self.rejected(record([], token_cost=bad), "token_cost")
+
+    def outbound(self, rec, files):
+        run_dir = self.new_run(rec)
+        for name in files:
+            write(os.path.join(run_dir, name), "png")
+        return run_dir
+
+    def test_outbound_shots_lists_only_kept_shots_as_absolute_paths_in_the_run_folder(self):
+        rec = record([], screenshots=[self.shot("a.png", review="kept"), self.shot("b.png", review="dropped"),
+                                      self.shot("c.png")])
+        run_dir = self.outbound(rec, ["a.png", "b.png", "c.png"])
+        out = self.ok("outbound-shots", run_dir)
+        self.assertEqual(out["shots"], [os.path.join(os.path.realpath(run_dir), "a.png")])
+        self.assertEqual((out["dropped"], out["unreviewed"]), (1, 1))
+
+    def test_outbound_shots_refuses_a_kept_shot_outside_the_run_folder_or_missing(self):
+        for name in ("../escape.png", "/etc/hosts", "missing.png"):
+            with self.subTest(name=name):
+                run_dir = self.outbound(record([], screenshots=[self.shot(name, review="kept")]), [])
+                r = self.run_cli("outbound-shots", run_dir)
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertEqual(r.stdout, "")
+
+    def test_outbound_shots_accepts_a_kept_path_spelled_with_dot_segments(self):
+        run_dir = self.outbound(record([], screenshots=[self.shot("./a.png", review="kept")]), ["a.png"])
+        self.assertEqual(self.ok("outbound-shots", run_dir)["shots"], [os.path.join(os.path.realpath(run_dir), "a.png")])
+
+    def test_outbound_shots_refuses_a_symlinked_shot(self):
+        run_dir = self.outbound(record([], screenshots=[self.shot("a.png", review="kept")]), [])
+        os.symlink("/etc/hosts", os.path.join(run_dir, "a.png"))
+        self.assertEqual(self.run_cli("outbound-shots", run_dir).returncode, 1)
+
+    def test_outbound_shots_lists_every_kept_shot_even_beyond_eight(self):
+        names = ["s%d.png" % i for i in range(9)]
+        run_dir = self.outbound(record([], screenshots=[self.shot(n, review="kept") for n in names]), names)
+        self.assertEqual(len(self.ok("outbound-shots", run_dir)["shots"]), 9)  # the 8-per-call cap is the wrapper's
+
 
 if __name__ == "__main__":
     unittest.main()

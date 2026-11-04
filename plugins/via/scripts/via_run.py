@@ -38,7 +38,8 @@ PASS_FILE = "via-check-ok"
 SEVERITIES = {"high", "med", "low"}
 VERDICTS = {"real", "wrong", "unsure"}
 ROUTES = {"fix-now", "ticket"}
-SECOND_OPINION = "second-opinion"  # source prefix: second-opinion:claude, later second-opinion:argon
+SECOND_OPINION = "second-opinion"  # source prefix: second-opinion:claude or second-opinion:argon
+REVIEWS = {"kept", "dropped"}  # Claude's verdict on a screenshot before it may leave the run folder
 MODES = {"check", "audit"}
 STATUSES = {"new", "open", "fixed", "rejected"}
 # A new finding may take over a known sibling ID (same screen, rule and file) only if it sits this close.
@@ -146,6 +147,23 @@ def is_dismissed(finding):
     return is_second_opinion(finding) and finding.get("verdict") == "wrong"
 
 
+def is_count(value):
+    return value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)
+
+
+def check_token_cost(cost):
+    """Return a message naming the problem with a token_cost value, or None when it is valid."""
+    if isinstance(cost, dict):
+        so = cost.get("second_opinion")
+        if so is not None and not (isinstance(so, dict) and is_text(so.get("who"))
+                                   and is_count(so.get("input_tokens")) and is_count(so.get("output_tokens"))):
+            return "token_cost.second_opinion needs who (text) and input_tokens and output_tokens (whole numbers or null)."
+        return None
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost < 0:
+        return "token_cost must be a number of zero or more, or an object."
+    return None
+
+
 def check_record(rec):
     """Return a message naming the first problem, or None when the record is valid."""
     if not isinstance(rec, dict):
@@ -189,6 +207,8 @@ def check_record(rec):
         if not (isinstance(s, dict) and all(is_text(s.get(k)) for k in ("path", "screen", "theme", "size"))
                 and isinstance(s.get("redacted"), bool)):
             return "screenshots[%d] needs path, screen, theme, size and a true/false redacted." % i
+        if s.get("review") not in REVIEWS | {None}:
+            return "screenshots[%d].review must be one of %s or left out." % (i, ", ".join(sorted(REVIEWS)))
     for i, l in enumerate(rec.get("lessons", [])):
         if not (isinstance(l, dict) and is_text(l.get("text")) and is_text(l.get("source"))
                 and l.get("scope") in ("project", "general")):
@@ -196,6 +216,8 @@ def check_record(rec):
     for key in ("skills", "integrations"):
         if key in rec and not isinstance(rec[key], dict):
             return "%s must be an object." % key
+    if "token_cost" in rec:
+        return check_token_cost(rec["token_cost"])
     return None
 
 
@@ -503,13 +525,31 @@ def cmd_pass(project, args):
     emit({"tree": tree, "findings_open": open_count, "path": marker})
 
 
+def cmd_outbound_shots(project, args):
+    """The only screenshots that may leave the run folder: reviewed as kept, and real files inside it.
+    The per-call cap of 8 is enforced by via_second_opinion.py."""
+    run_dir, record_path = resolve_run(project, args.run_dir)
+    shots = load_record(record_path).get("screenshots", [])
+    real_run = os.path.realpath(run_dir)
+    kept = []
+    for s in shots:
+        if s.get("review") != "kept":
+            continue
+        path = os.path.join(real_run, s["path"])  # an absolute path replaces the run folder, and is refused below
+        if os.path.islink(path) or not inside(path, real_run) or not os.path.isfile(path):
+            die("%s is not a regular file inside the run folder. Nothing was sent." % s["path"])
+        kept.append(os.path.realpath(path))  # one spelling, so a path like ./a.png still matches
+    emit({"shots": kept, "dropped": sum(1 for s in shots if s.get("review") == "dropped"),
+          "unreviewed": sum(1 for s in shots if s.get("review") is None)})
+
+
 def main():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--project")
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="command", required=True)
     sub.add_parser("init", parents=[common])
-    for name in ("merge", "pass"):
+    for name in ("merge", "pass", "outbound-shots"):
         sub.add_parser(name, parents=[common]).add_argument("run_dir")
     rej = sub.add_parser("reject", parents=[common])
     rej.add_argument("id")
@@ -518,7 +558,8 @@ def main():
     project = os.path.abspath(args.project or os.getcwd())
     if not os.path.isdir(project):
         die("%s is not a folder." % project)
-    {"init": cmd_init, "merge": cmd_merge, "reject": cmd_reject, "pass": cmd_pass}[args.command](project, args)
+    {"init": cmd_init, "merge": cmd_merge, "reject": cmd_reject, "pass": cmd_pass,
+     "outbound-shots": cmd_outbound_shots}[args.command](project, args)
     return 0
 
 

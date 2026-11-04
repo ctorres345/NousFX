@@ -39,7 +39,8 @@
           "screen": { "type": "string", "minLength": 1 },
           "theme": { "type": "string", "minLength": 1 },
           "size": { "type": "string", "minLength": 1 },
-          "redacted": { "type": "boolean" }
+          "redacted": { "type": "boolean", "description": "True when capture masked personal data in this shot." },
+          "review": { "enum": ["kept", "dropped"], "description": "Claude's verdict after looking at the shot. Only kept shots may leave the run folder (via_run.py outbound-shots)." }
         }
       }
     },
@@ -83,7 +84,20 @@
         }
       }
     },
-    "token_cost": { "type": ["number", "object"] },
+    "token_cost": {
+      "type": ["number", "object"],
+      "properties": {
+        "second_opinion": {
+          "type": "object",
+          "required": ["who", "input_tokens", "output_tokens"],
+          "properties": {
+            "who": { "type": "string", "minLength": 1 },
+            "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "output_tokens": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        }
+      }
+    },
     "merged_at": { "description": "Set by via_run.py merge. `pass` refuses a run without it.", "type": "string" }
   },
   "definitions": {

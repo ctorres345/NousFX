@@ -167,6 +167,11 @@ def main():
     if os.path.islink(path):
         print("Stopped: %s is a symlink. Nothing was written." % path, file=sys.stderr)
         return 1
+    claude = os.path.realpath(os.path.join(home, ".claude"))  # via_outbound.py refuses a config anywhere else
+    if os.path.commonpath([os.path.realpath(os.path.dirname(path)), claude]) != claude:
+        print("Stopped: the config must live inside %s, so the outbound checks can find it. Nothing was written."
+              % claude, file=sys.stderr)
+        return 1
 
     cfg, current = load_config(path)
     with open(TEMPLATE) as f:

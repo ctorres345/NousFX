@@ -9,6 +9,11 @@ Claude makes the design calls. `scripts/via_run.py` (stdlib Python) does the boo
 4. When the user rejects a finding: `via_run.py reject <id> --reason "<why>"`. It never returns as new.
 5. After the code is final: `via_run.py pass <run_dir>`. It records the pass for the current code state in the git dir (`via-check-ok`). Editing code afterwards makes the record stale.
 
+## Screenshots and what may leave the run folder
+- Each screenshot entry has `redacted` (true when capture masked it) and `review`. After you look at a shot, set `review` to `kept` or `dropped`. Drop any that still shows personal data, tokens, emails or account details. A shot with no `review` is treated as not cleared.
+- `via_run.py outbound-shots <run_dir>` prints the shots marked `kept` as absolute paths, and counts the dropped and unreviewed ones. `via_second_opinion.py` refuses any other file.
+- `token_cost` is a number, or an object. After a second opinion, set `token_cost.second_opinion` to `{"who": "argon", "input_tokens": n, "output_tokens": n}` from the wrapper's `usage` (use `null` when a count is unknown, and `"claude"` for the fallback reviewer).
+
 ## Rules
 - Second-opinion findings need a verdict, and `wrong` ones become `dismissed` (kept here, never ledgered). See `second-opinion.md`.
 - A finding's ID comes from its screen, rule and file. The line is not part of it. Keep `rule` a short, stable name (`contrast`, `touch-target`), or re-runs will see a new finding.

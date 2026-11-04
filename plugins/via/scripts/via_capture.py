@@ -2,30 +2,44 @@
 """via-capture: screenshots of web pages for a Via run, using headless Chrome or Chromium.
 
 Usage: via_capture.py --run-dir RUN_DIR --screen NAME=PAGE [--screen NAME=PAGE ...] [--project DIR]
+                      [--redact-selector CSS ...]
 
 PAGE is an .html, .htm or .svg file inside the project (not in a hidden folder), or an http(s) URL that
 answers with a page (a dev server). Each screen gets four shots in RUN_DIR: NAME-light-phone.png, NAME-dark-phone.png, NAME-light-desktop.png and NAME-dark-desktop.png.
 NAME is lowercase letters, digits and hyphens. RUN_DIR is a folder made by `via_run.py init`.
 Stdout is JSON: {"browser": ..., "screenshots": [...]}, with entries in the run record's shape.
 
+Masking: the browser never loads the page directly. Limit: a form field inside a web component's shadow DOM
+is not reached by the style, so it is not blurred, and neither is a frame that loads an absolute URL straight from the dev server.
+A shot is never written over an existing file: reviewed shots stay what they were when they were reviewed. A mask server on 127.0.0.1 serves project files (visible
+ones only) or relays your dev server, and adds a style that blurs inputs, textareas, email and phone links,
+[data-via-redact] and every --redact-selector. On a relayed page it also drops the Content-Security-Policy header, so the
+style can apply. Every shot is marked "redacted": true. The mask is a first layer: Claude still looks at each shot
+and sets its `review` (kept or dropped) before anything leaves the run folder.
+
 Browser: $VIA_CHROME if set (and then only that), else Google Chrome or Chromium on macOS, else
 google-chrome, chromium or chromium-browser on PATH.
 
 Exit 0 success, 1 invalid input, 3 no browser found (say that visual checks were skipped),
 4 a URL did not answer or the browser failed to write a shot. Shots land in RUN_DIR only when every one
-succeeded.
+succeeded. A browser that outlives VIA_SHOT_TIMEOUT seconds (default 60) is killed with its helper processes.
 """
 import argparse
 import http.client
+import http.server
 import json
+import mimetypes
 import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 
 RUN_AREA = os.path.join(".via", "runs")
@@ -39,6 +53,22 @@ MAC_BROWSERS = (
 )
 PATH_BROWSERS = ("google-chrome", "chromium", "chromium-browser")
 SHOT_TIMEOUT = 60
+UPSTREAM_TIMEOUT = 30
+BLUR_PX = 8
+# Form fields that carry what people type, minus the controls whose look is the design under review.
+MASKED = ("input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit])"
+          ":not([type=reset]):not([type=range]):not([type=color]):not([type=file])",
+          "textarea", "[type=email]", 'a[href^="mailto:"]', 'a[href^="tel:"]', "[data-via-redact]")
+# A selector may not hold anything that could close the style or start a new rule.
+# No slash either, so a selector cannot open a CSS comment.
+SELECTOR_RE = re.compile(r"^[A-Za-z0-9_\-\s.#\[\]=\"'*>+~,():^$|@%!]+$")
+META_REFRESH_URL_RE = re.compile(rb"<meta\b[^>]*http-equiv\s*=\s*[\"']?refresh[^>]*url\s*=", re.IGNORECASE)
+REFRESH_URL_RE = re.compile(r"^(.*?;\s*url\s*=\s*)(.*)$", re.IGNORECASE | re.DOTALL)
+META_CSP_RE = re.compile(rb"<meta\b[^>]*http-equiv\s*=\s*[\"']?content-security-policy[^>]*>", re.IGNORECASE)
+LOOPBACK = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
+              "transfer-encoding", "upgrade", "content-length", "content-encoding", "content-security-policy",
+              "content-security-policy-report-only"}
 PROBE_TIMEOUT = 10
 PAGE_SUFFIXES = (".html", ".htm", ".svg")
 
@@ -96,6 +126,193 @@ def problem_with(url):
         return "could not be reached (%s). Is the dev server running?" % type(e).__name__
 
 
+def mask_style(extra):
+    """One rule for the built-in selectors and one per extra selector: CSS drops a whole rule when any
+    selector in it is invalid, so a typo in one must not switch off the rest."""
+    rule = "%%s { filter: blur(%dpx) !important; }" % BLUR_PX
+    return "<style data-via-mask=\"\">%s</style>" % "\n".join(rule % s for s in (", ".join(MASKED),) + tuple(extra))
+
+
+def same_server(location, upstream):
+    """True when an absolute Location points at the dev server itself, under any loopback spelling."""
+    a, b = urllib.parse.urlsplit(location), urllib.parse.urlsplit(upstream)
+    if a.scheme != b.scheme or a.port != b.port:
+        return False
+    return a.hostname == b.hostname or (a.hostname in LOOPBACK and b.hostname in LOOPBACK)
+
+
+class Unmaskable(Exception):
+    pass
+
+
+def with_mask(body, content_type, style):
+    """The page bytes with the mask style added. Other files (scripts, images) pass through unchanged.
+    Raises Unmaskable for a page the mask cannot be placed in, so a shot of it is never kept."""
+    kind = content_type.split(";")[0].strip().lower() or "text/html"  # with no type, Chrome sniffs HTML
+    block = style.encode("utf-8")
+    if kind in ("image/svg+xml", "application/xhtml+xml"):  # XML: the style must stay inside the root element
+        end = b"</svg>" if kind == "image/svg+xml" else b"</html>"
+        at = body.lower().rfind(end)
+        if at < 0:
+            raise Unmaskable("a %s page has no closing %s tag, so the mask cannot be placed" % (kind, end.decode()))
+        return body[:at] + block + body[at:]
+    if kind == "text/html":
+        if META_REFRESH_URL_RE.search(body):  # a redirect by script-less markup would lead Chrome around the mask
+            raise Unmaskable("the page redirects with a meta refresh, so a shot of it would show another page")
+        body = META_CSP_RE.sub(b"", body)  # a meta CSP could forbid the inline style
+        # In the head, where a framework that rebuilds the body leaves it alone.
+        found = re.search(rb"</head\s*>", body, re.IGNORECASE) or re.search(rb"<body\b", body, re.IGNORECASE)
+        return body + block if not found else body[:found.start()] + block + body[found.start():]
+    return body
+
+
+class MaskHandler(http.server.BaseHTTPRequestHandler):
+    """Serves one origin to the browser. server.root is set for project files, server.upstream for a dev server."""
+
+    def log_message(self, *args):
+        pass
+
+    def reply(self, status, headers, body):
+        self.send_response(status)
+        for name, value in headers:
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def fail(self, message):
+        """A relay failure. It also marks the capture as failed, so no shot of an error page is kept."""
+        self.server.errors.append(message)
+        try:
+            self.text(502, message)
+        except OSError:
+            pass  # the browser has gone; the recorded error still stops the capture
+
+    def text(self, status, message):
+        self.reply(status, [("Content-Type", "text/plain")], message.encode())
+
+    def do_GET(self):
+        if self.headers.get("Host") != "127.0.0.1:%d" % self.server.server_address[1]:
+            return self.text(421, "wrong host")  # blocks DNS rebinding
+        try:
+            if self.server.upstream:
+                self.relay()
+            else:
+                self.serve_file()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:  # whatever else goes wrong must stop the capture, not leave Chrome an error page
+            self.fail("relay error (%s)" % type(e).__name__)
+
+    def serve_file(self):
+        parts = [p for p in urllib.parse.unquote(urllib.parse.urlsplit(self.path).path).split("/") if p]
+        root = self.server.root
+        path = os.path.join(root, *parts)
+        if (not parts or "\0" in path or any(p.startswith(".") or p in (".", "..") for p in parts)
+                or os.path.islink(path) or not os.path.isfile(path) or not inside(path, root)):
+            return self.text(404, "not found")
+        rel = os.path.relpath(real(path), root)
+        if any(p.startswith(".") for p in rel.split(os.sep)):
+            return self.text(404, "not found")
+        kind = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        with open(path, "rb") as f:
+            body = f.read()
+        try:
+            body = with_mask(body, kind, self.server.style)
+        except Unmaskable as e:
+            return self.fail(str(e))
+        self.reply(200, [("Content-Type", kind)], body)
+
+    def through_mask(self, value):
+        """A redirect target, rewritten to the mask server. A redirect must not lead the browser around the mask.
+        Browsers read a backslash as a slash, so the target is resolved first."""
+        try:
+            target = urllib.parse.urlsplit(urllib.parse.urljoin(self.server.upstream + self.path,
+                                                                value.replace("\\", "/")))
+            same = same_server(target.geturl(), self.server.upstream)
+        except ValueError:
+            same = False
+        if not same:
+            raise Unmaskable("redirect to another host")
+        return self.server.origin + (target.path or "/") + ("?" + target.query if target.query else "")
+
+    def relay(self):
+        sent = {"Accept-Encoding": "identity"}
+        for name in ("Accept", "Accept-Language", "Cookie", "Authorization", "User-Agent"):
+            if self.headers.get(name):
+                sent[name] = self.headers[name]
+        request = urllib.request.Request(self.server.upstream + self.path, headers=sent)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
+        try:
+            resp = opener.open(request, timeout=UPSTREAM_TIMEOUT)
+        except urllib.error.HTTPError as e:  # also how a redirect or a 404 arrives
+            resp = e
+        except (OSError, http.client.HTTPException):
+            return self.fail("the dev server did not answer")
+        with resp:
+            if resp.headers.get("Content-Encoding", "identity").lower() != "identity":
+                return self.fail("the dev server sent a compressed body")
+            body = resp.read()
+            status, kind = resp.status, resp.headers.get("Content-Type", "")
+            headers = []
+            for name, value in resp.headers.items():
+                if name.lower() in HOP_BY_HOP:
+                    continue
+                try:
+                    if name.lower() == "location":
+                        value = self.through_mask(value)
+                    elif name.lower() == "refresh":  # "0; url=..." redirects like Location does
+                        m = REFRESH_URL_RE.match(value)
+                        if m:
+                            value = m.group(1) + self.through_mask(m.group(2).strip())
+                except Unmaskable as e:
+                    return self.fail(str(e))
+                headers.append((name, value))
+        try:
+            body = with_mask(body, kind, self.server.style)
+        except Unmaskable as e:
+            return self.fail(str(e))
+        self.reply(status, headers, body)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # the redirect itself goes to the browser, through the mask
+
+
+def start_mask(style, root=None, upstream=None):
+    """A mask server on 127.0.0.1. Returns it with its origin, for example http://127.0.0.1:50321."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MaskHandler)
+    server.daemon_threads = True
+    server.style, server.root, server.upstream, server.errors = style, root, upstream, []
+    server.origin = "http://127.0.0.1:%d" % server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def masked_urls(screens, project, style):
+    """Maps each page URL to the mask server's URL for it. Returns (servers, mapping)."""
+    servers, by_origin, mapping = [], {}, {}
+    for _, url in screens:
+        if url in mapping:
+            continue
+        if url.startswith("file://"):
+            if "files" not in by_origin:
+                by_origin["files"] = start_mask(style, root=real(project))
+                servers.append(by_origin["files"])
+            rel = os.path.relpath(urllib.parse.unquote(urllib.parse.urlsplit(url).path), real(project))
+            mapping[url] = by_origin["files"].origin + "/" + urllib.parse.quote(rel.replace(os.sep, "/"))
+            continue
+        parts = urllib.parse.urlsplit(url)
+        upstream = "%s://%s" % (parts.scheme, parts.netloc)
+        if upstream not in by_origin:
+            by_origin[upstream] = start_mask(style, upstream=upstream)
+            servers.append(by_origin[upstream])
+        mapping[url] = by_origin[upstream].origin + (parts.path or "/") + ("?" + parts.query if parts.query else "")
+    return servers, mapping
+
+
 def find_browser():
     override = os.environ.get("VIA_CHROME")
     if override:  # an explicit choice is never replaced by a guess
@@ -110,6 +327,24 @@ def find_browser():
     return None
 
 
+def stop_group(proc):
+    """Kill the browser and every helper it started. They share a process group of their own."""
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def shot_timeout():
+    try:
+        return max(1, int(os.environ.get("VIA_SHOT_TIMEOUT", SHOT_TIMEOUT)))
+    except ValueError:
+        return SHOT_TIMEOUT
+
+
 def take(browser, profile, stage, shot):
     """Take one shot into the staging folder."""
     name, url = shot["path"], shot["url"]
@@ -119,11 +354,17 @@ def take(browser, profile, stage, shot):
            "--no-default-browser-check", "--user-data-dir=" + profile,
            "--blink-settings=preferredColorScheme=%d" % THEMES[shot["theme"]],
            "--window-size=%d,%d" % (width, height), "--screenshot=" + out, url]
+    proc = None
     try:
-        subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=SHOT_TIMEOUT)
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+        proc.wait(timeout=shot_timeout())
     except (OSError, subprocess.SubprocessError) as e:
         die("the browser failed on %s (%s). No screenshots were kept." % (name, type(e).__name__), 4)
+    finally:
+        if proc is not None:
+            stop_group(proc)  # helpers can outlive the browser, so the whole group goes either way
+            proc.wait()
     if not os.path.isfile(out) or os.path.getsize(out) == 0:
         die("the browser wrote nothing for %s. No screenshots were kept." % name, 4)
 
@@ -133,6 +374,7 @@ def main():
     ap.add_argument("--run-dir", required=True)
     ap.add_argument("--screen", action="append", default=[])
     ap.add_argument("--project")
+    ap.add_argument("--redact-selector", action="append", default=[], metavar="CSS")
     args = ap.parse_args()
     project = os.path.abspath(args.project or os.getcwd())
     if not os.path.isdir(project):
@@ -140,6 +382,10 @@ def main():
     run_dir = check_run_dir(project, args.run_dir)
     if not args.screen:
         die("pass at least one --screen name=page.")
+    for selector in args.redact_selector:
+        if not SELECTOR_RE.match(selector) or not selector.strip():
+            die("--redact-selector %r is not a plain CSS selector (no braces, semicolons, angle brackets or backslashes)."
+                % selector)
     screens = [parse_screen(project, s) for s in args.screen]
     if len({name for name, _ in screens}) != len(screens):
         die("each --screen name may be used once.")
@@ -147,8 +393,9 @@ def main():
               "url": url} for name, url in screens for size in SIZES for theme in THEMES]
     for shot in shots:
         dest = os.path.join(run_dir, shot["path"])
-        if os.path.islink(dest) or os.path.isdir(dest):
-            die("%s in the run folder is a symlink or a folder. Nothing was written." % shot["path"])
+        if os.path.lexists(dest):  # a shot Claude already reviewed must never be swapped for a new one
+            die("%s already exists in the run folder. Start a new run folder with `via_run.py init`. "
+                "Nothing was written." % shot["path"])
     browser = find_browser()
     if browser is None:
         die("no Chrome or Chromium found (set VIA_CHROME to its path). Visual checks were skipped.", 3)
@@ -158,16 +405,23 @@ def main():
             die("%s %s. No screenshots were taken." % (url, why), 4)
     work = tempfile.mkdtemp(prefix="via-capture-")  # holds the browser profile, so a running Chrome keeps out
     stage = tempfile.mkdtemp(prefix=".stage-", dir=run_dir)  # same filesystem, so os.replace is atomic
+    servers, urls = masked_urls(screens, project, mask_style(args.redact_selector))
     try:
         for shot in shots:
-            take(browser, os.path.join(work, "profile"), stage, shot)
+            take(browser, os.path.join(work, "profile"), stage, {**shot, "url": urls[shot["url"]]})
+            for server in servers:
+                if server.errors:
+                    die("%s (while shooting %s). No screenshots were kept." % (server.errors[0], shot["path"]), 4)
         for shot in shots:
             os.replace(os.path.join(stage, shot["path"]), os.path.join(run_dir, shot["path"]))
     finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
         shutil.rmtree(work, ignore_errors=True)  # a helper process may still hold files after a timeout
         shutil.rmtree(stage, ignore_errors=True)
     print(json.dumps({"browser": browser, "screenshots": [
-        {**{k: v for k, v in shot.items() if k != "url"}, "redacted": False} for shot in shots]}))
+        {**{k: v for k, v in shot.items() if k != "url"}, "redacted": True} for shot in shots]}))
     return 0
 
 
