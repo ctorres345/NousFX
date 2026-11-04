@@ -39,7 +39,7 @@ Re-installing after a merge, checking the gate and rolling back an install are i
 
 ### Install Via (early preview)
 
-Via is a plugin in this repo's marketplace. It is at version 0.3.0: `/via setup` and `/via audit` (web projects only) work so far, and the other modes say they are not built yet.
+Via is a plugin in this repo's marketplace. It is at version 0.4.0: `/via setup` and `/via audit` (web projects only) work so far, and the other modes say they are not built yet.
 
 ```bash
 claude plugin marketplace add ctorres345/NousFX
@@ -49,11 +49,11 @@ claude plugin marketplace add ctorres345/NousFX
 claude plugin install via@nousfx
 ```
 
-Then run `/reload-plugins` and `/via setup`. It checks which integrations you have (Gemini, Jira, Figma, Obsidian, simulators, a browser, design skills), says why each matters and links the fix. It saves the result to `~/.claude/via.json`, which holds statuses and paths only, never keys. Running it again changes nothing when nothing changed.
+Then run `/reload-plugins` and `/via setup`. It checks which integrations you have (Gemini, Jira, Figma, Obsidian, simulators, a browser, design skills), says why each matters and links the fix. It saves the result to `~/.claude/via.json`, which holds statuses and paths only, never keys. Running it again changes nothing when nothing changed. A project sends nothing out until you list it under `outbound_allowlist` in that file, as `"owner/repo": {"destinations": ["gemini", "jira", "figma", "artifacts", "obsidian"]}` (list only the destinations you want). Unlisted projects get local-only output.
 
 For a web project, `/via audit` (or `/via audit <screen>`) takes light and dark screenshots at phone and desktop width with headless Chrome or Chromium, runs the web design skills, gets a second opinion and saves a findings report in `.via/runs/`, which git ignores.
 
-A plugin can ship hooks that run code on your machine. Via 0.3.0 has none, but read `plugins/via/` before you install a later version.
+A plugin can ship hooks that run code on your machine. Via 0.4.0 has none, but read `plugins/via/` before you install a later version.
 
 ## How to use it day to day
 
@@ -106,7 +106,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/agents/reviewer-deep.md` | Fable second-opinion reviewer for large or risky changes, only after asking |
 | `claude/agents/architect.md` | Fable architecture and performance consultant, read-only, only after asking |
 | `claude/skills/review-loop/` | `/review-loop`: review-fix loop, max 5 rounds, never commits |
-| `claude/skills/ui-review/` | `/ui-review`: platform-aware UI/UX review. Includes `scripts/argon-review.sh` (Gemini second opinion with safety stops; private repos must be listed in `argon-repos.txt`) and a Flutter screenshot test template |
+| `claude/skills/ui-review/` | `/ui-review`: platform-aware UI/UX review. Includes `scripts/argon-review.sh` (Gemini second opinion with safety stops; the project must be on the outbound allow-list in `~/.claude/via.json`) and a Flutter screenshot test template |
 | `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/common.sh` holds the safety checks both Gemini scripts share |
 | `claude/skills/handoff/` | `/handoff`: session handoff note |
 | `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list. Applies only approved fixes |
@@ -158,7 +158,7 @@ NousFX gives agents real permissions on your machine, so it is built around a fe
 | Risk | How NousFX handles it |
 |---|---|
 | Prompt injection from tickets, PRs, web pages, second-opinion output | Treated as data, never instructions. Work comes only from your tracker. Gemini output is verified finding by finding |
-| Code or screenshots leaving your machine | Gemini scripts refuse private repos not listed in `argon-repos.txt`. Claude leaves out screenshots that show personal data, tokens or account details. Code goes to Gemini only through those scripts |
+| Code or screenshots leaving your machine | Projects not on the `outbound_allowlist` in `~/.claude/via.json` get local-only output for Gemini, Jira, Figma, Artifacts and Obsidian. Via blurs personal data when it captures web pages, then Claude looks at each screenshot and drops any that still shows personal data, tokens or account details. Code goes to Gemini only through those scripts |
 | Secrets | Keys live in the OS keychain, never in this repo or in config files. Project setup includes a secret check |
 | Destructive git | Agents never commit, push or stash on their own. A PR needs a recorded review |
 | Premium spend | Fable agents run only after you say yes |
