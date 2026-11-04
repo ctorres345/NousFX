@@ -38,6 +38,7 @@ PASS_FILE = "via-check-ok"
 SEVERITIES = {"high", "med", "low"}
 VERDICTS = {"real", "wrong", "unsure"}
 ROUTES = {"fix-now", "ticket"}
+SECOND_OPINION = "second-opinion"  # source prefix: second-opinion:claude, later second-opinion:argon
 MODES = {"check", "audit"}
 STATUSES = {"new", "open", "fixed", "rejected"}
 # A new finding may take over a known sibling ID (same screen, rule and file) only if it sits this close.
@@ -136,6 +137,15 @@ def is_text(value):
     return isinstance(value, str) and value.strip() != ""
 
 
+def is_second_opinion(finding):
+    return finding["source"].strip().casefold().startswith(SECOND_OPINION)
+
+
+def is_dismissed(finding):
+    """A second-opinion finding that checking against code and screenshots showed to be wrong."""
+    return is_second_opinion(finding) and finding.get("verdict") == "wrong"
+
+
 def check_record(rec):
     """Return a message naming the first problem, or None when the record is valid."""
     if not isinstance(rec, dict):
@@ -169,6 +179,8 @@ def check_record(rec):
             return "%s.location.line must be a whole number." % where
         if f.get("verdict") not in VERDICTS | {None}:
             return "%s.verdict must be one of %s or null." % (where, ", ".join(sorted(VERDICTS)))
+        if is_second_opinion(f) and f.get("verdict") is None:
+            return "%s comes from a second opinion, so it needs a verdict: %s." % (where, ", ".join(sorted(VERDICTS)))
         if f.get("route") not in ROUTES | {None}:
             return "%s.route must be one of %s or null." % (where, ", ".join(sorted(ROUTES)))
         if f.get("ticket") is not None and not is_text(f["ticket"]):
@@ -257,12 +269,13 @@ def covers(scope, screen):
     return scope == "all" or slug(screen) in {slug(x) for x in scope}
 
 
-def merge_findings(ledger, rec, run_name):
-    """Update the ledger from a run and set each run finding's status. Returns the counts."""
+def merge_findings(ledger, findings, scope, run_name, held=()):
+    """Update the ledger from a run's findings and set each one's status. Returns the counts.
+    `held` are ledger IDs the run saw but did not report (dismissed), so they are not marked fixed."""
     counts = {"new": 0, "open": 0, "fixed": 0, "rejected": 0, "regressed": 0}
-    seen = set()
+    seen = set(held)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
-    for f in rec["findings"]:
+    for f in findings:
         fid, entry = f["id"], ledger.get(f["id"])
         seen.add(fid)
         if entry is None:
@@ -284,7 +297,7 @@ def merge_findings(ledger, rec, run_name):
         if f.get("ticket"):
             entry["ticket"] = f["ticket"]
     for fid, entry in ledger.items():
-        if fid not in seen and entry["status"] in ("new", "open") and covers(rec["scope"], entry.get("screen", "")):
+        if fid not in seen and entry["status"] in ("new", "open") and covers(scope, entry.get("screen", "")):
             entry["status"] = "fixed"
             entry["fixed_in"] = run_name
             counts["fixed"] += 1
@@ -445,12 +458,20 @@ def cmd_merge(project, args):
     run_dir, record_path = resolve_run(project, args.run_dir)
     rec = load_record(record_path)
     path, text, ledger, start, end = open_ledger(project)
-    assign_ids(rec["findings"], ledger)
-    counts = merge_findings(ledger, rec, os.path.basename(run_dir))
+    dismissed = [f for f in rec["findings"] if is_dismissed(f)]  # kept in the record as evidence, never ledgered
+    live = [f for f in rec["findings"] if not is_dismissed(f)]
+    assign_ids(live, ledger)
+    unclaimed = {i: e for i, e in ledger.items() if i not in {f["id"] for f in live}}
+    assign_ids(dismissed, unclaimed)  # a dismissed finding may stand for an entry no live finding claimed
+    held = {f["id"] for f in dismissed if f["id"] in unclaimed}
+    for f in dismissed:
+        del f["id"]
+        f["status"] = "dismissed"
+    counts = merge_findings(ledger, live, rec["scope"], os.path.basename(run_dir), held)
     rec["merged_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     save_ledger(path, text, ledger, start, end)
     write_atomic(record_path, json.dumps(rec, indent=2, ensure_ascii=False) + "\n")
-    emit({**counts, "ledger": path})
+    emit({**counts, "dismissed": len(dismissed), "ledger": path})
 
 
 def cmd_reject(project, args):
@@ -473,7 +494,7 @@ def cmd_pass(project, args):
     if not rec.get("merged_at") or any("status" not in f for f in rec["findings"]):
         die("this run was not merged yet. Run `merge` first. Nothing was recorded.")
     ledger = open_ledger(project)[2]  # a finding rejected after the merge no longer counts
-    open_count = sum(1 for f in rec["findings"] if f["severity"] in ("high", "med")
+    open_count = sum(1 for f in rec["findings"] if f["status"] != "dismissed" and f["severity"] in ("high", "med")
                      and ledger.get(f["id"], f).get("status") in ("new", "open") and f.get("route") != "ticket")
     tree = worktree_tree(project)
     marker = os.path.abspath(os.path.join(project, git(["rev-parse", "--git-path", PASS_FILE], project)))

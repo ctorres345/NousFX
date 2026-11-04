@@ -39,7 +39,7 @@ Re-installing after a merge, checking the gate and rolling back an install are i
 
 ### Install Via (early preview)
 
-Via is a plugin in this repo's marketplace. It is at version 0.2.0: only `/via setup` works so far, and the other modes say they are not built yet.
+Via is a plugin in this repo's marketplace. It is at version 0.3.0: `/via setup` and `/via audit` (web projects only) work so far, and the other modes say they are not built yet.
 
 ```bash
 claude plugin marketplace add ctorres345/NousFX
@@ -51,7 +51,9 @@ claude plugin install via@nousfx
 
 Then run `/reload-plugins` and `/via setup`. It checks which integrations you have (Gemini, Jira, Figma, Obsidian, simulators, a browser, design skills), says why each matters and links the fix. It saves the result to `~/.claude/via.json`, which holds statuses and paths only, never keys. Running it again changes nothing when nothing changed.
 
-A plugin can ship hooks that run code on your machine. Via 0.2.0 has none, but read `plugins/via/` before you install a later version.
+For a web project, `/via audit` (or `/via audit <screen>`) takes light and dark screenshots at phone and desktop width with headless Chrome or Chromium, runs the web design skills, gets a second opinion and saves a findings report in `.via/runs/`, which git ignores.
+
+A plugin can ship hooks that run code on your machine. Via 0.3.0 has none, but read `plugins/via/` before you install a later version.
 
 ## How to use it day to day
 
