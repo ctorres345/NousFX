@@ -122,6 +122,7 @@ harness/AGENTS.md + agy.overlay.md + local.md + local.agy.md
 | `.githooks/pre-push` | The advisory pre-push gate (`claude/githooks/pre-push`) with a generator line. Hand edits are drift. |
 | `.agents/skills` | A link to `../.claude/skills`, only when the repo has that folder and nothing at the link path. |
 | `.mcp.json`, `.agents/plugins/nousfx/` | MCP files from `.nousfx/mcp.toml` (see MCP). |
+| `.nousfx/project.toml` | Never written. Sync prints a note when it has no `[check] command`, because the review gate cannot record a review without one (see `docs/review-gate.md`). |
 
 - A file I wrote by hand is left alone. A `CLAUDE.md` without the import, or a `.githooks/pre-push` that is not generated, is shown as a diff with the line to confirm it: `--yes-replace CLAUDE.md` adds the import line at the top and keeps the rest, `--yes-replace .githooks/pre-push` replaces the hook. The run goes on with everything else, and `--check` does not count these as drift.
 - `--check` exits 1 for a missing or hand-edited generated file, a missing skills link, or a hook without the executable bit. `--dry-run` prints diffs and writes nothing. `--restore` removes what a run created and puts back what it changed.
