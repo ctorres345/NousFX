@@ -20,9 +20,10 @@ import subprocess
 import sys
 import tempfile
 
-import via_home
-
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)  # run under `python3 -I`, which adds no script folder to sys.path
+import via_home  # noqa: E402
+
 TEMPLATE = os.path.join(HERE, "..", "assets", "via.example.json")
 
 # Same pattern the gemini-review scripts use to stop on a secret.

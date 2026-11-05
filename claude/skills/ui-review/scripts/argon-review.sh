@@ -51,14 +51,14 @@ go_to_root
 outbound="$self_dir/../../../../plugins/via/scripts/via_outbound.py"
 [ -f "$outbound" ] || { echo "Stopped: via_outbound.py not found (run this from a NousFX checkout). Nothing was sent." >&2; exit 3; }
 rc=0
-python3 -B "$outbound" check --dest gemini --project "$PWD" >/dev/null 2>&1 || rc=$?
+python3 -I -B "$outbound" check --dest gemini --project "$PWD" >/dev/null 2>&1 || rc=$?
 case "$rc" in
   0) ;;
   20) echo "Stopped: this project is not on the outbound allow-list for gemini in ~/.config/nousfx/via.json. Nothing was sent." >&2; exit 4 ;;
   *) echo "Stopped: could not read the outbound allow-list (via_outbound.py exit $rc). Nothing was sent." >&2; exit 3 ;;
 esac
 paths=()
-while IFS= read -r -d '' listed; do paths+=("$listed"); done < <(python3 -B "$outbound" paths --dest gemini --project "$PWD")
+while IFS= read -r -d '' listed; do paths+=("$listed"); done < <(python3 -I -B "$outbound" paths --dest gemini --project "$PWD")
 [ "${#paths[@]}" -ge 1 ] || { echo "Stopped: the allow-list entry names no gemini_code_paths. Nothing was sent." >&2; exit 4; }
 
 if [ -z "$range" ]; then

@@ -61,7 +61,7 @@ class ArgonReviewTest(unittest.TestCase):
             json.dump({"version": 1, "outbound_allowlist": allowlist}, f)
 
     def run_script(self, script=SCRIPT):
-        env = {"PATH": "%s:/usr/bin:/bin" % os.path.dirname(sys.executable), **th.env(self.home)}
+        env = {"PATH": "%s:%s:/usr/bin:/bin" % (th.bin_dir(self.home), os.path.dirname(sys.executable)), **th.env(self.home)}
         return subprocess.run(["bash", script, "--shot", self.shot, "--range", "HEAD", "--brief", "Home screen."],
                               cwd=self.repo, capture_output=True, text=True, env=env)
 

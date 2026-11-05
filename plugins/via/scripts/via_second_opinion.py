@@ -76,7 +76,7 @@ def parse(argv):
 
 def helper(script, *args):
     try:
-        return subprocess.run([sys.executable, "-B", os.path.join(HERE, script), *args],
+        return subprocess.run([sys.executable, "-I", "-B", os.path.join(HERE, script), *args],
                               capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         die("%s did not answer." % script)

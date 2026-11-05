@@ -86,7 +86,7 @@ class ViaSecondOpinionTest(unittest.TestCase):
             args += ["--shot", s]
         if brief is not None:
             args += ["--brief", brief]
-        return subprocess.run([sys.executable, "-B", SCRIPT, *args], capture_output=True, text=True,
+        return subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, *args], capture_output=True, text=True,
                               cwd=self.elsewhere, env={"PATH": "/usr/bin:/bin", **th.env(self.home)})
 
     def logged(self, name):

@@ -35,7 +35,7 @@ class ViaOutboundTest(unittest.TestCase):
         return {"PATH": os.environ["PATH"], **th.env(self.tmp, **extra)}
 
     def run_raw(self, *args, env=None):
-        cmd = [sys.executable, "-B", SCRIPT, *args]
+        cmd = [th.python(self.tmp), "-I", "-B", SCRIPT, *args]
         return subprocess.run(cmd, capture_output=True, text=True, env=env or self.env())
 
     def tempdir(self):
@@ -55,7 +55,7 @@ class ViaOutboundTest(unittest.TestCase):
             json.dump({"version": 1, "outbound_allowlist": allowlist}, f)
 
     def run_cli(self, *args, config=True):
-        cmd = [sys.executable, "-B", SCRIPT, *args, "--project", self.project]
+        cmd = [th.python(self.tmp), "-I", "-B", SCRIPT, *args, "--project", self.project]
         if config:
             cmd += ["--config", self.config]
         return subprocess.run(cmd, capture_output=True, text=True,
