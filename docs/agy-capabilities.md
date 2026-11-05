@@ -8,7 +8,7 @@ Sources: agy's built-in docs in `~/.gemini/antigravity-cli/builtin/skills/agy-cu
 
 | Area | Claude Code | agy | Evidence |
 |---|---|---|---|
-| Global rules | `~/.claude/CLAUDE.md` | `~/.gemini/config/rules/AGENTS.md` (also `GEMINI.md` or `AGENTS.md` in any folder up to the repo root) | **ran**: agy quoted the first heading of my global file |
+| Global rules | `~/.claude/CLAUDE.md` | `~/.gemini/config/rules/AGENTS.md` (also `GEMINI.md` or `AGENTS.md` in any folder up to the repo root) | **ran** for the global file (agy quoted its first heading); the `GEMINI.md`/`AGENTS.md` walk-up is **docs** |
 | Skills folder | `~/.claude/skills/*` | **not** `~/.agents/skills`. Either declared in `skills.json`, or placed in `~/.gemini/config/skills/<name>/` (see below) | **ran**: 3 skills in `~/.agents/skills`, agy saw none. The `config/skills/` folder is **docs** only |
 | Follows symlinked skills | yes | yes | **ran** |
 | Claude-only skill fields (`disable-model-invocation`, `argument-hint`) | used | accepted, no warning, skill loads | **ran** |
