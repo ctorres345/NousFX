@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 
 MANIFEST = "skills-manifest.json"
@@ -43,7 +44,14 @@ def _read(path):
 
 
 def _is_link(p):
-    return os.path.islink(p) or (hasattr(os.path, "isjunction") and os.path.isjunction(p))
+    if os.path.islink(p):
+        return True
+    if hasattr(os.path, "isjunction"):
+        return os.path.isjunction(p)
+    try:  # Python older than 3.12: a junction is a mount-point reparse tag (not OneDrive or dedup ones)
+        return os.lstat(p).st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except (OSError, AttributeError):
+        return False
 
 
 def _remove_link(p):
@@ -173,10 +181,10 @@ def plan(repo, home, state, yes_replace=(), clean_backups=False):
     return p
 
 
-def apply(p, root, win):
-    """Make the planned changes. Everything that is replaced or removed is journaled in root."""
+def apply(p, root, win, state):
+    """Make the planned changes. Everything that is replaced or removed is journaled in root.
+    The manifest lives in state."""
     os.makedirs(os.path.join(root, "skills"), exist_ok=True)
-    state = os.path.dirname(os.path.dirname(root))
     journal = {"manifest_before": _read(os.path.join(state, MANIFEST)), "ops": []}
     links = dict(p.manifest)
     n = 0
@@ -188,48 +196,54 @@ def apply(p, root, win):
         shutil.move(path, dest)
         return str(n)
 
-    for old in (p.old_backups if p.clean_backups else []):
-        journal["ops"].append({"op": "moved", "path": old, "saved": save(old)})
-    for a in p.actions:
-        op, path = a["op"], a["path"]
-        entry = {"op": op, "path": path}
-        if op == "forget":
-            links.pop(path, None)
-            continue
-        if op in ("relink", "unlink") or (op == "replace" and _is_link(path)):
-            entry["old_target"] = _readlink(path)
-            _remove_link(path)
-        elif op == "replace":
-            entry["saved"] = save(path)
-        journal["ops"].append(entry)
-        if op == "unlink":
-            links.pop(path, None)
-        else:
-            make_link(path, a["target"], win)
-            links[path] = a["target"]
-    _write(os.path.join(root, "skills.json"), json.dumps(journal, indent=2))
-    _write(os.path.join(state, MANIFEST), json.dumps({"links": links}, indent=2, sort_keys=True) + "\n")
+    try:
+        for old in (p.old_backups if p.clean_backups else []):
+            journal["ops"].append({"op": "moved", "path": old, "saved": save(old)})
+        for a in p.actions:
+            op, path = a["op"], a["path"]
+            entry = {"op": op, "path": path}
+            if op == "forget":
+                links.pop(path, None)
+                continue
+            if op in ("relink", "unlink") or (op == "replace" and _is_link(path)):
+                entry["old_target"] = _readlink(path)
+                _remove_link(path)
+            elif op == "replace":
+                entry["saved"] = save(path)
+            journal["ops"].append(entry)  # journaled before the link is made, so a failure can be undone
+            if op == "unlink":
+                links.pop(path, None)
+            else:
+                make_link(path, a["target"], win)
+                links[path] = a["target"]
+    finally:  # even when an op fails halfway, what already moved must be restorable and owned links listed
+        _write(os.path.join(root, "skills.json"), json.dumps(journal, indent=2))
+        _write(os.path.join(state, MANIFEST), json.dumps({"links": links}, indent=2, sort_keys=True) + "\n")
 
 
-def undo(root):
+def undo(root, state):
     """Reverse apply() from the journal in a backup root (a root without one is skipped)."""
     text = _read(os.path.join(root, "skills.json"))
     if text is None:
         return
     journal = json.loads(text)
+    def put_back(saved, path):
+        src = os.path.join(root, "skills", saved)
+        if os.path.lexists(src):  # a restore that stopped halfway can be run again: done ops are skipped
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            shutil.move(src, path)
+
     for e in reversed(journal["ops"]):
         op, path = e["op"], e["path"]
         if op == "moved":
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            shutil.move(os.path.join(root, "skills", e["saved"]), path)
+            put_back(e["saved"], path)
             continue
         if op in ("create", "relink", "replace") and _is_link(path):
             _remove_link(path)
         if "saved" in e:
-            shutil.move(os.path.join(root, "skills", e["saved"]), path)
-        elif e.get("old_target"):
-            os.symlink(e["old_target"], path, target_is_directory=True)
-    state = os.path.dirname(os.path.dirname(root))
+            put_back(e["saved"], path)
+        elif e.get("old_target") and not os.path.lexists(path):
+            make_link(path, e["old_target"], os.name == "nt")  # same junction fallback as apply()
     before = journal["manifest_before"]
     if before is None:
         if os.path.exists(os.path.join(state, MANIFEST)):

@@ -132,7 +132,7 @@ def interpreter(win):
 def merge_settings(current, gate_path, win):
     cfg = json.loads(current) if current else {}
     hook = {"type": "command", "timeout": 30,
-            "command": f'{interpreter(win)} -B "{gate_path}"'}
+            "command": f'{interpreter(win)} -I -B "{gate_path}"'}  # -I: PYTHONPATH must not shadow stdlib in the gate
     if win:
         hook["shell"] = "powershell"
     pre = cfg.setdefault("hooks", {}).setdefault("PreToolUse", [])
@@ -160,6 +160,11 @@ def plan(repo, home, state, platform):
         wanted[settings] = merge_settings(read_or_none(settings), gate_cmd, win)
     except ValueError as e:
         raise SyncError(f"{settings} is not valid JSON ({e}); fix it first", 2)
+    for path in wanted:  # a symlinked target or folder would be replaced or written through: refuse, never guess
+        for p in {path, os.path.dirname(path)} - {claude}:
+            if os.path.islink(p):
+                raise SyncError(f"{p} is a symlink. Sync would replace or write through it; "
+                                f"make it a regular file or folder first, nothing was changed.", 2)
     return wanted
 
 
@@ -222,7 +227,11 @@ def restore(state):
         else:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             shutil.copy2(os.path.join(root, saved), path)
-    nousfx_skills.undo(root)
+    try:
+        nousfx_skills.undo(root, state)
+    except (OSError, RuntimeError) as e:
+        raise SyncError(f"restoring the skills failed ({e}). Fix that and run --restore again; "
+                        f"finished steps are skipped.")
     os.rename(root, root + ".restored")
     print(f"restored {len(manifest)} file(s) from {root}")
 
@@ -236,7 +245,7 @@ def self_test(hook_path):
         if init.returncode != 0:
             raise SyncError("self-test could not create a temp git repo")
         def run(command):
-            return subprocess.run([sys.executable, "-B", hook_path, "check", "--cwd", d, "--command", command],
+            return subprocess.run([sys.executable, "-I", "-B", hook_path, "check", "--cwd", d, "--command", command],
                                   capture_output=True, text=True, timeout=60)
         blocked, allowed = run("gh pr create"), run("git status")
     if blocked.returncode != 2 or allowed.returncode != 0:
@@ -297,7 +306,10 @@ def main(argv=None):
             print("nothing to change")
             return 0
         root = backup(state, list(todo))
-        nousfx_skills.apply(sk, root, is_windows(args.platform))
+        try:
+            nousfx_skills.apply(sk, root, is_windows(args.platform), state)
+        except (OSError, RuntimeError) as e:
+            raise SyncError(f"skills step failed ({e}). Run --restore to put the previous files back.")
         for line in sk.lines():
             if "collision" not in line:
                 print(line)

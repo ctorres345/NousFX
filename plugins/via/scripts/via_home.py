@@ -104,15 +104,22 @@ def migrate():
     validate(old, legacy_root())
     with open(old) as f:
         text = f.read()
-    folder = os.path.dirname(new)
-    os.makedirs(folder, mode=0o700, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".via-")
+    os.makedirs(os.path.dirname(new), mode=0o700, exist_ok=True)
+    write_atomic(new, text)
+    return "migrated"
+
+
+def write_atomic(path, text):
+    """Write text to path through a private temp file in the same folder, then rename it into place."""
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".via-")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
-        os.replace(tmp, new)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
-    return "migrated"

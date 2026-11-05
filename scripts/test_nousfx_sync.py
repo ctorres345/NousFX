@@ -90,10 +90,35 @@ class FirstRun(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.snapshot(), before)
 
-    def test_posix_hook_command_skips_bytecode(self):
+    def test_posix_hook_command_is_isolated_and_skips_bytecode(self):
         self.sync()
         hook = json.loads(read(self.settings))["hooks"]["PreToolUse"][0]["hooks"][0]
-        self.assertEqual(hook["command"], f'python3 -B "{self.hook}"')
+        self.assertEqual(hook["command"], f'python3 -I -B "{self.hook}"')
+
+    def test_shadowed_stdlib_cannot_open_the_gate(self):
+        """The installed command ignores PYTHONPATH: a json.py that exits 0 must not allow a PR create."""
+        self.sync()
+        shadow = os.path.join(self.tmp, "shadow")
+        write(os.path.join(shadow, "json.py"), "import sys\nsys.exit(0)\n")
+        repo = os.path.join(self.tmp, "wrongbranch")
+        subprocess.run(["git", "init", "-q", "-b", "not-allowed/x", repo], check=True)
+        r = subprocess.run([sys.executable, "-I", "-B", self.hook, "check", "--cwd", repo,
+                            "--command", "gh pr create"],
+                           capture_output=True, text=True, env={**os.environ, "PYTHONPATH": shadow})
+        self.assertEqual(r.returncode, 2, r.stderr)
+
+    def test_symlinked_target_is_refused_and_nothing_changes(self):
+        real = os.path.join(self.tmp, "dotfiles", "CLAUDE.md")
+        write(real, "mine\n")
+        os.makedirs(os.path.dirname(self.rules))
+        os.symlink(real, self.rules)
+        before = self.snapshot()
+        r = self.sync()
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("symlink", r.stderr)
+        self.assertEqual(read(real), "mine\n")
+        self.assertTrue(os.path.islink(self.rules))
+        self.assertEqual(self.snapshot(), before)
 
     def test_existing_settings_are_kept_and_hook_not_duplicated(self):
         write(self.settings, json.dumps({"model": "x", "hooks": {"PreToolUse": [
@@ -115,7 +140,7 @@ class FirstRun(Base):
     def test_windows_hook_command(self):
         self.sync("--platform", "windows")
         hook = json.loads(read(self.settings))["hooks"]["PreToolUse"][0]["hooks"][0]
-        self.assertTrue(hook["command"].startswith('python -B "'))
+        self.assertTrue(hook["command"].startswith('python -I -B "'))
         self.assertNotIn("\\", hook["command"])
         self.assertEqual(hook["shell"], "powershell")
 

@@ -205,7 +205,7 @@ def check_repo(cwd, tree=None, branch=None):
             ok = marker["tree"]
         except (OSError, KeyError, ValueError):
             ok = None
-        if ok and ok in ({tree} if tree else {worktree_tree(cwd), head_tree(cwd)}):
+        if ok and (ok == tree if tree else covers(cwd, ok)):
             if marker.get("skipped"):
                 return 0
             count = marker.get("findings_open")
@@ -219,6 +219,12 @@ def check_repo(cwd, tree=None, branch=None):
     except Exception as e:  # this is a create, so an unverifiable repo must not let it through
         print(ERROR_BLOCK.format(error=e, script=script), file=sys.stderr)
         return 2
+
+
+def covers(cwd, tree):
+    """True when tree is HEAD's tree or the working tree. Both are always computed on purpose: a git
+    failure on either one must block, so no short-circuit when HEAD already matches."""
+    return tree in {worktree_tree(cwd), head_tree(cwd)}
 
 
 def option(argv, name):
@@ -264,7 +270,7 @@ def attest(cwd):
         with open(git_path("claude-review-ok", cwd), encoding="utf-8") as f:
             marker = json.load(f)
         tree = marker["tree"]
-        if tree not in {worktree_tree(cwd), head_tree(cwd)}:
+        if not covers(cwd, tree):
             raise ValueError("the review mark is for other code")
         skipped = " ".join(str(marker.get("skipped") or "").split())
         if not skipped and marker.get("findings_open") != 0:

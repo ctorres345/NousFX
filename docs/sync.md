@@ -29,7 +29,8 @@ harness/overlays/claude.overlay.md Claude only: Skill tool, goal runs, subagent 
 
 - The home dir comes from the user record, never the `HOME` variable.
 - The generated header holds a short hash of the sources that made the file (rules: neutral file, overlay, local file; agents: the agent file and its role entry in `models.toml`), never the repo commit. `--check` flags a real source change or a hand edit, not every commit.
-- The installed hook runs `python3 -B "<gate>"` (`python -B` on Windows), so the gate leaves no bytecode behind.
+- The installed hook runs `python3 -I -B "<gate>"` (`python -I -B` on Windows). `-B` leaves no bytecode behind. `-I` ignores `PYTHONPATH` and user site, so a file named like a standard module cannot make the gate allow a PR.
+- Sync refuses a symlinked target file or folder under `~/.claude` instead of replacing it or writing through it. Nothing is changed when it refuses.
 - A backup goes to `<state home>/backups/<stamp>/` before every write. A run with nothing to change writes and backs up nothing.
 - A secret scan runs over the generated rules and the hook files. A hit fails the run before anything is written.
 - After writing, the installed gate runs twice: a PR create on a wrong branch must block, a harmless command must pass. If not, the run fails and `--restore` undoes it.

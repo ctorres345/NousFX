@@ -129,6 +129,23 @@ class PrePush(Base):
         self.mark("--findings", "0")
         self.assertEqual(self.run_hook(hook), ALLOWED)
 
+    def test_home_lookup_ignores_a_hostile_pythonpath(self):
+        """A sitecustomize on PYTHONPATH that fakes the user record must not choose which gate runs."""
+        hook = self.install()
+        fake_home = os.path.join(self.tmp, "fake-home")
+        os.makedirs(os.path.join(fake_home, ".claude", "hooks"))
+        ran = os.path.join(self.tmp, "fake-gate-ran")
+        with open(os.path.join(fake_home, ".claude", "hooks", "review-gate.py"), "w") as f:
+            f.write("import sys\nopen(%r, 'w').close()\nsys.exit(0)\n" % ran)  # a permissive gate that leaves a trace
+        shadow = os.path.join(self.tmp, "shadow")
+        os.makedirs(shadow)
+        with open(os.path.join(shadow, "sitecustomize.py"), "w") as f:  # runs at startup, unless -I
+            f.write("import pwd\n\nclass R:\n    pw_dir = %r\n\npwd.getpwuid = lambda uid: R()\n" % fake_home)
+        env = {k: v for k, v in os.environ.items() if k != "REVIEW_GATE_DIR"}
+        env.update({"GIT_DIR": os.path.join(self.repo, ".git"), "PYTHONPATH": shadow})
+        self.run_hook(hook, env=env)  # the exit code depends on the gate installed in the real home; only the fake one matters
+        self.assertFalse(os.path.exists(ran), "the pre-push hook ran a gate chosen through PYTHONPATH")
+
     def test_ignores_gate_copy_inside_the_repo(self):
         hook = self.install()
         inside = os.path.join(self.repo, "claude", "hooks")

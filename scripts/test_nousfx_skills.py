@@ -155,6 +155,32 @@ class Collisions(SkillsBase):
         with open(os.path.join(mine, "SKILL.md")) as f:
             self.assertEqual(f.read(), "# someone else's\n")
 
+    def test_failure_halfway_is_journaled_and_restore_puts_the_folder_back(self):
+        mine = self.stash("alpha")
+        r = subprocess.run([sys.executable, "-B", SYNC, "--home", self.home, "--state-home", self.state,
+                            "--repo", self.repo, "--yes-replace", "alpha"],
+                           capture_output=True, text=True, cwd=self.tmp,
+                           env={**os.environ, "NOUSFX_NO_SYMLINK": "1"})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("--restore", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(mine, "SKILL.md")))  # moved into the backup
+        self.run_ok("--restore")
+        with open(os.path.join(mine, "SKILL.md")) as f:
+            self.assertEqual(f.read(), "# someone else's\n")
+
+    def test_restore_can_be_run_again_after_a_partial_restore(self):
+        mine = self.stash("alpha")
+        self.run_ok("--yes-replace", "alpha")
+        saved = [os.path.join(b, f) for b, ds, _ in os.walk(os.path.join(self.state, "backups"))
+                 for f in ds if os.path.basename(b) == "skills" and f.isdigit()]
+        self.assertEqual(len(saved), 1)
+        os.remove(mine)                    # as if an earlier restore had got this far
+        shutil.move(saved[0], mine)
+        self.run_ok("--restore")           # must skip the finished step, not crash on the missing source
+        with open(os.path.join(mine, "SKILL.md")) as f:
+            self.assertEqual(f.read(), "# someone else's\n")
+
     def test_confirmation_only_for_the_named_skill(self):
         a, b = self.stash("alpha"), self.stash("beta")
         self.run_ok("--yes-replace", "alpha")

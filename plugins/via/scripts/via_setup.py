@@ -136,19 +136,7 @@ def load_config(path):
     return cfg, raw
 
 
-def write_atomic(path, text):
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".via-")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+write_atomic = via_home.write_atomic
 
 
 def main():

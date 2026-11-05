@@ -25,7 +25,7 @@ command -v python3 >/dev/null 2>&1 || fail "python3 not found"
 
 dir=${REVIEW_GATE_DIR:-}
 if [ -z "$dir" ]; then
-  home=$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null) || fail "cannot find the home folder"
+  home=$(python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null) || fail "cannot find the home folder"
   dir="$home/.claude/hooks"
 fi
 
@@ -55,6 +55,6 @@ while read -r lref lsha rref rsha; do
   case "$branch" in main|master) continue ;; esac
   [ -n "$default" ] && [ "$branch" = "$default" ] && continue
   tree=$(git rev-parse --verify --quiet "$lsha^{tree}" 2>/dev/null) || fail "cannot read the commit $lsha pushed to $branch"
-  python3 -B "$script" check --cwd "$root" --command "gh pr create" --tree "$tree" --branch "$branch" </dev/null || exit 2
+  python3 -I -B "$script" check --cwd "$root" --command "gh pr create" --tree "$tree" --branch "$branch" </dev/null || exit 2
 done
 exit 0
