@@ -54,6 +54,9 @@ class Base(unittest.TestCase):
         self.sh("git", "init", "-q", "-b", branch, cwd=path)
         with open(os.path.join(path, "f.txt"), "w", encoding="utf-8") as f:
             f.write("x")
+        os.makedirs(os.path.join(path, ".nousfx"))  # the check command --mark runs (NFX-54)
+        with open(os.path.join(path, ".nousfx", "project.toml"), "w", encoding="utf-8") as f:
+            f.write('[check]\ncommand = "exit 0"\n')
         self.sh("git", "add", "-A", cwd=path)
         self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init", cwd=path)
 

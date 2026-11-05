@@ -3,6 +3,8 @@ name: review-gate
 # Server-side check of the review gate (docs/review-gate.md). The PR must carry a
 # `Review-Gate: <tree hash>` line (from `review-gate.py attest`) for the tree of its head commit.
 # The gate script is taken from the BASE branch, never from the PR, so a PR cannot edit it to pass.
+# After the attestation, the project's check command (.nousfx/project.toml on the BASE branch) runs on the
+# PR head, so a failing test fails this job even when the PR body holds a valid line.
 # Marking this check "required" in the repo settings is a manual step.
 on:
   pull_request:
@@ -36,6 +38,10 @@ jobs:
             echo "::error::The gate on '$BASE_REF' predates attestations (no verify-attestation). The PR that introduces them cannot be verified; merge it by hand as the repo owner."
             exit 1
           fi
+          if ! grep -q 'sys.argv\[1:2\] == \["run-check"\]' "$gate_dir/review-gate.py"; then
+            echo "::error::The gate on '$BASE_REF' cannot run the project's check command (no run-check). The PR that introduces it cannot be verified; merge it by hand as the repo owner."
+            exit 1
+          fi
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.txt"
           git log -1 --format=%B HEAD > "$RUNNER_TEMP/commit-msg.txt"
           tree=$(git rev-parse 'HEAD^{tree}')
@@ -49,8 +55,14 @@ jobs:
             *"Review attestation found for tree $tree."*) ;;
             *) echo "::error::The base gate did not confirm the attestation."; exit 1 ;;
           esac
-      - name: Gate unit tests (code from the PR, informational about the PR's own gate)
-        run: |
-          python3 -B claude/hooks/test_review_gate.py
-          python3 -B claude/hooks/test_review_gate_check.py
-          python3 -B claude/hooks/test_review_gate_attest.py
+          # A skip attestation waives the review, never the tests: the check always runs.
+          check_out=$(python3 -B "$gate_dir/review-gate.py" run-check --ref "origin/$BASE_REF" </dev/null) || {
+            printf '%s\n' "$check_out"
+            echo "::error::The project's check command did not pass (command and output above)."
+            exit 1
+          }
+          printf '%s\n' "$check_out"
+          case "$check_out" in
+            *"Check passed."*) ;;
+            *) echo "::error::The base gate did not confirm that the check ran."; exit 1 ;;
+          esac

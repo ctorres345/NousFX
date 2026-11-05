@@ -110,6 +110,18 @@ class Workflow(unittest.TestCase):
         self.assertIn('git show "origin/$BASE_REF:claude/hooks/pr_create_parser.py"', self.text)
         self.assertNotIn('python3 -B claude/hooks/review-gate.py', self.text)
 
+    def test_check_command_comes_from_the_base_ref(self):
+        self.assertIn('run-check --ref "origin/$BASE_REF"', self.text)
+        self.assertIn('python3 -B "$gate_dir/review-gate.py" run-check', self.text)
+        self.assertIn("grep -q 'sys.argv\\[1:2\\] == \\[\"run-check\"\\]' \"$gate_dir/review-gate.py\"", self.text)
+
+    def test_a_skip_attestation_does_not_skip_the_check(self):
+        self.assertNotIn("exit 0", self.text.split("run-check --ref")[0].split("verify-attestation")[-1])
+        self.assertNotIn("skipped:", self.text.split("run-check --ref")[0].split("case \"$out\" in")[-1])
+
+    def test_check_step_needs_a_positive_confirmation(self):
+        self.assertIn('*"Check passed."*', self.text)
+
     def test_pr_body_only_via_env(self):
         runs = [l for l in self.text.splitlines() if "${{" in l and "pull_request.body" in l]
         self.assertTrue(runs)

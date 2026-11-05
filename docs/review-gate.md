@@ -22,6 +22,47 @@ python3 -B claude/hooks/review-gate.py check --cwd DIR --command "gh pr create"
 - The Claude hook parses its JSON payload and then calls the same `evaluate()` function. Behavior of the hook does not change.
 - Marks stay per worktree, in the git dir, keyed by tree hash. They do not move.
 
+## The check command
+
+A mark now means the tests passed, not only that a reviewer was satisfied. `--mark --findings N` runs the project's check command itself.
+
+```
+--mark --findings N ──► read [check] command ──► run it ──► tree unchanged? ──► write the mark (+ command, exit 0)
+                         from the default branch   │ fail, timeout, missing, edits files
+                                                   └──► refuse, and remove any older mark
+```
+
+- Config: `.nousfx/project.toml` in the repo.
+  ```toml
+  [check]
+  command = "python3 -B scripts/run_checks.py"
+  timeout = 1800   # seconds, optional
+  ```
+- The command runs through the shell at the repo top level, with `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR` removed and `PYTHONDONTWRITEBYTECODE=1`. Its output goes to `claude-review-check.log` in the git dir. A refusal prints the last 40 lines and the path.
+- Where it is read from: `origin/HEAD`, else `origin/main`, else `origin/master`. A branch cannot edit its own check to `true`. When that branch has the file, it wins, even if the file has no usable `[check]` (then the mark is refused). Only when the default branch has no `.nousfx/project.toml` at all (the PR that adds it), or no default branch can be found, does the mark use the working-tree file, and it says so. That local fallback is a convenience; CI never uses it. The anchor is the local remote-tracking state (`origin/HEAD` counts only when it points at another `refs/remotes/origin/` ref, and nothing is fetched), so a stale clone or a shell user can still steer the local mark. CI is the real check.
+- A refused mark deletes the older one, so a stale good mark cannot carry a failing run through.
+- The check must not edit files. If the tree hash changes while it runs, the mark is refused.
+- No check configured: the mark is refused with the lines to add. An approved `--mark --skip "<reason>"` still works locally and runs no check; CI still runs it.
+- The mark stores `{command, exit, source}`. `check`, `attest` and the pre-push hook treat a clean mark with no passing `check` result as no review. An old mark from before this change blocks, so re-run the review loop.
+- The agent still reports only the findings count. It cannot report a pass the gate did not see.
+- `sync --project` prints a note when the repo has no check command. It never invents one; the `project-setup` skill proposes one for the stack and asks.
+
+### In CI
+
+- `review-gate.py run-check --ref origin/<base>` reads the command from the base branch and runs it in the PR checkout. The workflow takes the gate from the base branch too, so a PR cannot change the command or the script that reads it.
+- It runs after `verify-attestation`, always. A skip attestation waives the review, not the tests, so a failing test fails the job even with `skipped:` in the PR body. A local `--mark --skip` still runs no check.
+- A failing test fails `review-gate / check` even when the PR body holds a valid `Review-Gate:` line. The command's output goes to the job log. The step also requires the gate's `Check passed.` line, so a base gate that only contains the word `run-check` cannot pass the job by falling through.
+- A check command can write a mark itself, since it is branch code. A refused mark deletes the marker again, so nothing it wrote survives.
+- If the base branch has no `run-check` or no `[check]` command, the job fails with a clear message. The PR that introduces them is merged by hand, as with attestations.
+- The repo's workflow must install whatever the command needs. NousFX needs only Python.
+
+### Limits
+
+- The tests and any script the command calls come from the PR, including `scripts/run_checks.py` here. A branch can change a test or the runner. A human review is what stops that; this only stops it being skipped silently. The runner fails when it finds no suites.
+- A timeout kills the command's whole process group (POSIX). On Windows only the shell is killed.
+- `.github/workflows/review-gate.yml` also comes from the PR. Require a review on `.github/` (CODEOWNERS) if that matters.
+- The check needs Python 3.11 or later (`tomllib`).
+
 ## agy adapter
 
 ```
@@ -91,4 +132,4 @@ Line formats:
 - It does not prove the review was good, or that findings were fixed beyond the mark's count.
 - A skip passes. The log shows the reason so a human can see it.
 - The gate script comes from the base branch, so a PR cannot weaken the check on itself. A change to the gate takes effect only after it merges.
-- Real enforcement needs a human reviewer or a trusted runner that does the review. Branch protection plus this check only makes skipping visible.
+- Real enforcement needs a human reviewer or a trusted runner that does the review. Branch protection plus this check only makes skipping visible. The check command (above) adds one real proof: the tests ran and passed on this tree.

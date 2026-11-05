@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 GATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "review-gate.py")
@@ -155,12 +156,38 @@ class Base(unittest.TestCase):
         if commit:
             with open(os.path.join(path, "f.txt"), "w", encoding="utf-8") as f:
                 f.write(name)
+            self.write_check(path, "exit 0")
             self.sh("git", "add", "-A", cwd=path)
             self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init", cwd=path)
         return path
 
     def sh(self, *args, cwd):
         subprocess.run(args, cwd=cwd, check=True, capture_output=True)
+
+    def write_check(self, path, command, timeout=None):
+        """Write <path>/.nousfx/project.toml with a check command (None removes the file)."""
+        cfg = os.path.join(path, ".nousfx", "project.toml")
+        if command is None:
+            if os.path.exists(cfg):
+                os.remove(cfg)
+            return
+        os.makedirs(os.path.dirname(cfg), exist_ok=True)
+        with open(cfg, "w", encoding="utf-8") as f:
+            f.write("[check]\ncommand = %s\n" % json.dumps(command))
+            if timeout:
+                f.write("timeout = %d\n" % timeout)
+
+    def commit(self, path, msg="x"):
+        self.sh("git", "add", "-A", cwd=path)
+        self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", msg, cwd=path)
+
+    def set_base(self, path):
+        """Pretend the current commit is the default branch on the remote."""
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD", cwd=path)
+
+    def run_check(self, *args, cwd=None):
+        return subprocess.run([sys.executable, GATE, "run-check", *args], cwd=cwd or self.repo,
+                              capture_output=True, text=True)
 
     def mark(self, *args, cwd=None):
         return subprocess.run([sys.executable, GATE, "--mark", *args], cwd=cwd or self.repo,
@@ -351,6 +378,200 @@ class Failure(Base):
         with open(os.path.join(self.repo, "new.txt"), "w", encoding="utf-8") as f:
             f.write("unhashable")
         self.assertEqual(self.run_gate("gh pr create"), BLOCKED)
+
+
+class CheckCommand(Base):
+    """NFX-54: --mark runs the project's check command itself."""
+
+    def test_failing_check_refuses_the_mark(self):
+        self.write_check(self.repo, "exit 1")
+        self.commit(self.repo)
+        r = self.mark("--findings", "0")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "claude-review-ok")))
+        self.assertEqual(self.run_gate("gh pr create"), BLOCKED)
+
+    def test_failing_check_removes_an_older_good_mark(self):
+        self.assertEqual(self.mark("--findings", "0").returncode, 0)
+        self.write_check(self.repo, "exit 1")
+        self.assertNotEqual(self.mark("--findings", "0").returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "claude-review-ok")))
+        self.assertEqual(self.run_gate("gh pr create"), BLOCKED)
+
+    def test_edit_after_marking_invalidates_the_mark(self):
+        self.assertEqual(self.mark("--findings", "0").returncode, 0)
+        with open(os.path.join(self.repo, "f.txt"), "a", encoding="utf-8") as f:
+            f.write("more")
+        self.commit(self.repo)
+        self.assertEqual(self.run_gate("gh pr create"), BLOCKED)
+
+    def test_branch_edited_check_is_ignored_by_mark(self):
+        self.write_check(self.repo, "exit 1")
+        self.commit(self.repo)
+        self.set_base(self.repo)  # the default branch says: exit 1
+        self.write_check(self.repo, "exit 0")  # the branch tries to weaken it
+        self.commit(self.repo)
+        r = self.mark("--findings", "0")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("exited with 1", r.stderr)
+
+    def test_branch_edited_check_is_ignored_by_run_check(self):
+        self.write_check(self.repo, "exit 1")
+        self.commit(self.repo)
+        self.set_base(self.repo)
+        self.write_check(self.repo, "exit 0")
+        self.commit(self.repo)
+        r = self.run_check("--ref", "refs/remotes/origin/main")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("exited with 1", r.stderr)
+
+    def test_run_check_passes_when_the_base_command_passes(self):
+        self.set_base(self.repo)
+        self.assertEqual(self.run_check("--ref", "refs/remotes/origin/main").returncode, 0)
+
+    def test_run_check_refuses_a_ref_without_config(self):
+        self.write_check(self.repo, None)
+        self.commit(self.repo)
+        self.set_base(self.repo)
+        self.assertNotEqual(self.run_check("--ref", "refs/remotes/origin/main").returncode, 0)
+
+    def test_default_branch_file_without_a_check_is_not_replaced_by_the_branch(self):
+        with open(os.path.join(self.repo, ".nousfx", "project.toml"), "w", encoding="utf-8") as f:
+            f.write("[other]\nx = 1\n")
+        self.commit(self.repo)
+        self.set_base(self.repo)  # the default branch has the file, but no [check]
+        self.write_check(self.repo, "exit 0")  # the branch supplies its own
+        self.commit(self.repo)
+        r = self.mark("--findings", "0")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no check command", r.stderr)
+
+    def test_bootstrap_uses_the_working_tree_when_the_default_branch_has_no_file(self):
+        self.write_check(self.repo, None)
+        self.commit(self.repo)
+        self.set_base(self.repo)  # the default branch has no project.toml at all
+        self.write_check(self.repo, "exit 0")
+        r = self.mark("--findings", "0")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("working-tree copy", r.stdout)
+
+    def test_origin_master_counts_as_the_default_branch(self):
+        self.write_check(self.repo, "exit 1")
+        self.commit(self.repo)
+        self.sh("git", "update-ref", "refs/remotes/origin/master", "HEAD", cwd=self.repo)
+        self.write_check(self.repo, "exit 0")
+        self.commit(self.repo)
+        r = self.mark("--findings", "0")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("exited with 1", r.stderr)
+
+    def test_origin_head_counts_as_the_default_branch(self):
+        self.write_check(self.repo, "exit 1")
+        self.commit(self.repo)
+        self.sh("git", "update-ref", "refs/remotes/origin/develop", "HEAD", cwd=self.repo)
+        self.sh("git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop", cwd=self.repo)
+        self.write_check(self.repo, "exit 0")
+        self.commit(self.repo)
+        r = self.mark("--findings", "0")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("exited with 1", r.stderr)
+
+    def test_origin_head_pointing_at_a_local_branch_is_not_trusted(self):
+        self.write_check(self.repo, "exit 1")
+        self.commit(self.repo)
+        self.set_base(self.repo)  # origin/main says: exit 1
+        self.write_check(self.repo, "exit 0")
+        self.commit(self.repo)
+        self.sh("git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/cesar/DEM-1", cwd=self.repo)
+        r = self.mark("--findings", "0")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("exited with 1", r.stderr)
+
+    def test_a_check_that_forges_a_mark_and_fails_leaves_none(self):
+        py = sys.executable.replace("\\", "/")
+        forge = ("import json,subprocess,sys; t=subprocess.check_output(['git','write-tree']).decode().strip(); "
+                 "json.dump({'tree':t,'findings_open':0,'skipped':None,'check':{'exit':0}}, "
+                 "open('.git/claude-review-ok','w')); sys.exit(1)")
+        self.write_check(self.repo, "%s -c \"%s\"" % (py, forge.replace('"', '\\"')))
+        self.commit(self.repo)
+        self.assertNotEqual(self.mark("--findings", "0").returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "claude-review-ok")))
+
+    def test_run_check_shows_the_commands_output(self):
+        self.write_check(self.repo, "echo FAILED_test_\"\"login; exit 1")  # the output differs from the command text
+        self.commit(self.repo)
+        self.set_base(self.repo)
+        r = self.run_check("--ref", "refs/remotes/origin/main")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("FAILED_test_login", r.stdout + r.stderr)
+
+    def test_run_check_prints_a_positive_confirmation(self):
+        self.set_base(self.repo)
+        self.assertIn("Check passed.", self.run_check("--ref", "refs/remotes/origin/main").stdout)
+
+    def test_run_check_refuses_a_ref_that_looks_like_an_option(self):
+        self.assertNotEqual(self.run_check("--ref", "-p").returncode, 0)
+
+    def test_timeout_kills_the_whole_process_group(self):
+        marker = os.path.join(self.tmp, "orphan-ran")
+        py = sys.executable.replace("\\", "/")
+        self.write_check(self.repo, "(%s -c 'import time; time.sleep(3); open(\"%s\", \"w\").close()' &) ; sleep 30"
+                         % (py, marker.replace("\\", "/")), timeout=1)
+        self.commit(self.repo)
+        self.assertNotEqual(self.mark("--findings", "0").returncode, 0)
+        time.sleep(4)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_no_check_and_no_skip_refuses_the_mark(self):
+        self.write_check(self.repo, None)
+        self.commit(self.repo)
+        r = self.mark("--findings", "0")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(".nousfx/project.toml", r.stderr)
+        self.assertEqual(self.run_gate("gh pr create"), BLOCKED)
+
+    def test_skip_needs_no_check(self):
+        self.write_check(self.repo, None)
+        self.commit(self.repo)
+        self.assertEqual(self.mark("--skip", "approved").returncode, 0)
+        self.assertEqual(self.run_gate("gh pr create"), ALLOWED)
+
+    def test_check_that_changes_files_is_refused(self):
+        self.write_check(self.repo, "echo more >> f.txt")
+        self.commit(self.repo)
+        self.assertNotEqual(self.mark("--findings", "0").returncode, 0)
+        self.assertEqual(self.run_gate("gh pr create"), BLOCKED)
+
+    def test_old_marker_without_a_check_result_blocks(self):
+        self.mark("--findings", "0")
+        path = os.path.join(self.repo, ".git", "claude-review-ok")
+        with open(path, encoding="utf-8") as f:
+            marker = json.load(f)
+        del marker["check"]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(marker, f)
+        self.assertEqual(self.run_gate("gh pr create"), BLOCKED)
+
+    def test_background_child_is_killed_after_a_normal_exit(self):
+        marker = os.path.join(self.tmp, "late-edit")
+        py = sys.executable.replace("\\", "/")
+        self.write_check(self.repo, "(%s -c 'import time; time.sleep(2); open(\"%s\", \"w\").close()' &) ; exit 0"
+                         % (py, marker.replace("\\", "/")))
+        self.commit(self.repo)
+        self.assertEqual(self.mark("--findings", "0").returncode, 0)
+        time.sleep(3)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_check_that_times_out_is_refused(self):
+        self.write_check(self.repo, "%s -c 'import time; time.sleep(30)'" % sys.executable.replace("\\", "/"), timeout=1)
+        self.commit(self.repo)
+        self.assertNotEqual(self.mark("--findings", "0").returncode, 0)
+
+    def test_broken_config_refuses_the_mark(self):
+        cfg = os.path.join(self.repo, ".nousfx", "project.toml")
+        with open(cfg, "w", encoding="utf-8") as f:
+            f.write("[check\n")
+        self.assertNotEqual(self.mark("--findings", "0").returncode, 0)
 
 
 class Marker(Base):

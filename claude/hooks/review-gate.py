@@ -24,11 +24,19 @@ when a valid mark covers the current code, else exits 2. `verify-attestation --t
 Mark mode: `review-gate.py --mark --findings N` or `--mark --skip "reason"` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
 Open findings above 0 keep the PR blocked unless a --skip reason was recorded.
+`--mark --findings` also runs the project's check command (`[check] command` in .nousfx/project.toml, read
+from the default branch, so a branch cannot weaken it) and refuses the mark when it fails, times out,
+changes files, or is not configured. `--skip` runs no check.
+
+Run-check mode: `review-gate.py run-check --ref REF` (CI) reads the check command from REF only and runs it
+in the current checkout. Exit 0 when the command passes, 2 otherwise.
 
 The marker is keyed on a git tree hash of the working tree (tracked + untracked files,
 .gitignore respected), so it survives committing but not further edits. It lives in the
 git dir, so it is never committed and is per-worktree.
 """
+import collections
+import contextlib
 import json
 import os
 import re
@@ -45,6 +53,16 @@ try:
     PARSER_ERROR = None
 except Exception as e:  # missing or broken: a crash exits 1, which lets the call through
     PARSER_ERROR = e
+
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    tomllib = None
+
+CHECK_FILE = ".nousfx/project.toml"
+CHECK_TIMEOUT = 1800
+CHECK_LOG = "claude-review-check.log"
+GIT_ENV_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
 
 BRANCH_OK = re.compile(r"^cesar/[A-Z][A-Z0-9]+-\d+$")
 MCP_PR_CREATE = re.compile(r"create_pull_request", re.I)
@@ -65,6 +83,26 @@ FINDINGS_BLOCK = """\
 Blocked: the recorded review has {count} open high/med finding(s).
 - Fix them and run the `review-loop` skill again. When none are open, it records: python3 "{script}" --mark --findings 0
 - If the user explicitly approves opening the PR anyway: python3 "{script}" --mark --skip "<reason>"
+"""
+
+NO_CHECK = """\
+Nothing recorded: this repo has no check command, so the gate cannot run the tests itself.
+- Add it to {file} and commit it to the default branch:
+    [check]
+    command = "<your test command, for example ./gradlew test, flutter test or npm test>"
+  (the `project-setup` skill can propose one). The command is read from the default branch, so the PR that adds it is marked with the working-tree copy and later PRs with the merged one.
+- If the user explicitly approves skipping the tests: python3 "{script}" --mark --skip "<reason>"
+"""
+
+CHECK_FAILED = """\
+Nothing recorded: the check command `{command}` {why}. Log: {log}
+Fix the cause and run --mark again. Last lines:
+{tail}
+"""
+
+CHECK_MISSING_BLOCK = """\
+Blocked: the recorded review has no passing check result (it was recorded before the gate ran checks, or
+the check did not pass). Run the `review-loop` skill again so it records the mark with the check.
 """
 
 GIT_VARS_BLOCK = """\
@@ -139,6 +177,115 @@ def head_tree(cwd):
         return None
 
 
+def default_ref(cwd):
+    """The remote-tracking branch whose check command is trusted: origin/HEAD (only when it points at another
+    refs/remotes/origin/ ref), else origin/main, else origin/master, else None. Local state, never fetched: CI is
+    the real check."""
+    candidates = []
+    try:
+        target = git(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], cwd)
+        if target.startswith("refs/remotes/origin/") and target != "refs/remotes/origin/HEAD":
+            candidates.append(target)
+    except RuntimeError:
+        pass
+    candidates += ["refs/remotes/origin/main", "refs/remotes/origin/master"]
+    for ref in candidates:
+        try:
+            git(["rev-parse", "--verify", "--quiet", ref + "^{commit}"], cwd)
+            return ref
+        except RuntimeError:
+            continue
+    return None
+
+
+def parse_check(text):
+    """The `[check]` table of a project.toml text as {command, timeout}, or None when there is no command."""
+    if tomllib is None:
+        raise RuntimeError("Python 3.11+ is needed to read " + CHECK_FILE)
+    table = tomllib.loads(text).get("check")
+    if not isinstance(table, dict):
+        return None
+    command, timeout = table.get("command"), table.get("timeout", CHECK_TIMEOUT)
+    if not isinstance(command, str) or not command.strip():
+        return None
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+        raise ValueError("[check] timeout must be a positive number of seconds")
+    return {"command": command.strip(), "timeout": timeout}
+
+
+def exists_at(cwd, ref, path):
+    """True when `path` exists in the commit `ref`. Any other git failure raises, so it cannot read as 'absent'."""
+    if ref.startswith("-"):
+        raise RuntimeError(f"not a ref: {ref}")
+    try:
+        git(["cat-file", "-e", f"{ref}:{path}"], cwd, {**os.environ, "LC_ALL": "C"})
+        return True
+    except RuntimeError as e:
+        if "does not exist" in str(e) or "exists on disk, but not in" in str(e) or "Not a valid object name" in str(e):
+            return False
+        raise
+
+
+def load_check(cwd, ref=None):
+    """The check from CHECK_FILE at `ref`, or from the working tree when ref is None. None when absent."""
+    if ref:
+        if ref.startswith("-"):
+            raise RuntimeError(f"not a ref: {ref}")
+        try:
+            text = git(["show", f"{ref}:{CHECK_FILE}"], cwd)
+        except RuntimeError:
+            return None
+    else:
+        try:
+            with open(os.path.join(git(["rev-parse", "--show-toplevel"], cwd), CHECK_FILE), encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            return None
+    check = parse_check(text)
+    if check:
+        check["source"] = ref or "working tree"
+    return check
+
+
+def run_check(cwd, check, log_path=None):
+    """Run the check command at the repo top level. Returns (ok, why). Output goes to log_path, or to our own
+    stdout and stderr when there is none."""
+    root = git(["rev-parse", "--show-toplevel"], cwd)
+    env = {k: v for k, v in os.environ.items() if k not in GIT_ENV_VARS}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    posix = os.name == "posix"
+
+    def stop(proc):  # the shell's children too, not just the shell
+        try:
+            os.killpg(proc.pid, 9) if posix else proc.kill()
+        except OSError:
+            proc.kill()
+
+    with open(log_path, "wb") if log_path else contextlib.nullcontext() as out:  # no log: show it (CI job log)
+        proc = subprocess.Popen(check["command"], shell=True, cwd=root, env=env, stdin=subprocess.DEVNULL,
+                                stdout=out, stderr=subprocess.STDOUT if out else None, start_new_session=posix)
+        try:
+            code = proc.wait(timeout=check["timeout"])
+        except subprocess.TimeoutExpired:
+            stop(proc)
+            proc.wait(timeout=30)
+            return False, f"did not finish within {check['timeout']} seconds"
+        if posix:  # background children must not keep editing files after the tree hash is compared
+            try:
+                os.killpg(proc.pid, 9)
+            except OSError:
+                pass
+    return (True, "") if code == 0 else (False, f"exited with {code}")
+
+
+def log_tail(path, lines=40):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return "".join(collections.deque(f, maxlen=lines)).rstrip() or "(no output)"
+    except OSError:
+        return "(no log)"
+
+
 def mark(argv):
     findings, skip = None, None
     try:
@@ -157,10 +304,41 @@ def mark(argv):
               file=sys.stderr)
         return 2
     cwd = os.getcwd()
+    marker_path = git_path("claude-review-ok", cwd)
+    if os.path.exists(marker_path):
+        os.remove(marker_path)  # a refused mark must not leave an older good one behind
     tree = worktree_tree(cwd)
     marker = {"tree": tree, "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
               "findings_open": findings, "skipped": skip}
-    with open(git_path("claude-review-ok", cwd), "w", encoding="utf-8") as f:
+    if not skip:
+        try:
+            ref = default_ref(cwd)
+            # The default branch's file wins whenever it exists, even without a usable [check] (then: no check).
+            # Only when that branch has no such file (the PR that adds it) or there is no default branch at all
+            # does the working-tree copy count. CI always reads the base branch.
+            trusted = bool(ref) and exists_at(cwd, ref, CHECK_FILE)
+            check = load_check(cwd, ref if trusted else None)
+        except Exception as e:
+            print(f"Nothing recorded: cannot read the check command from {CHECK_FILE}: {e}", file=sys.stderr)
+            return 2
+        if not check:
+            print(NO_CHECK.format(file=CHECK_FILE, script=SCRIPT), file=sys.stderr)
+            return 2
+        log = git_path(CHECK_LOG, cwd)
+        ok, why = run_check(cwd, check, log)
+        if ok and worktree_tree(cwd) != tree:
+            ok, why = False, "changed files in the working tree (a check must not edit files)"
+        if not ok:
+            if os.path.exists(marker_path):
+                os.remove(marker_path)  # the command is branch code: it may have written a mark itself
+            print(CHECK_FAILED.format(command=check["command"], why=why, log=log, tail=log_tail(log)),
+                  file=sys.stderr)
+            return 2
+        marker["check"] = {"command": check["command"], "exit": 0, "source": check["source"]}
+        if check["source"] == "working tree":
+            print(f"note: {CHECK_FILE} is not on the default branch{'' if ref else ' (none found)'}; "
+                  "used the working-tree copy. CI reads the base branch.")
+    with open(marker_path, "w", encoding="utf-8") as f:
         json.dump(marker, f)
     print(f"review recorded for tree {tree[:10]}" + (f" (skipped: {skip})" if skip else ""))
     return 0
@@ -221,7 +399,10 @@ def check_repo(cwd, tree=None, branch=None):
                 return 0
             count = marker.get("findings_open")
             if count == 0:
-                return 0
+                if has_check_pass(marker):
+                    return 0
+                print(CHECK_MISSING_BLOCK, file=sys.stderr)
+                return 2
             if count is not None:
                 print(FINDINGS_BLOCK.format(count=count, script=script), file=sys.stderr)
                 return 2
@@ -230,6 +411,11 @@ def check_repo(cwd, tree=None, branch=None):
     except Exception as e:  # this is a create, so an unverifiable repo must not let it through
         print(ERROR_BLOCK.format(error=e, script=script), file=sys.stderr)
         return 2
+
+
+def has_check_pass(marker):
+    result = marker.get("check")
+    return isinstance(result, dict) and result.get("exit") == 0
 
 
 def covers(cwd, tree):
@@ -295,6 +481,8 @@ def attest(cwd):
         skipped = " ".join(str(marker.get("skipped") or "").split())
         if not skipped and marker.get("findings_open") != 0:
             raise ValueError("the review has open findings or none was recorded")
+        if not skipped and not has_check_pass(marker):
+            raise ValueError("the mark has no passing check result")
     except (OSError, KeyError, ValueError, RuntimeError) as e:
         print(f"No attestation: no valid review for the current code ({e}). Run the review loop first.",
               file=sys.stderr)
@@ -329,6 +517,31 @@ def verify_attestation(argv):
           "Run `review-gate.py attest` on the final code and paste its line into the PR body.",
           file=sys.stderr)
     return 2
+
+
+def run_check_ref(argv):
+    """`run-check --ref REF` (CI): run the check command that REF holds, in this checkout. 0 passes, 2 blocks."""
+    ref = option(argv, "--ref")
+    if not ref:
+        print("Blocked: usage: review-gate.py run-check --ref REF", file=sys.stderr)
+        return 2
+    cwd = os.getcwd()
+    try:
+        check = load_check(cwd, ref)
+    except Exception as e:
+        print(f"Blocked: cannot read the check command from {ref}:{CHECK_FILE}: {e}", file=sys.stderr)
+        return 2
+    if not check:
+        print(f"Blocked: {ref} has no [check] command in {CHECK_FILE}. The PR that adds it cannot be verified; "
+              "merge it by hand as the repo owner.", file=sys.stderr)
+        return 2
+    print(f"Running the check from {ref}: {check['command']}", flush=True)
+    ok, why = run_check(cwd, check)
+    if not ok:
+        print(f"Blocked: the check command {why}.", file=sys.stderr)
+        return 2
+    print("Check passed.")
+    return 0
 
 
 def gate():
@@ -374,6 +587,8 @@ if __name__ == "__main__":
         sys.exit(check(sys.argv))
     if sys.argv[1:2] == ["attest"]:
         sys.exit(attest(os.getcwd()))
+    if sys.argv[1:2] == ["run-check"]:
+        sys.exit(run_check_ref(sys.argv))
     if sys.argv[1:2] == ["verify-attestation"]:
         sys.exit(verify_attestation(sys.argv))
     if "--allow-branch" in sys.argv:

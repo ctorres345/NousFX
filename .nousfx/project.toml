@@ -1,0 +1,5 @@
+# The gate runs this command itself before it records a review (docs/review-gate.md, "The check command").
+# It is read from the default branch, so a branch cannot change it for its own PR.
+[check]
+command = "python3 -B scripts/run_checks.py"
+timeout = 1800

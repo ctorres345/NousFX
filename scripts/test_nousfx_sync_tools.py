@@ -354,6 +354,20 @@ class Project(Fixture):
         self.assertFalse(os.path.exists(os.path.join(self.proj, ".mcp.json")))
         self.assertFalse(os.path.exists(os.path.join(self.proj, ".agents", "plugins", "nousfx", "mcp_config.json")))
 
+    def test_project_without_a_check_command_gets_a_note(self):
+        out = self.ok("--project", self.proj, "--tools", "claude,agy").stdout
+        self.assertIn("no check command", out)
+        self.assertIn(".nousfx/project.toml", out)
+
+    def test_project_with_a_check_command_gets_no_note(self):
+        write(os.path.join(self.proj, ".nousfx", "project.toml"), '[check]\ncommand = "npm test"\n')
+        out = self.ok("--project", self.proj, "--tools", "claude,agy").stdout
+        self.assertNotIn("no check command", out)
+
+    def test_project_with_an_empty_check_command_gets_the_note(self):
+        write(os.path.join(self.proj, ".nousfx", "project.toml"), '[check]\ncommand = ""\n')
+        self.assertIn("no check command", self.ok("--project", self.proj, "--tools", "claude,agy").stdout)
+
     def test_project_must_be_a_folder(self):
         self.assertEqual(self.sync("--project", os.path.join(self.tmp, "nope")).returncode, 2)
 
