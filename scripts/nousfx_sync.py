@@ -30,6 +30,7 @@ import tempfile
 import time
 
 import nousfx_agents
+import nousfx_skills
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK_FILES = ("review-gate.py", "pr_create_parser.py")
@@ -228,6 +229,7 @@ def restore(state):
         else:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             shutil.copy2(os.path.join(root, saved), path)
+    nousfx_skills.undo(root)
     os.rename(root, root + ".restored")
     print(f"restored {len(manifest)} file(s) from {root}")
 
@@ -259,6 +261,8 @@ def main(argv=None):
     ap.add_argument("--home", help="home dir (default: from the user record)")
     ap.add_argument("--state-home", help="state dir (default: <home>/.config/nousfx)")
     ap.add_argument("--repo", default=os.path.dirname(HERE), help="repo with harness/ and claude/hooks/")
+    ap.add_argument("--yes-replace", action="append", default=[], metavar="NAME",
+                    help="let the NousFX skill NAME replace an unowned folder (backed up first)")
     ap.add_argument("--platform", choices=("posix", "windows"), help="override detection (tests)")
     args = ap.parse_args(argv)
 
@@ -273,20 +277,36 @@ def main(argv=None):
         scan_secrets({os.path.relpath(p, home): t for p, t in wanted.items()
                       if not p.endswith("settings.json")})
         todo = changes(wanted)
+        sk = nousfx_skills.plan(repo, home, state, args.yes_replace)
         if args.check:
             for p in todo:
                 print(f"drift: {p}")
-            print("drift found" if todo else "no drift")
-            return 1 if todo else 0
+            for line in sk.lines():
+                print(line)
+            bad = bool(todo or sk.actions or sk.collisions or sk.broken)
+            print("drift found" if bad else "no drift")
+            return 1 if bad else 0
         if args.dry_run:
             for p, t in todo.items():
                 print(diff_of(p, t), end="")
-            print(f"{len(todo)} file(s) would change" if todo else "nothing would change")
+            for line in sk.lines():
+                print(line)
+            print(f"{len(todo)} file(s) would change" if todo or sk.pending else "nothing would change")
             return 0
-        if not todo:
+        for line in sk.lines():
+            if "collision" in line:
+                print(line)
+        if not todo and not sk.pending:
             print("nothing to change")
             return 0
         root = backup(state, list(todo))
+        nousfx_skills.apply(sk, root, is_windows(args.platform))
+        for line in sk.lines():
+            if "collision" not in line:
+                print(line)
+        if not todo:
+            print(f"backup: {root}")
+            return 0
         for p, t in todo.items():
             write_atomic(p, t)
             print(f"wrote {p}")
