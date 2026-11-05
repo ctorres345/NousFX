@@ -183,7 +183,7 @@ class Mcp(Fixture):
         self.ok()
         self.assertNotEqual(read(self.claude_json), original)
         self.ok("--restore")
-        self.assertEqual(read(self.claude_json), original)
+        self.assertEqual(jload(self.claude_json), json.loads(original))
 
     def test_restore_keeps_what_claude_wrote_since(self):
         write(self.claude_json, json.dumps({"numStartups": 1, "mcpServers": {"mine": {"type": "http", "url": "https://m.example.com"}}}))
@@ -233,6 +233,59 @@ class Mcp(Fixture):
         self.assertIn("not usable", r.stderr)
         self.assertEqual(read(self.claude_json), before)
         self.assertEqual(read(os.path.join(self.state, "mcp-owned.json")), "[1]")
+
+    def test_backup_of_claude_json_keeps_only_the_servers_and_is_private(self):
+        write(self.claude_json, json.dumps({"oauthAccount": {"email": "private-account-data"},
+                                            "mcpServers": {"mine": {"type": "http", "url": "https://m.example.com"}}}))
+        self.mcp_toml('[servers.docs]\ntools = ["claude"]\nurl = "https://docs.example.com/mcp"\n')
+        self.ok()
+        backups = os.path.join(self.state, "backups")
+        self.assertEqual(oct(os.stat(backups).st_mode & 0o777), "0o700")
+        saved = [os.path.join(d, f) for d, _, fs in os.walk(backups) for f in fs]
+        self.assertTrue(saved)
+        for f in saved:
+            self.assertNotIn("private-account-data", read(f))
+        self.ok("--restore")
+        back = jload(self.claude_json)
+        self.assertEqual(back["oauthAccount"], {"email": "private-account-data"})
+        self.assertEqual(list(back["mcpServers"]), ["mine"])
+
+    def test_restore_does_not_recreate_a_vanished_claude_json(self):
+        write(self.claude_json, json.dumps({"numStartups": 1}))
+        self.mcp_toml('[servers.docs]\ntools = ["claude"]\nurl = "https://docs.example.com/mcp"\n')
+        self.ok()
+        os.remove(self.claude_json)
+        r = self.ok("--restore")
+        self.assertFalse(os.path.exists(self.claude_json))
+        self.assertIn("no longer exists", r.stderr)
+
+    def test_an_older_backups_folder_is_made_private(self):
+        os.makedirs(os.path.join(self.state, "backups"), mode=0o755)
+        os.chmod(os.path.join(self.state, "backups"), 0o755)
+        self.mcp_toml('[servers.docs]\ntools = ["claude"]\nurl = "https://docs.example.com/mcp"\n')
+        self.ok()
+        self.assertEqual(oct(os.stat(os.path.join(self.state, "backups")).st_mode & 0o777), "0o700")
+
+    def test_sync_refuses_to_overwrite_a_users_server_under_an_owned_name(self):
+        self.mcp_toml('[servers.docs]\ntools = ["claude"]\nurl = "https://docs.example.com/mcp"\n')
+        self.ok()
+        data = jload(self.claude_json)
+        data["mcpServers"]["docs"] = {"command": "USERS-OWN"}
+        write(self.claude_json, json.dumps(data))
+        r = self.sync()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not what sync wrote", r.stderr)
+        self.assertEqual(jload(self.claude_json)["mcpServers"]["docs"], {"command": "USERS-OWN"})
+
+    def test_missing_shared_list_stops_the_run_and_changes_nothing(self):
+        self.mcp_toml('[servers.docs]\ntools = ["claude"]\nurl = "https://docs.example.com/mcp"\n')
+        self.ok()
+        before = read(self.claude_json)
+        os.remove(os.path.join(self.repo, "harness", "mcp.toml"))
+        r = self.sync()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("missing shared list", r.stderr)
+        self.assertEqual(read(self.claude_json), before)
 
 
 class Project(Fixture):
