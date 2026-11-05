@@ -4,6 +4,8 @@ Layout (H = home):
   <repo>/claude/skills/<name>, <repo>/plugins/via/skills/via   the sources
   H/.agents/skills/<name>   link to the source          (the shared skills folder)
   H/.claude/skills/<name>   link to the source          (Claude's folder)
+  <root>/<name>             link to H/.agents/skills/<name>, one per extra root passed to plan()
+                            (agy: H/.gemini/config/plugins/nousfx/skills)
   <state>/skills-manifest.json  every link sync created. Sync owns only what is listed there.
 
 Rules: a folder that is not in the manifest is never overwritten or deleted. A NousFX skill replaces
@@ -97,6 +99,7 @@ def sources(repo):
 class Plan:
     def __init__(self, clean_backups=False):
         self.actions, self.collisions, self.broken, self.old_backups = [], [], [], []
+        self.manifest = {}
         self.clean_backups = clean_backups
 
     @property
@@ -142,18 +145,20 @@ def old_backups(dot_claude):
     return sorted(found)
 
 
-def plan(repo, home, state, yes_replace=(), clean_backups=False):
+def plan(repo, home, state, yes_replace=(), clean_backups=False, extra_roots=(), claude=True):
     manifest = _load(state)
     p = Plan(clean_backups)
     p.manifest = dict(manifest)
     want = sources(repo)
     agents = os.path.join(home, ".agents", "skills")
-    claude = os.path.join(home, ".claude", "skills")
+    claude_dir = os.path.join(home, ".claude", "skills")
     for name, src in want.items():
         real = os.path.realpath(src)
         steps, blocked = [], False
-        for path, target in ((os.path.join(agents, name), src),
-                             (os.path.join(claude, name), os.path.join(agents, name))):
+        shared = os.path.join(agents, name)
+        links = [(shared, src)] + ([(os.path.join(claude_dir, name), shared)] if claude else [])
+        links += [(os.path.join(root, name), shared) for root in extra_roots]
+        for path, target in links:
             if not os.path.lexists(path):
                 steps.append(("create", path, target))
             elif path in manifest:

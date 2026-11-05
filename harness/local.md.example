@@ -1,5 +1,8 @@
 # Personal rules (local, never committed)
 # Copy to ~/.config/nousfx/local.md and edit. Sync appends this file last.
+# This file goes to every tool, so keep it tool-neutral: no names that only one tool has.
+# Sync warns when it finds one. Rules for one tool go in local.claude.md or local.agy.md
+# in the same folder.
 
 # How to explain things to me
 - <your preferences for answer style, for example: lead with the answer, then short bullets>

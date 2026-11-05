@@ -1,0 +1,8 @@
+# Shared MCP server list. One table per server; sync writes it to each tool's own config.
+# tools = subset of ["claude", "agy"]. Exactly one of url / command. Secrets only as env = { NAME = "${NAME}" }.
+# Personal additions go in <state>/mcp.toml (same format; it wins on a name clash).
+
+# Claude already has the claude.ai Atlassian connector, so this one is for agy only.
+[servers.atlassian]
+tools = ["agy"]
+url = "https://mcp.atlassian.com/v1/mcp"
