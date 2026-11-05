@@ -1,0 +1,28 @@
+name: review-gate
+
+# Server-side check of the review gate. This is the real gate for tools without hooks
+# (docs/review-gate.md). Marking it "required" in the repo settings is a manual step.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Put the PR branch name back (the checkout is detached)
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: git checkout -B "$HEAD_REF"
+      - name: Gate unit tests
+        run: |
+          python3 -B claude/hooks/test_review_gate.py
+          python3 -B claude/hooks/test_review_gate_check.py
+      - name: Review gate check
+        run: python3 -B claude/hooks/review-gate.py check --cwd "$GITHUB_WORKSPACE" --command "gh pr create"

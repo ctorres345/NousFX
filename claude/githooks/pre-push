@@ -1,0 +1,17 @@
+#!/bin/sh
+# Advisory pre-push gate for tools without Claude hooks (Antigravity, OpenCode, plain git).
+# Asks the review gate whether this code has a recorded review. Checks every branch, not only
+# cesar/*, and fails CLOSED: a missing repo, script, python3 or git error blocks the push.
+# It is advisory: `git push --no-verify` skips it. CI is the real gate (see docs/review-gate.md).
+#
+# Install in a repo that has .claude/hooks/review-gate.py and pr_create_parser.py:
+#   cp claude/githooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+# or: git config core.hooksPath <dir holding this file>
+fail() { echo "pre-push: blocked: $1" >&2; exit 2; }
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || fail "not inside a git work tree"
+script="$root/.claude/hooks/review-gate.py"
+[ -f "$script" ] || fail "review gate not found at $script (install it or push with --no-verify)"
+command -v python3 >/dev/null 2>&1 || fail "python3 not found"
+
+python3 -B "$script" check --cwd "$root" --command "gh pr create" || exit 2
