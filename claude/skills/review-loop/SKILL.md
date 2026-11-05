@@ -8,6 +8,8 @@ Run a bounded review-fix loop on: $ARGUMENTS (default: everything on this branch
 
 You orchestrate from the main thread. Do not change models or effort levels; if you think a different model or effort is needed, ask the user first.
 
+Run it once per feature, not per edit, and do not wait for the user to type `/review-loop`. It replaces running `/simplify` and `/code-review` by hand, and it is the review for unattended `/goal` runs.
+
 ## Step 0: simplify (once)
 
 Invoke the `simplify` skill via the Skill tool on the same scope, so the reviewer sees the final code. If the skill cannot be invoked, say so and continue. Re-run the tests afterwards; if simplify broke them, fix or revert that change before starting the loop. Simplify does not count as a round.
@@ -17,7 +19,7 @@ Invoke the `simplify` skill via the Skill tool on the same scope, so the reviewe
 For round N = 1..5:
 
 1. Print `Round N/5`. Get the diff for the scope. If it is empty and there are no untracked files, stop and say so.
-2. Call the `reviewer` subagent with: the objective (find real bugs and security issues), the scope or diff, and the required output format (`ID | severity | file:line | problem | suggested fix`, or `NO FINDINGS`). Show the reviewer's output in the conversation. If the work is based on a prototype or design (see "Prototype fidelity" in CLAUDE.md), also give the reviewer the prototype (link or the saved source file path) and ask it to list visual deviations (colors, sizes, radii, spacing, icons, states, light and dark) as findings, severity `med` unless purely cosmetic; skip this only if there is no prototype.
+2. Call the `reviewer` subagent with: the objective (find real bugs and security issues), the scope or diff, and the required output format (`ID | severity | file:line | problem | suggested fix`, or `NO FINDINGS`). Show the reviewer's output in the conversation. If the work is based on a prototype or design (see the `prototype-fidelity` skill), also give the reviewer the prototype (link or the saved source file path) and ask it to list visual deviations (colors, sizes, radii, spacing, icons, states, light and dark) as findings, severity `med` unless purely cosmetic; skip this only if there is no prototype.
 3. If the result is `NO FINDINGS`, or contains only `low` findings, stop the loop and report success. Clean means no `high` or `med` findings; list any `low` items in the final report.
 4. For each `high` and `med` finding, verify it yourself against the code. The reviewer can be wrong.
    - Real: fix it in the main thread.
@@ -39,7 +41,6 @@ When the loop ends, run the project's tests one last time and show the result. A
 ## Rules
 - Never commit, push, or stash. Leave all changes in the working tree.
 - Do not widen scope beyond the findings.
-- Re-read any file yourself before editing it; do not rely on a summary alone.
 
 ## Final report
 After recording, or deciding not to, print a table: rounds used, findings fixed, findings rejected (with reason), findings still open, and test status.

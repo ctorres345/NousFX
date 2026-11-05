@@ -1,6 +1,6 @@
 ---
 name: project-setup
-description: Set up or audit a repository with Cesar's stack-independent agent workflow: ticket template, work labels, review gate, shared .claude files, runbook and secret checks. Use for a new project, an existing project missing the workflow, or "set up Claude here".
+description: "Set up or audit a repository with Cesar's stack-independent agent workflow: ticket template, work labels, review gate, shared .claude files, runbook and secret checks. Use for a new project, an existing project missing the workflow, or \"set up Claude here\"."
 argument-hint: "[path to repo; default current]"
 ---
 

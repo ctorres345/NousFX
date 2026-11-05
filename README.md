@@ -31,9 +31,9 @@ cd NousFX && ./install.sh
 
 Then start a **new** Claude Code session (hooks and agents load at session start) and run `/agents`. You should see `Explore`, `researcher`, `reviewer`, `reviewer-deep`, `architect` and `test-runner`.
 
-`install.sh` copies the files into `~/.claude/` (override with `CLAUDE_HOME`) and backs up anything it replaces as `*.bak-<stamp>`. It keeps the "Delegation policy" section of `~/.claude/CLAUDE.md` current and leaves the rest of that file alone. It also registers the review gate in `~/.claude/settings.json`, after backing that up too.
+`install.sh` copies the files into `~/.claude/` (override with `CLAUDE_HOME`) and backs up anything it replaces as `*.bak-<stamp>`. It no longer writes rules: `scripts/nousfx_sync.py` generates `~/.claude/CLAUDE.md` (see [docs/sync.md](docs/sync.md)). It registers the review gate in `~/.claude/settings.json`, after backing that up too.
 
-`install.sh` does not write agents, skills or hooks through a symlink. If one in `~/.claude/` is a link (for example a skill linked from `~/.agents/skills`), it warns, skips that file and leaves the target alone. `CLAUDE.md` and `settings.json` are still written through a link on purpose, so a dotfiles-managed copy keeps getting updates.
+`install.sh` does not write agents, skills or hooks through a symlink. If one in `~/.claude/` is a link (for example a skill linked from `~/.agents/skills`), it warns, skips that file and leaves the target alone. `settings.json` is still written through a link on purpose, so a dotfiles-managed copy keeps getting updates.
 
 Re-installing after a merge, checking the gate and rolling back an install are in [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
@@ -110,11 +110,11 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/gemini_common.py` holds the safety checks both Gemini scripts share; they run on macOS and Windows |
 | `claude/skills/handoff/` | `/handoff`: session handoff note |
 | `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list. Applies only approved fixes |
+| `claude/skills/prototype-fidelity/` | Rules for work based on an approved prototype: tickets, implementing, review, PR |
 | `claude/skills/project-setup/` | Sets up or audits a repo with the shared workflow |
 | `claude/hooks/review-gate.py` | PreToolUse hook that blocks `gh pr create` until a review with 0 open high/med findings (or an approved `--mark --skip`) is recorded. `--mark --findings <count>` records one; `--mark` alone is refused |
 | `claude/hooks/pr_create_parser.py` | Shell parser the gate uses to find `gh pr create` and the directory it runs in. Keep it next to the gate: without it the gate blocks any command that mentions `gh` and `pr` |
 | `claude/hooks/test_review_gate.py` | Gate test suite: `python3 claude/hooks/test_review_gate.py` |
-| `claude/CLAUDE.delegation.md` | Delegation policy merged into `~/.claude/CLAUDE.md` |
 | `claude/templates/pull_request_template.md` | Standard PR body. Copy it to `.github/` per repo |
 | `scripts/usage-report.py` | Read-only token and cost report |
 | `docs/agents/` | This repo's own tracker setup (Jira project `NFX`) |
@@ -171,7 +171,7 @@ Never commit `settings.local.json`, handoffs, memory, session history or anythin
 `reviewer-deep` and `architect` need Fable access, which is included on Max up to 50% of the weekly limit (terms may change). Without it, remove:
 - `claude/agents/reviewer-deep.md` and `claude/agents/architect.md`
 - the "Optional deep pass" section of the review-loop skill
-- their lines in `CLAUDE.delegation.md`
+- their lines in `harness/overlays/claude.overlay.md`
 
 ## Usage report
 ```bash
