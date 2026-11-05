@@ -405,6 +405,27 @@ class ViaSkillsTest(unittest.TestCase):
         self.write_lock(c, files)
         self.assertNotEqual(self.install().returncode, 0)
 
+    def test_format_and_line_separator_characters_in_names_are_refused(self):
+        for bad in ("a\u202eb.md", "a\u2028b.md", "a\u009bb.md"):
+            files = {"SKILL.md": b"x\n", bad: b"y\n"}
+            self.write_lock(self.commit_raw(files), files)
+            self.assertNotEqual(self.install().returncode, 0, repr(bad))
+
+    def test_the_diff_shows_control_characters_escaped(self):
+        c = self.commit(self.BASE)
+        self.write_lock(c, self.BASE)
+        c2 = self.commit(dict(self.BASE, **{"SKILL.md": b"hello\x1b[2Kforged\n"}))
+        r = self.run_tool("update", "foo", "--commit", c2)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("\x1b", r.stdout)
+        self.assertIn("\\u001b", r.stdout)
+
+    def test_add_refuses_a_name_that_differs_only_by_case(self):
+        c = self.commit(self.BASE)
+        self.write_lock(c, self.BASE)
+        r = self.run_tool("add", "Foo", "--repo", "file://" + self.remote, "--path", "skills/foo", "--commit", c)
+        self.assertNotEqual(r.returncode, 0)
+
     def test_lock_names_that_differ_only_by_case_are_refused(self):
         c = self.commit(self.BASE)
         entry = {"repo": "file://" + self.remote, "path": "skills/foo", "commit": c, "sha256": checksum(self.BASE)}

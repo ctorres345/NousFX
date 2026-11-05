@@ -28,9 +28,10 @@ user's yes in chat and Claude Code's permission prompt for the command; setup.md
 Safety rules, all enforced before anything is written under the skills home:
   - the pin must be a full 40-character commit sha (never a branch or tag); https URLs only
     (file:// only with --allow-file-urls, which tests use);
+  - diff text is shown with control characters escaped;
   - names that would land in one file on a case-insensitive disk (case or Unicode twins, a file and a folder
     with the same name) and control characters in file names are refused, and the written files are hashed
-    again before they replace anything;
+    again before they replace anything (a disk that rewrites names to NFD would fail that check: install refuses);
   - the tree is read straight from git objects (no checkout, so no filters or hooks); symlinks, submodules,
     paths with `..` or `.git`, and more than 2000 files or 20 MB are refused;
   - git runs with a clean environment (no GIT_* variables, no user or system git config);
@@ -74,7 +75,7 @@ class Fail(Exception):
 # --- lock ---------------------------------------------------------------------------------------------------
 def check_path(path):
     parts = path.split("/")
-    if (not path or path.startswith("/") or "\\" in path or any(ord(c) < 32 or ord(c) == 127 for c in path)
+    if (not path or path.startswith("/") or "\\" in path or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in path)
             or any(p in ("", ".", "..", ".git") for p in parts)):
         raise Fail("unsafe path %r" % path)
 
@@ -446,6 +447,11 @@ def listing(files):
     return "\n".join("  %s  (%d bytes)" % (p, len(files[p][1])) for p in sorted(files))
 
 
+def escape(line):
+    """Show control and format characters as \\uXXXX, so remote text cannot rewrite what the user reads."""
+    return "".join(c if unicodedata.category(c) not in ("Cc", "Cf", "Zl", "Zp") else "\\u%04x" % ord(c) for c in line)
+
+
 def show_diff(old, new):
     lines = []
     for path in sorted(set(old) | set(new)):
@@ -464,7 +470,7 @@ def show_diff(old, new):
         except UnicodeDecodeError:
             lines.append("  (binary file)")
             continue
-        lines += list(difflib.unified_diff(a_, b_, "pinned/" + path, "new/" + path, lineterm=""))
+        lines += [escape(l) for l in difflib.unified_diff(a_, b_, "pinned/" + path, "new/" + path, lineterm="")]
     if not lines:
         return "no file changes"
     if len(lines) > DIFF_LINES:
@@ -486,8 +492,8 @@ def cmd_add(a, lock):
         raise Fail("add needs --repo, --path and --commit")
     if not NAME_RE.match(a.name):
         raise Fail("bad skill name %r" % a.name)
-    if a.name in lock["skills"]:
-        raise Fail("%s is already locked; use update" % a.name)
+    if fold(a.name) in {fold(n) for n in lock["skills"]}:
+        raise Fail("%s is already locked (names are compared without case); use update" % a.name)
     files = stage(a.repo, a.path, a.commit, a.allow_file_urls)
     got = checksum(files)
     print("%s from %s path %s commit %s\n%s\nsha256 %s" % (a.name, a.repo, a.path, a.commit, listing(files), got))
