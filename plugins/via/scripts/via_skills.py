@@ -21,9 +21,16 @@ The lock (plugins/via/skills.lock.json) is committed, so a PR shows every pin ch
 The checksum is the sha256 over every file of the skill folder sorted by path: path, NUL, byte length, NUL, bytes.
 It covers file contents and names only (no times, no modes), so it is the same on every machine.
 
+The digest and the --approve checksum bind a step to what was shown: they catch a plan or a lock that changed
+after the user looked. They are not consent by themselves, because the same tool prints them. Consent is the
+user's yes in chat and Claude Code's permission prompt for the command; setup.md tells the agent to wait for both.
+
 Safety rules, all enforced before anything is written under the skills home:
   - the pin must be a full 40-character commit sha (never a branch or tag); https URLs only
     (file:// only with --allow-file-urls, which tests use);
+  - names that would land in one file on a case-insensitive disk (case or Unicode twins, a file and a folder
+    with the same name) and control characters in file names are refused, and the written files are hashed
+    again before they replace anything;
   - the tree is read straight from git objects (no checkout, so no filters or hooks); symlinks, submodules,
     paths with `..` or `.git`, and more than 2000 files or 20 MB are refused;
   - git runs with a clean environment (no GIT_* variables, no user or system git config);
@@ -46,6 +53,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` adds no script folder to sys.path
 import via_home  # noqa: E402
@@ -66,7 +74,7 @@ class Fail(Exception):
 # --- lock ---------------------------------------------------------------------------------------------------
 def check_path(path):
     parts = path.split("/")
-    if (not path or path.startswith("/") or "\\" in path or "\0" in path
+    if (not path or path.startswith("/") or "\\" in path or any(ord(c) < 32 or ord(c) == 127 for c in path)
             or any(p in ("", ".", "..", ".git") for p in parts)):
         raise Fail("unsafe path %r" % path)
 
@@ -80,6 +88,11 @@ def check_repo(repo, allow_file):
 def check_commit(commit):
     if not isinstance(commit, str) or not SHA1_RE.match(commit):
         raise Fail("the pin must be a full 40-character commit sha, got %r" % (commit,))
+
+
+def fold(path):
+    """Key under which two names are the same file on a case-insensitive or normalizing filesystem."""
+    return unicodedata.normalize("NFC", path).casefold()
 
 
 def check_source(repo, path, commit, allow_file):
@@ -108,6 +121,8 @@ def load_lock(path, allow_file):
         raise Fail("the lock %s must be {\"version\": 1, \"skills\": {...}}" % path)
     for name, e in doc["skills"].items():
         check_entry(name, e, allow_file)
+    if len({fold(n) for n in doc["skills"]}) != len(doc["skills"]):
+        raise Fail("two skill names in the lock differ only by case or Unicode form")
     return doc
 
 
@@ -178,6 +193,16 @@ def read_tree(gd, commit, path, scratch, allow_file):
         entries.append((rel, mode == "100755", sha))
     if not entries:
         raise Fail("%r holds no files in commit %s" % (path, commit))
+    seen = set()
+    for rel, _exe, _sha in entries:  # two names that land in one file would hide what the checksum covers
+        key = fold(rel)
+        if key in seen:
+            raise Fail("two files in the skill share a name on a case-insensitive disk (%s); refused" % rel)
+        seen.add(key)
+    for rel, _exe, _sha in entries:
+        parts = fold(rel).split("/")
+        if any("/".join(parts[:i]) in seen for i in range(1, len(parts))):
+            raise Fail("a file and a folder in the skill share a name (%s); refused" % rel)
     if len(entries) > MAX_FILES or total > MAX_BYTES:
         raise Fail("the skill is too large (%d files, %d bytes; limit %d files, %d MB)"
                    % (len(entries), total, MAX_FILES, MAX_BYTES // (1024 * 1024)))
@@ -187,8 +212,11 @@ def read_tree(gd, commit, path, scratch, allow_file):
         raise Fail("cannot read the skill files: %s" % text(batch))
     out, pos, files = memoryview(batch.stdout), 0, {}
     for rel, exe, sha in entries:
-        end = batch.stdout.index(b"\n", pos)
-        _sha, kind, size = bytes(out[pos:end]).decode().split()
+        end = batch.stdout.find(b"\n", pos)
+        head = bytes(out[pos:end]).decode("ascii", "replace").split() if end >= 0 else []
+        if len(head) != 3 or head[0] != sha or head[1] != "blob" or not head[2].isdigit():
+            raise Fail("unexpected answer from git while reading %s" % rel)
+        size = head[2]
         start = end + 1
         files[rel] = (exe, bytes(out[start:start + int(size)]))
         pos = start + int(size) + 1
@@ -248,7 +276,8 @@ def load_manifest():
         return {}
     except (OSError, ValueError) as e:
         raise Fail("cannot read %s: %s" % (path, e))
-    if not isinstance(doc, dict) or not isinstance(doc.get("skills"), dict):
+    if (not isinstance(doc, dict) or not isinstance(doc.get("skills"), dict)
+            or not all(isinstance(v, dict) for v in doc["skills"].values())):
         raise Fail("%s is not a valid ownership record" % path)
     return doc["skills"]
 
@@ -304,6 +333,7 @@ def classify(name, e, owned, shared, claude):
 def show_plan(lock, owned, shared, claude):
     """Print the plan. Returns (has_collision, todo, digest); the digest binds an install to exactly this plan."""
     rows, bad, todo, h = [], False, [], hashlib.sha256()
+    h.update(json.dumps([os.path.abspath(shared), os.path.abspath(claude)]).encode())
     for name in sorted(lock["skills"]):
         e = lock["skills"][name]
         action, why = classify(name, e, owned, shared, claude)
@@ -360,15 +390,25 @@ def cmd_install(a, lock, owned):
             tmp = os.path.join(a.skills_home, ".via-stage-" + name)
             shutil.rmtree(tmp, ignore_errors=True)
             write_skill(tmp, staged[name])
+            on_disk = disk_tree(tmp)  # what a case-insensitive disk really holds must still match the lock
+            if on_disk is None or checksum(on_disk) != e["sha256"]:
+                raise Fail("the files written for %s do not match the lock; nothing was put in place" % name)
+            kept = None
             if os.path.isdir(folder):  # owned (classify refused anything else): keep the old copy
                 backup = os.path.join(via_home.anchor(), "backups", "skills-" + stamp)
                 os.makedirs(backup, exist_ok=True)
-                shutil.move(folder, os.path.join(backup, name))
-            os.replace(tmp, folder)
+                kept = os.path.join(backup, name)
+                shutil.move(folder, kept)
+            try:
+                os.replace(tmp, folder)
+            except OSError:
+                if kept:
+                    shutil.move(kept, folder)
+                raise
+            owned[name] = {k: e[k] for k in ("repo", "path", "commit", "sha256")}  # before the link, so a failure can be repaired
             link = os.path.join(a.claude_skills, name)
             if not os.path.lexists(link):
                 os.symlink(folder, link, target_is_directory=True)
-            owned[name] = {k: e[k] for k in ("repo", "path", "commit", "sha256")}
             print("installed %s at %s" % (name, e["commit"]))
     finally:
         for name in todo:

@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -68,6 +69,24 @@ class ViaSkillsTest(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout.strip()
+
+    def commit_raw(self, files):
+        """Commit names a case-insensitive disk cannot hold side by side, through git objects, not the work tree."""
+        if not os.path.isdir(self.remote):
+            os.makedirs(self.remote)
+            self.git("init", "-q", "-b", "main")
+        env = {"PATH": self.bin, **GIT_ENV, "GIT_INDEX_FILE": os.path.join(self.work, "raw-index")}
+        def run(*args, data=None):
+            r = subprocess.run(["git", *args], cwd=self.remote, env=env, input=data, capture_output=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return r.stdout.decode().strip()
+        for rel, data in files.items():
+            blob = run("hash-object", "-w", "--stdin", data=data)
+            run("update-index", "--add", "--cacheinfo", "100644,%s,skills/foo/%s" % (blob, rel))
+        tree = run("write-tree")
+        commit = run("commit-tree", tree, "-m", "raw")
+        os.unlink(env["GIT_INDEX_FILE"])
+        return commit
 
     def commit(self, files, delete=(), links=None):
         """Write files into the remote repo (under skills/foo), commit, return the commit sha."""
@@ -364,6 +383,44 @@ class ViaSkillsTest(unittest.TestCase):
         self.write_lock(c, self.BASE)
         r = self.approve("add", "foo", "--repo", "file://" + self.remote, "--path", "skills/foo", "--commit", c)
         self.assertNotEqual(r.returncode, 0)
+
+    def test_names_that_collide_on_a_case_insensitive_disk_are_refused(self):
+        for files in ({"SKILL.md": b"good\n", "skill.md": b"evil\n"}, {"A": b"f\n", "a/x": b"d\n"}):
+            c = self.commit_raw(files)
+            self.write_lock(c, files)
+            r = self.install()
+            self.assertNotEqual(r.returncode, 0, files)
+            self.assertIn("share a name", r.stderr, files)
+            self.assertFalse(os.path.exists(os.path.join(self.shared, "foo")))
+
+    def test_fold_treats_unicode_twins_and_case_as_one_name(self):
+        sys.path.insert(0, os.path.dirname(SCRIPT))
+        import via_skills
+        self.assertEqual(via_skills.fold("caf\u00e9.md"), via_skills.fold("cafe\u0301.MD"))
+        self.assertNotEqual(via_skills.fold("a.md"), via_skills.fold("b.md"))
+
+    def test_control_characters_in_file_names_are_refused(self):
+        files = {"SKILL.md": b"x\n", "a\nforged 1 bytes.md": b"y\n"}
+        c = self.commit_raw(files)
+        self.write_lock(c, files)
+        self.assertNotEqual(self.install().returncode, 0)
+
+    def test_lock_names_that_differ_only_by_case_are_refused(self):
+        c = self.commit(self.BASE)
+        entry = {"repo": "file://" + self.remote, "path": "skills/foo", "commit": c, "sha256": checksum(self.BASE)}
+        with open(self.lock, "w") as f:
+            json.dump({"version": 1, "skills": {"foo": entry, "Foo": entry}}, f)
+        self.assertNotEqual(self.run_tool("plan").returncode, 0)
+
+    def test_a_manifest_with_a_bad_entry_fails_closed(self):
+        c = self.commit(self.BASE)
+        self.write_lock(c, self.BASE)
+        os.makedirs(self.state)
+        with open(os.path.join(self.state, "locked-skills.json"), "w") as f:
+            json.dump({"version": 1, "skills": {"foo": "oops"}}, f)
+        r = self.run_tool("plan")
+        self.assertEqual(r.returncode, 2)
+        self.assertNotIn("Traceback", r.stderr)
 
     # --- environment --------------------------------------------------------------------------------------
     def test_bad_lock_file_fails_closed(self):

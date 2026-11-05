@@ -21,7 +21,8 @@ Third-party skills are installed only from the lock (`${CLAUDE_PLUGIN_ROOT}/skil
 2. If `plan` lists skills to install, it ends with a `digest` line. Ask the user. Run `python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_skills.py" install --confirm <digest>` only after a clear yes in chat, with the digest from the plan the user saw. The tool refuses any other digest, so a plan that changed after the user looked is not installed.
 3. A checksum mismatch stops the install and nothing is written. Tell the user and do not retry or work around it.
 4. Run `... via_skills.py verify` and include its result in the report. Any `DRIFT` line means an installed skill was edited or is out of date.
-5. Never run `add` or `update` unless the user asks. They print the files or the diff and a sha256, and write the lock only when `--approve <sha256>` carries that checksum (`update` also needs `--commit`). Show the user the preview first, and pass the checksum only after they approve what they saw.
+5. The digest and the checksum only catch a plan or a lock that changed after the user looked. They are not consent: the user's yes in chat is. Never run `install --confirm` or `--approve` without it, and never copy a digest or checksum from the same command output into the next command in one go.
+6. Never run `add` or `update` unless the user asks. They print the files or the diff and a sha256, and write the lock only when `--approve <sha256>` carries that checksum (`update` also needs `--commit`). Show the user the preview first, and pass the checksum only after they approve what they saw.
 
 ## 4. Report
 - Print a table: integration | status | why it matters | fix link. Use the script's JSON.
