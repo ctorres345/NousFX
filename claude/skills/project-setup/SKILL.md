@@ -15,6 +15,7 @@ Run read-only and fill this table: item | state | action.
 - `CLAUDE.md`, `docs/agents/`, `docs/RUNBOOK.md` or `docs/engineering/RUNBOOK.md`, PR template, CI workflows
 - `.gitignore` rules for `.claude/`, and which `.claude` files are tracked
 - Jira project key, and existing labels
+- Per-tool files: run `python3 <NousFX>/scripts/nousfx_sync.py --project <repo> --check` (`<NousFX>` is the clone of this repo) and report every `drift:` line and every `left alone (hand-written)` note. Exit 1 means drift
 - Handoff file: read it if present. Report a gap when `.claude/handoff.md` is missing, when `git check-ignore -q --no-index .claude/handoff.md` fails (no ignore rule), or when `git ls-files --error-unmatch .claude/handoff.md` exits 0 (git tracks it; report this separately, because untracking is Cesar's call)
 
 Done when every row has a state.
@@ -35,6 +36,7 @@ Merge into existing files, and keep what is already there.
 |---|---|
 | `.gitignore` | Allowlist: `.claude/*`, `!.claude/settings.json`, `!.claude/agents/`, `!.claude/skills/`, `!.claude/hooks/`, then `.claude/**/*.bak*`, `.claude/**/.env*`, `CLAUDE.local.md`, `graphify-out/`; replaces any blanket `.claude/` ignore |
 | `.claude/handoff.md` | Create it empty if missing. Add the line `.claude/handoff.md` to `.gitignore` unless `git check-ignore -q --no-index .claude/handoff.md` already succeeds (`--no-index` keeps the answer right when the file is tracked), so a rerun adds no duplicate line. Never `git add` it; if `git ls-files --error-unmatch .claude/handoff.md` exits 0, tell Cesar and leave it tracked |
+| Per-tool files (`CLAUDE.md` and `AGENTS.md` stubs when missing, `.githooks/pre-push`, the `.agents/skills` link, MCP files) | `python3 <NousFX>/scripts/nousfx_sync.py --project <repo> --dry-run`, show the output, then run it without `--dry-run`. Hand-written files are left as they are with their diff shown; pass `--yes-replace CLAUDE.md` or `--yes-replace .githooks/pre-push` only after Cesar agrees. Then tell Cesar to run `git config core.hooksPath .githooks` (sync does not change git config) |
 | `.claude/settings.json` | [`assets/settings.json`](assets/settings.json), merged |
 | `.claude/hooks/review-gate.py`, `.claude/hooks/pr_create_parser.py` | The same two files from the gate your tool runs (this repo's `claude/hooks/` is the source), together: the gate imports the parser |
 | `.claude/agents/` | `reviewer.md`, `test-runner.md` from `~/.claude/agents/` |

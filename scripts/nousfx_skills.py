@@ -81,7 +81,8 @@ def make_link(path, target, win):
         if not win:
             raise
         err = e
-    r = subprocess.run(["cmd", "/c", "mklink", "/J", path, target], capture_output=True, text=True)
+    absolute = target if os.path.isabs(target) else os.path.normpath(os.path.join(os.path.dirname(path), target))
+    r = subprocess.run(["cmd", "/c", "mklink", "/J", path, absolute], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"cannot link {path}: symlink failed ({err}) and junction failed ({r.stderr.strip()})")
 

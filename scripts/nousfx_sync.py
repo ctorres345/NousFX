@@ -14,7 +14,8 @@ Writes under <home>/.claude (tool "claude", the default):
 Writes under <home>/.gemini/config/plugins/nousfx (tool "agy", only when named):
   plugin.json, rules/AGENTS.md, hooks.json and hooks/ (the review gate), skills/<name> links, mcp_config.json
 MCP servers (harness/mcp.toml, <state-home>/mcp.toml) go to <home>/.claude.json (only the entries
-sync added) and the agy plugin. --project DIR writes only DIR's MCP files, from DIR/.nousfx/mcp.toml.
+sync added) and the agy plugin. --project DIR sets up one repo instead (nousfx_project.py, docs/sync.md
+"Project mode"): stubs, the pre-push hook, a skills link and its MCP files from DIR/.nousfx/mcp.toml.
 
 Sources: <repo>/harness/AGENTS.md, the tool's overlay under <repo>/harness/overlays/ and the optional,
 never committed <state-home>/local.md (every tool), local.claude.md, local.agy.md. The home comes from
@@ -38,6 +39,7 @@ import time
 import nousfx_agents
 import nousfx_agy
 import nousfx_mcp
+import nousfx_project
 import nousfx_skills
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -194,11 +196,16 @@ def merged_files(home, project=None):
     return mcp_merged_files(home, project) | (set() if project else {os.path.join(home, ".claude", "settings.json")})
 
 
-def plan(repo, home, state, platform, tools=("claude",), project=None):
-    """Map of absolute path -> expected text for every file sync owns."""
+def plan(repo, home, state, platform, tools=("claude",), project=None, yes_replace=(), extras=None):
+    """Map of absolute path -> expected text for every file sync owns. In project mode `extras` (a dict)
+    receives the ProjectPlan under "project": links to make and notes to print."""
     tools = set(tools)
-    if project:  # project mode writes only that project's MCP files
+    if project:  # project mode writes only that project's files, never global ones
         wanted = nousfx_mcp.plan_mcp(repo, home, state, tools, SyncError, SECRET_PATTERNS, project)
+        pp = nousfx_project.plan_project(repo, project, SyncError, yes_replace)
+        wanted.update(pp.files)
+        if extras is not None:
+            extras["project"] = pp
         plugin = os.path.join(project, ".agents", "plugins", "nousfx")
         opted_in = os.path.exists(os.path.join(project, ".nousfx", "mcp.toml")) or os.path.isdir(plugin)
         if "agy" in tools and opted_in:  # never put files in a project that has no list and no earlier sync
@@ -214,7 +221,8 @@ def plan(repo, home, state, platform, tools=("claude",), project=None):
         wanted.update(nousfx_mcp.plan_mcp(repo, home, state, tools, SyncError, SECRET_PATTERNS))
     # Folders the user may legitimately link (dotfiles) are not checked; sync's own files and folders are.
     skip = {os.path.join(home, ".claude"), home, state} | ({project} if project else set())
-    for path in wanted:  # a symlinked target or folder would be replaced or written through: refuse, never guess
+    links = [l for l, _ in extras["project"].links] if project and extras and "project" in extras else []
+    for path in list(wanted) + links:  # a symlinked target or folder would be replaced or written through: refuse
         chain = {path, os.path.dirname(path)}
         d = os.path.dirname(path)
         while project and d.startswith(project + os.sep):  # a link planted inside the project sends the write elsewhere
@@ -251,12 +259,15 @@ def diff_of(path, new):
         fromfile=path if old is not None else "/dev/null", tofile=path))
 
 
-def write_atomic(path, text):
+def write_atomic(path, text, mode=None):
+    """Write via a temp file. mkstemp makes it 0600, which suits sync's own files; mode overrides that."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".nousfx-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
             f.write(text)
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
@@ -264,7 +275,7 @@ def write_atomic(path, text):
         raise
 
 
-def backup(state, paths, merged=()):
+def backup(state, paths, merged=(), written=None):
     """Copy the current version of each path (or note it was absent) before it is overwritten.
     `merged` lists files sync only changes a part of (they hold the user's own content): restore
     undoes just sync's part there, never the whole file, so only the mcpServers part is saved (the rest
@@ -289,6 +300,12 @@ def backup(state, paths, merged=()):
         else:
             manifest[p] = None
     write_atomic(os.path.join(root, "manifest.json"), json.dumps(manifest, indent=2))
+    # Project mode: a repo file that did not exist is removed on restore only while it still holds what sync
+    # wrote, since the user fills the stubs in. Global files roll back fully, run after run.
+    made = {p: hashlib.sha256(t.encode("utf-8")).hexdigest() for p, t in (written or {}).items()
+            if manifest.get(p, "") is None}
+    if made:
+        write_atomic(os.path.join(root, "written.json"), json.dumps(made, indent=2))
     if merged:
         write_atomic(os.path.join(root, "merged.json"), json.dumps(sorted(merged), indent=2))
     return root
@@ -322,6 +339,7 @@ def restore(state):
     root = os.path.join(base, sets[-1])
     manifest = json.loads(read_text(os.path.join(root, "manifest.json")))
     merged = set(json.loads(read_or_none(os.path.join(root, "merged.json")) or "[]"))
+    made = json.loads(read_or_none(os.path.join(root, "written.json")) or "{}")
     record = os.path.join(state, nousfx_mcp.OWNED_NAME)
     saved_record = manifest.get(record)
     names_now = read_or_none(record)  # read before the record itself is put back
@@ -339,8 +357,15 @@ def restore(state):
                 continue
             undo_merged(path, os.path.join(root, saved) if saved else None, names)
         elif saved is None:
-            if os.path.exists(path):
-                os.remove(path)
+            if nousfx_skills._is_link(path):  # also a link whose target is gone; a junction needs rmdir
+                nousfx_skills._remove_link(path)
+            elif os.path.isdir(path):
+                print(f"warning: {path} is a folder now; left as it is", file=sys.stderr)
+            elif os.path.exists(path):
+                if path in made and file_sha256(path) != made[path]:
+                    print(f"warning: {path} changed since sync wrote it; left as it is", file=sys.stderr)
+                else:
+                    os.remove(path)
         else:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             shutil.copy2(os.path.join(root, saved), path)
@@ -374,6 +399,39 @@ def self_test(hook_path):
                         f"sync again; --restore undoes the files a run wrote.")
 
 
+def file_sha256(path):
+    """Hash of the raw bytes, or None when the file cannot be read (then it counts as changed)."""
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def shown_name(path, home):
+    """A path relative to home for messages; another Windows drive has no relative form."""
+    try:
+        return os.path.relpath(path, home)
+    except ValueError:
+        return path
+
+
+def repo_file_mode(path):
+    """A repo file keeps its mode when replaced; a new one gets what a normal checkout would (umask applies)."""
+    try:
+        return os.stat(path).st_mode & 0o777
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        return 0o666 & ~umask
+
+
+def make_project_links(links, platform):
+    for path, target in links:
+        nousfx_skills.make_link(path, target, is_windows(platform))
+        print(f"linked {path} -> {target}")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = ap.add_mutually_exclusive_group()
@@ -384,13 +442,15 @@ def main(argv=None):
     ap.add_argument("--state-home", help="state dir (default: <home>/.config/nousfx)")
     ap.add_argument("--repo", default=os.path.dirname(HERE), help="repo with harness/ and claude/hooks/")
     ap.add_argument("--yes-replace", action="append", default=[], metavar="NAME",
-                    help="let the NousFX skill NAME replace an unowned folder (backed up first)")
+                    help="let the NousFX skill NAME replace an unowned folder (backed up first); in --project mode "
+                         "also CLAUDE.md or .githooks/pre-push when hand-written")
     ap.add_argument("--clean-backups", action="store_true",
                     help="move old install.sh backups (*.bak-YYYYMMDD-HHMMSS) into this run's backup")
     ap.add_argument("--tools", default="claude",
                     help="comma list of tools to write: claude, agy (default: claude)")
     ap.add_argument("--project", metavar="DIR",
-                    help="write only DIR's MCP files, from DIR/.nousfx/mcp.toml")
+                    help="set up one repo: CLAUDE.md and AGENTS.md stubs, pre-push hook, skills link, and "
+                         "the MCP files from DIR/.nousfx/mcp.toml")
     ap.add_argument("--platform", choices=("posix", "windows"), help="override detection (tests)")
     args = ap.parse_args(argv)
     tools = tuple(dict.fromkeys(t.strip() for t in args.tools.split(",") if t.strip()))
@@ -407,10 +467,12 @@ def main(argv=None):
         if args.restore:
             return restore(state) or 0
         seen_before = {p: read_or_none(p) for p in mcp_merged_files(home, project)}  # before plan() reads them
-        wanted = plan(repo, home, state, args.platform, tools, project)
+        extras = {}
+        wanted = plan(repo, home, state, args.platform, tools, project, args.yes_replace, extras)
+        pp = extras.get("project") or nousfx_project.ProjectPlan()
         # Merged files hold the user's own content, so only what sync generates is scanned.
-        scan_secrets({os.path.relpath(p, home): t for p, t in wanted.items()
-                      if p not in merged_files(home, project)})
+        merged = merged_files(home, project)
+        scan_secrets({shown_name(p, home): t for p, t in wanted.items() if p not in merged})
         warn_local(state, tools)
         todo = changes(wanted)
         mcp_merged = mcp_merged_files(home, project) & set(todo)
@@ -421,20 +483,34 @@ def main(argv=None):
             extra = [os.path.join(nousfx_agy.plugin_dir(home), "skills")] if "agy" in tools else []
             sk = nousfx_skills.plan(repo, home, state, args.yes_replace, args.clean_backups, extra,
                                     claude="claude" in tools)
+        links = pp.links
+        unrunnable = nousfx_project.not_executable(pp.executable)
+        pending = bool(todo or links or unrunnable or sk.pending)
+        for note in pp.notes:
+            print(note)
         if args.check:
             for p in todo:
                 print(f"drift: {p}")
+            for l, t in links:
+                print(f"drift: {l} is missing (would link to {t})")
+            for p in unrunnable:
+                print(f"drift: {p} is not executable")
             for line in sk.lines() + sk.listing():
                 print(line)
-            bad = bool(todo or sk.actions or sk.collisions or sk.broken)
+            bad = bool(todo or links or unrunnable or sk.actions or sk.collisions or sk.broken)
             print("drift found" if bad else "no drift")
             return 1 if bad else 0
         if args.dry_run:
             for p, t in todo.items():
                 print(servers_summary(p, t) if p in mcp_merged else diff_of(p, t), end="")
+            for l, t in links:
+                print(f"would link {l} -> {t}")
+            for p in unrunnable:
+                print(f"would make {p} executable")
             for line in sk.lines() + sk.listing():
                 print(line)
-            print(f"{len(todo)} file(s) would change" if todo or sk.pending else "nothing would change")
+            print(f"{len(todo) + len(links) + len(unrunnable)} file(s) would change" if pending
+                  else "nothing would change")
             return 0
         for line in sk.lines():
             if "collision" in line:
@@ -448,11 +524,11 @@ def main(argv=None):
             if "agy" in tools and not project:
                 nousfx_agy.self_test(nousfx_agy.plugin_dir(home), SyncError)
                 print("agy gate self-test passed")
-        if not todo and not sk.pending:
+        if not pending:
             print("nothing to change")
             self_tests()
             return 0
-        root = backup(state, list(todo), mcp_merged)
+        root = backup(state, list(todo) + [l for l, _ in links], mcp_merged, todo if project else None)
         try:
             nousfx_skills.apply(sk, root, is_windows(args.platform), state)
         except (OSError, RuntimeError) as e:
@@ -460,17 +536,20 @@ def main(argv=None):
         for line in sk.lines():
             if "collision" not in line:
                 print(line)
-        if not todo:
-            print(f"backup: {root}")
-            self_tests()
-            return 0
         for p, old in seen.items():  # Claude rewrites its own files while it runs: never write over a newer one
             if read_or_none(p) != old:
                 raise SyncError(f"{p} changed while sync was running. Nothing was written to it; "
                                 "run sync again (--restore undoes the rest).")
         for p, t in todo.items():
-            write_atomic(p, t)
+            write_atomic(p, t, repo_file_mode(p) if project and p.startswith(project + os.sep) else None)
             print(f"wrote {p}")
+        try:
+            make_project_links(links, args.platform)
+            for p in nousfx_project.not_executable(pp.executable):
+                os.chmod(p, 0o755)
+        except (OSError, RuntimeError) as e:
+            raise SyncError(f"a project step failed ({e}). The backup is {root}; run --restore to put the "
+                            "previous files back.")
         print(f"backup: {root}")
         self_tests()
         return 0
