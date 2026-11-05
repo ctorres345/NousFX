@@ -9,6 +9,7 @@ Writes under <home>/.claude:
   settings.json              the review gate registered as a PreToolUse hook (other settings kept)
   hooks/review-gate.py       the gate hook and its parser, copied from the repo
   hooks/pr_create_parser.py
+  agents/*.md                from harness/agents (roles) and harness/models.toml (role -> model)
 
 Sources: <repo>/harness/AGENTS.md, <repo>/harness/overlays/claude.overlay.md and
 <state-home>/local.md (optional, never committed). The home comes from the user record, never from
@@ -27,6 +28,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+import nousfx_agents
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK_FILES = ("review-gate.py", "pr_create_parser.py")
@@ -149,7 +152,9 @@ def plan(repo, home, state, platform):
     win = is_windows(platform)
     gate = os.path.join(claude, "hooks", "review-gate.py")
     gate_cmd = windows_path(gate) if win else gate
-    wanted = {os.path.join(claude, "CLAUDE.md"): build_rules(repo, state, commit_of(repo))}
+    commit = commit_of(repo)
+    wanted = {os.path.join(claude, "CLAUDE.md"): build_rules(repo, state, commit)}
+    wanted.update(nousfx_agents.plan_agents(repo, claude, commit, SyncError))
     for name in HOOK_FILES:
         src = os.path.join(repo, "claude", "hooks", name)
         text = read_or_none(src)
