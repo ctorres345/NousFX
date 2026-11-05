@@ -12,8 +12,8 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
         |
         v   python3 -B scripts/nousfx_sync.py [--tools claude,agy]
 ~/.claude/CLAUDE.md                generated, header holds a hash of the sources
-~/.claude/settings.json            review gate registered (other settings kept)
-~/.claude/hooks/                   review-gate.py and pr_create_parser.py
+~/.claude/settings.json            review gate and drift warning registered (other settings kept)
+~/.claude/hooks/                   review-gate.py, pr_create_parser.py and nousfx-drift.py
 ~/.gemini/config/plugins/nousfx/   (agy) hooks.json, and hooks/ with agy_gate.py and its own copy of the gate
 ```
 
@@ -24,12 +24,29 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
 | none | back up, write, then self-test the gate hook |
 | `--dry-run` | print a diff, write nothing |
 | `--check` | list drifted files, exit 1 on drift, write nothing |
+| `--check --summary` | the same exit code, but one JSON line of counts (`files`, `skills`, `outside`). The drift warning reads it |
 | `--restore` | put back the last backup (files that did not exist are removed) |
 | `--clean-backups` | also move old `install.sh` backups into the backup (otherwise they are only listed) |
 | `--yes-replace NAME` | let my skill NAME replace a folder sync does not own (moved into the backup first) |
 | `--tools claude,agy` | which tools to write. The default is `claude` only, so nothing touches `~/.gemini` until I name `agy` |
 | `--project DIR` | set up one repo (see Project mode below) |
 | `--home`, `--state-home`, `--repo` | override locations; tests always use these |
+
+## Drift warning
+
+When I change NousFX on one machine, the other one tells me at the start of a Claude Code session. Sync registers a `SessionStart` hook, `~/.claude/hooks/nousfx-drift.py`, with the clone's path and the `--tools` list written into its command. It runs on a fresh start (`matcher: startup`), not on resume, clear or compact.
+
+What it checks:
+- **This machine is out of date.** It runs `nousfx_sync.py --check --summary` in the clone. Any exit 1 with a valid summary counts, so a skill collision I have not decided yet also warns.
+- **The clone is behind `origin/main`.** It counts `HEAD..origin/main` from the last fetch. The hook starts `git fetch` first, in the background, at most every 10 minutes (no password prompts, no window on Windows), so the next session sees fresh data. The warning can be one session late, and it never waits for the network.
+
+What it prints: nothing when all is well. Otherwise one line, for example `NousFX on this machine is out of date (2 files, 13 skills need a decision). Run python3 -B scripts/nousfx_sync.py in <clone>.` On Windows the command says `python`. The same text goes to me and to the model.
+
+What it never does: sync, pull or write a file of mine. The background fetch is the only write, and it only moves `origin/main` in the clone. Any error, a missing clone or more than 2 seconds means it says nothing and exits 0, so it cannot break a session start.
+
+To turn it off, remove the `SessionStart` entry that names `nousfx-drift.py` from `~/.claude/settings.json`. The next sync puts it back.
+
+agy has no session-start hook (only `PreToolUse` is proven), so its rules carry a line that asks the model to run `--check --summary --tools agy` at the start of a session and report drift. Sync fills the clone's path into that line.
 
 ## Rules I keep
 

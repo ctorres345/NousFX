@@ -50,6 +50,9 @@ import nousfx_skills
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK_FILES = nousfx_agy.GATE_FILES  # the gate and its parser: the same pair goes to Claude and to agy
+DRIFT_HOOK = "nousfx-drift.py"  # Claude only: agy has no session-start event, so its rules carry a line instead
+CLAUDE_HOOK_FILES = HOOK_FILES + (DRIFT_HOOK,)
+DRIFT_TIMEOUT = 5  # seconds; the hook keeps its own 2 s budget and skips quietly past it
 MATCHER = "Bash|PowerShell|mcp__.*create_pull_request"
 TOOLS = nousfx_mcp.TOOLS
 
@@ -152,31 +155,57 @@ def windows_path(path):
     return path.replace("\\", "/")
 
 
+def native_for(win):
+    """How a path is written inside a command: cygpath-style on Windows, as is elsewhere."""
+    return windows_path if win else (lambda p: p)
+
+
 def interpreter(win):
     """python3 on POSIX; on Windows the launcher is `python`."""
     return "python" if win else "python3"
 
 
-def merge_settings(current, gate_path, win):
-    cfg = json.loads(current) if current else {}
-    hook = {"type": "command", "timeout": 30,
-            "command": f'{interpreter(win)} -I -B "{gate_path}"'}  # -I: PYTHONPATH must not shadow stdlib in the gate
+def owned_hook(command, timeout, win):
+    hook = {"type": "command", "timeout": timeout, "command": command}
     if win:
         hook["shell"] = "powershell"
-    pre = cfg.setdefault("hooks", {}).setdefault("PreToolUse", [])
-    pre[:] = [e for e in pre if not any("review-gate.py" in h.get("command", "") for h in e.get("hooks", []))]
-    pre.append({"matcher": MATCHER, "hooks": [hook]})
+    return hook
+
+
+def replace_owned(entries, marker, entry):
+    """Swap our entry (any whose command names `marker`, from an earlier sync) for the fresh one, in the same
+    place, so a hook the user adds after ours does not make settings.json look drifted. New: add at the end."""
+    mine = lambda e: any(marker in h.get("command", "") for h in e.get("hooks", []))  # noqa: E731
+    at = next((i for i, e in enumerate(entries) if mine(e)), len(entries))
+    entries[:] = [e for e in entries if not mine(e)]
+    entries.insert(min(at, len(entries)), entry)
+
+
+def merge_settings(current, gate_path, win, drift=None):
+    """Register the review gate and, when `drift` is (script, repo, tools), the session-start drift warning."""
+    cfg = json.loads(current) if current else {}
+    py = interpreter(win)
+    hooks = cfg.setdefault("hooks", {})
+    # -I: PYTHONPATH must not shadow stdlib in the hooks
+    gate = owned_hook(f'{py} -I -B "{gate_path}"', 30, win)
+    replace_owned(hooks.setdefault("PreToolUse", []), "review-gate.py", {"matcher": MATCHER, "hooks": [gate]})
+    if drift:
+        script, repo, tools = drift
+        warn = owned_hook(f'{py} -I -B "{script}" --repo "{repo}" --tools {",".join(tools)}', DRIFT_TIMEOUT, win)
+        replace_owned(hooks.setdefault("SessionStart", []), DRIFT_HOOK,
+                      {"matcher": "startup", "hooks": [warn]})  # not on resume, clear or compact
     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
 
 
-def claude_files(repo, home, state, platform):
+def claude_files(repo, home, state, platform, tools):
     claude = os.path.join(home, ".claude")
     win = is_windows(platform)
-    gate = os.path.join(claude, "hooks", "review-gate.py")
-    gate_cmd = windows_path(gate) if win else gate
+    native = native_for(win)
+    gate_cmd = native(os.path.join(claude, "hooks", "review-gate.py"))
+    drift_cmd = native(os.path.join(claude, "hooks", DRIFT_HOOK))
     wanted = {os.path.join(claude, "CLAUDE.md"): build_rules(repo, state)}
     wanted.update(nousfx_agents.plan_agents(repo, claude, SyncError))
-    for name in HOOK_FILES:
+    for name in CLAUDE_HOOK_FILES:
         src = os.path.join(repo, "claude", "hooks", name)
         text = read_or_none(src)
         if text is None:
@@ -184,7 +213,8 @@ def claude_files(repo, home, state, platform):
         wanted[os.path.join(claude, "hooks", name)] = text
     settings = os.path.join(claude, "settings.json")
     try:
-        wanted[settings] = merge_settings(read_or_none(settings), gate_cmd, win)
+        wanted[settings] = merge_settings(read_or_none(settings), gate_cmd, win,
+                                          (drift_cmd, native(repo), sorted(tools, key=TOOLS.index)))
     except ValueError as e:
         raise SyncError(f"{settings} is not valid JSON ({e}); fix it first", 2)
     return wanted
@@ -219,11 +249,10 @@ def plan(repo, home, state, platform, tools=("claude",), project=None, yes_repla
         elif "agy" in tools:
             wanted = {p: t for p, t in wanted.items() if not p.startswith(plugin + os.sep)}
     else:
-        wanted = claude_files(repo, home, state, platform) if "claude" in tools else {}
+        wanted = claude_files(repo, home, state, platform, tools) if "claude" in tools else {}
         if "agy" in tools:
             win = is_windows(platform)
-            wanted.update(nousfx_agy.plan_agy(repo, home, state, SyncError, interpreter(win),
-                                              windows_path if win else (lambda p: p)))
+            wanted.update(nousfx_agy.plan_agy(repo, home, state, SyncError, interpreter(win), native_for(win)))
         wanted.update(nousfx_mcp.plan_mcp(repo, home, state, tools, SyncError, SECRET_PATTERNS))
     # Folders the user may legitimately link (dotfiles) are not checked; sync's own files and folders are.
     skip = {os.path.join(home, ".claude"), home, state} | ({project} if project else set())
@@ -443,6 +472,8 @@ def main(argv=None):
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="print a diff, write nothing")
     mode.add_argument("--check", action="store_true", help="report drift, exit 1 on drift, write nothing")
+    ap.add_argument("--summary", action="store_true",
+                    help="with --check: print one JSON line of counts (files, skills, outside) instead of the listing")
     mode.add_argument("--restore", action="store_true", help="put back the last backup")
     ap.add_argument("--home", help="home dir (default: from the user record)")
     ap.add_argument("--state-home", help="state dir (default: <home>/.config/nousfx)")
@@ -462,6 +493,8 @@ def main(argv=None):
     tools = tuple(dict.fromkeys(t.strip() for t in args.tools.split(",") if t.strip()))
     if not tools or any(t not in TOOLS for t in tools):
         ap.error(f"--tools takes a comma list of {', '.join(TOOLS)}")
+    if args.summary and not args.check:
+        ap.error("--summary only goes with --check")
     project = os.path.abspath(args.project) if args.project else None
     if project and not os.path.isdir(project):
         ap.error(f"--project: {project} is not a folder")
@@ -505,6 +538,12 @@ def main(argv=None):
         links = pp.links
         unrunnable = nousfx_project.not_executable(pp.executable)
         pending = bool(todo or links or unrunnable or sk.pending or need)
+        counts = {"files": len(todo) + len(links) + len(unrunnable),
+                  "skills": len(sk.actions) + len(sk.collisions) + len(sk.broken), "outside": len(need)}
+        bad = any(counts.values())
+        if args.check and args.summary:  # one line for the session-start warning; notes and listings stay out
+            print(json.dumps(counts))
+            return 1 if bad else 0
         for note in pp.notes:
             print(note)
         if args.check:
@@ -518,7 +557,6 @@ def main(argv=None):
                 print(f"drift: outside skill {n} {st}")
             for line in sk.lines() + sk.listing():
                 print(line)
-            bad = bool(todo or links or unrunnable or sk.actions or sk.collisions or sk.broken or need)
             print("drift found" if bad else "no drift")
             return 1 if bad else 0
         if args.dry_run:
