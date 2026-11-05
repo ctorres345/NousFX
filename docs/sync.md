@@ -28,7 +28,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
 | `--clean-backups` | also move old `install.sh` backups into the backup (otherwise they are only listed) |
 | `--yes-replace NAME` | let my skill NAME replace a folder sync does not own (moved into the backup first) |
 | `--tools claude,agy` | which tools to write. The default is `claude` only, so nothing touches `~/.gemini` until I name `agy` |
-| `--project DIR` | write only the MCP files of one project (see MCP below) |
+| `--project DIR` | set up one repo (see Project mode below) |
 | `--home`, `--state-home`, `--repo` | override locations; tests always use these |
 
 ## Rules I keep
@@ -111,6 +111,25 @@ harness/AGENTS.md + agy.overlay.md + local.md + local.agy.md
 - The skill links use the same manifest, collision rule and `--restore` journal as the other skill links.
 - The review gate is wired too (`docs/review-gate.md`, "agy adapter"), with the hashes of its three files in `hooks.json`. After writing, sync runs the adapter once: a PR create in a throwaway repo must be denied and a harmless command must get no answer. If not, the run fails and `--restore` undoes it.
 
+## Project mode
+
+`--project DIR` sets up one repo for every tool. It never touches my home folder's rules, skills or settings.
+
+| File in the repo | What sync does |
+|---|---|
+| `AGENTS.md` | Writes a short stub only when the repo has none. After that it is the repo's. |
+| `CLAUDE.md` | Writes a stub with `@AGENTS.md` only when the repo has none. A file that already imports `AGENTS.md` is never touched. |
+| `.githooks/pre-push` | The advisory pre-push gate (`claude/githooks/pre-push`) with a generator line. Hand edits are drift. |
+| `.agents/skills` | A link to `../.claude/skills`, only when the repo has that folder and nothing at the link path. |
+| `.mcp.json`, `.agents/plugins/nousfx/` | MCP files from `.nousfx/mcp.toml` (see MCP). |
+
+- A file I wrote by hand is left alone. A `CLAUDE.md` without the import, or a `.githooks/pre-push` that is not generated, is shown as a diff with the line to confirm it: `--yes-replace CLAUDE.md` adds the import line at the top and keeps the rest, `--yes-replace .githooks/pre-push` replaces the hook. The run goes on with everything else, and `--check` does not count these as drift.
+- `--check` exits 1 for a missing or hand-edited generated file, a missing skills link, or a hook without the executable bit. `--dry-run` prints diffs and writes nothing. `--restore` removes what a run created and puts back what it changed.
+- The review gate is not copied into the repo: a copy there is code under review, and a branch could edit it to pass. The pre-push hook reads the gate from `~/.claude/hooks`, and agy uses the gate in the global plugin.
+- `--restore` does not undo a mode change on a hook whose text was already right (sync only made it executable).
+- Sync does not change git config. To turn the hook on I run `git config core.hooksPath .githooks` once per clone.
+- `project-setup` runs `--dry-run` and then the real run when it sets a repo up, and `--check` in its audit.
+
 ## MCP
 
 I add a server once and every tool that should have it gets it.
@@ -133,5 +152,5 @@ url = "https://mcp.atlassian.com/v1/mcp"
 - `harness/mcp.toml` is required. A missing one stops the run, because an empty list would delete every server sync added.
 - A backup of `~/.claude.json` keeps only its `mcpServers` part, and the backup folder is private (mode 0700). `--restore` puts back only the servers sync changed, with the JSON reformatted.
 - I run sync with no Claude Code session open. A session that is already running can rewrite `~/.claude.json` from its own state later and drop sync's servers. `--check` then reports drift, and a normal run adds them back.
-- `--project DIR` reads only `DIR/.nousfx/mcp.toml` and writes `DIR/.mcp.json` (Claude) and `DIR/.agents/plugins/nousfx/mcp_config.json` (agy). Global servers never go there. This is the small first step; project mode proper is NFX-46.
+- With `--project DIR`, only `DIR/.nousfx/mcp.toml` is read, and the servers go to `DIR/.mcp.json` (Claude) and `DIR/.agents/plugins/nousfx/mcp_config.json` (agy). Global servers never go there.
 - `agy mcp list` shows only the global file, not plugin servers, so I check a plugin server by running agy and asking for it.
