@@ -192,5 +192,37 @@ class Guards(Base):
         self.assertNotEqual(self.sync().returncode, 0)
 
 
+class DroppedSectionGuard(Base):
+    """The regression helper must fail when a rule from today's file has no home in the new sources."""
+    HELPER = os.path.join(HERE, "real_machine_regression.py")
+
+    def regress(self, today_text):
+        today = os.path.join(self.tmp, "today.md")
+        write(today, today_text)
+        r = subprocess.run([sys.executable, "-B", self.HELPER, "--out", os.path.join(self.tmp, "out"),
+                            "--today", today, "--repo", self.repo, "--state-home", self.state,
+                            "--fail-on-dropped"], capture_output=True, text=True)
+        report = os.path.join(self.tmp, "out", "regression.txt")
+        return r, read(report) if os.path.exists(report) else ""
+
+    def test_every_section_placed_passes(self):
+        r, _ = self.regress(read(os.path.join(FIX, "today_CLAUDE.md")))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_dropped_heading_and_rule_fail(self):
+        r, report = self.regress(read(os.path.join(FIX, "today_CLAUDE.md"))
+                                 + "\n# Forgotten section\n- A rule nobody carried over.\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("# Forgotten section", report)
+        self.assertIn("A rule nobody carried over", report)
+
+    def test_reordered_and_reworded_do_not_fail(self):
+        today = ("# Fixture local rules\n- Branch prefix: demo, so a ticket branch is `demo/KEY-1`.\n\n"
+                 "# Fixture rules\n- Use a fast agent for searching code.\n")
+        r, report = self.regress(today)
+        self.assertEqual(r.returncode, 0, report)
+        self.assertIn("reworded: 1", report)
+
+
 if __name__ == "__main__":
     unittest.main()
