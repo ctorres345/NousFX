@@ -25,12 +25,12 @@ def main(argv):
         gc.stop(3, "Usage: review.py [--private-ok] [git diff range]. Nothing was sent.")
     rng = args[0] if args else "HEAD"
 
+    gc.check_range(rng)
+    gc.go_to_root()  # first: the CLI is looked up and probed only once we know which repo we are in
     cli = gc.find_cli(platform)
     gc.check_cli(cli)
     gc.check_key(cli)
-    gc.check_range(rng)
-    gc.go_to_root()
-    _, visibility = gc.read_repo()
+    visibility = gc.read_visibility()
     if visibility != "PUBLIC" and not private_ok:
         gc.stop(4, "Stopped: repo visibility is %s. Nothing was sent." % visibility)
 

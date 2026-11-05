@@ -79,7 +79,7 @@ class ReviewCases:
 
     def run_script(self, *args, **env_extra):
         env = {"PATH": os.pathsep.join([self.bin, "/usr/bin", "/bin"]), **th.env(self.home), **env_extra}
-        return subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, *args, *self.PLATFORM_ARGS],
+        return subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, *self.PLATFORM_ARGS, *args],
                               cwd=self.repo, capture_output=True, text=True, env=env)
 
     def logged(self, name):
@@ -168,6 +168,24 @@ class ReviewCases:
         self.assertNotEqual(os.path.realpath(self.logged("pwd.log").strip()), os.path.realpath(self.repo))
         self.assertEqual(self.logged("ls.log").strip(), "diff.txt")
 
+    def test_both_credentials_in_use_must_come_from_the_keyring(self):
+        self.edit("a.txt", "first\nsecond\n")
+        with open(os.path.join(self.home, ".local", "bin", self.CLI_NAME)) as f:
+            text = f.read()
+        text = text.replace('"value\\": \\"AI******99\\"}}', '"value\\": \\"AI******99\\"}, \\"access-token\\": {\\"source\\": \\"env\\"}}')
+        write_exe(os.path.join(self.home, ".local", "bin", self.CLI_NAME), text)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_a_cli_inside_the_repo_is_never_used(self):
+        os.remove(os.path.join(self.home, ".local", "bin", self.CLI_NAME))
+        write_exe(os.path.join(self.repo, self.CLI_NAME), STUB)
+        self.edit("a.txt", "first\nsecond\n")
+        r = self.run_script(PATH=os.pathsep.join([self.repo, self.bin, "/usr/bin", "/bin"]))
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
     def test_a_failing_cli_stops_with_exit_9(self):
         self.edit("a.txt", "first\nsecond\n")
         self.stub_setting("stub.fail", "1")
@@ -199,6 +217,11 @@ class Common(unittest.TestCase):
         data = b"\xff\xfe junk " + b"ghp_" + b"a" * 36 + b"\n"
         with self.assertRaises(SystemExit) as cm:
             gemini_common.stop_on_secret(data)
+        self.assertEqual(cm.exception.code, 7)
+
+    def test_a_secret_at_the_start_of_a_removed_diff_line_is_caught(self):
+        with self.assertRaises(SystemExit) as cm:
+            gemini_common.stop_on_secret(b"-" + b"sk-" + b"a" * 40 + b"\n")
         self.assertEqual(cm.exception.code, 7)
 
     def test_clean_text_passes_the_secret_scan(self):

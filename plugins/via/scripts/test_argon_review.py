@@ -67,8 +67,8 @@ class ArgonReviewTest(unittest.TestCase):
     def run_script(self, script=SCRIPT, brief="Home screen.", extra=()):
         env = {"PATH": os.pathsep.join([th.bin_dir(self.home), os.path.dirname(sys.executable), "/usr/bin", "/bin"]),
                **th.env(self.home)}
-        return subprocess.run([th.python(self.home), "-I", "-B", script, "--shot", self.shot, "--range", "HEAD",
-                               "--brief", brief, *extra, *self.PLATFORM_ARGS],
+        return subprocess.run([th.python(self.home), "-I", "-B", script, *self.PLATFORM_ARGS, "--shot", self.shot,
+                               "--range", "HEAD", "--brief", brief, *extra],
                               cwd=self.repo, capture_output=True, text=True, env=env)
 
     def logged(self, name):

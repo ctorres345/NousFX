@@ -7,6 +7,7 @@ The scripts never read the Gemini key. gemini-api reads it from the OS keyring (
 Credential Manager). check_key() refuses to run unless gemini-api reports the key's source as the keyring, and
 child_env() hides the key variables from every child process.
 """
+import functools
 import json
 import os
 import re
@@ -47,15 +48,14 @@ def stop(code, message):
 
 
 def take_platform(argv):
-    """Pops the test-only `--platform windows|posix` from argv. Returns (platform, rest)."""
+    """Pops the test-only `--platform windows|posix`, accepted only as the first two arguments. Returns (platform, rest)."""
     platform = "windows" if os.name == "nt" else "posix"
     rest = list(argv)
-    if "--platform" in rest:
-        i = rest.index("--platform")
-        if i + 1 >= len(rest) or rest[i + 1] not in ("windows", "posix"):
+    if rest[:1] == ["--platform"]:
+        if len(rest) < 2 or rest[1] not in ("windows", "posix"):
             stop(3, "Bad --platform. Nothing was sent.")
-        platform = rest[i + 1]
-        del rest[i:i + 2]
+        platform = rest[1]
+        del rest[:2]
     return platform, rest
 
 
@@ -71,17 +71,63 @@ def child_env():
     return {k: v for k, v in os.environ.items() if k not in STRIP_ENV}
 
 
+def _inside(path, folder):
+    path, folder = os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(folder))
+    try:
+        return os.path.commonpath([path, folder]) == folder
+    except ValueError:  # different drives
+        return False
+
+
+def _repo_top():
+    """The folder holding .git above the current folder, found without running git (None outside a repo)."""
+    folder = os.getcwd()
+    while True:
+        if os.path.exists(os.path.join(folder, ".git")):
+            return folder
+        parent = os.path.dirname(folder)
+        if parent == folder:
+            return None
+        folder = parent
+
+
+@functools.lru_cache(maxsize=None)
+def which(name):
+    """Absolute path of a program found on PATH, or None. Skips relative PATH entries and any folder inside the current folder or the repo.
+
+    Windows CreateProcess looks a bare program name up in the current folder first, and that folder is the repo under
+    review, so every program here is started by absolute path. On Windows only .exe and .com files count: a .bat or
+    .cmd would run through cmd.exe, which looks its own commands up in the current folder.
+    """
+    skip = [d for d in (os.getcwd(), _repo_top()) if d]
+    exts = [""] if os.name != "nt" or name.lower().endswith((".exe", ".com")) else [".exe", ".com"]
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        if not folder or not os.path.isabs(folder) or any(_inside(folder, d) for d in skip):
+            continue
+        for ext in exts:
+            path = os.path.join(folder, name + ext)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+    return None
+
+
 def find_cli(platform):
+    """~/.local/bin first; else PATH, but never a program inside the repo being reviewed (which() skips those)."""
     name = "gemini-api.exe" if platform == "windows" else "gemini-api"
     local = os.path.join(home_dir(), ".local", "bin", name)
-    cli = local if os.access(local, os.X_OK) else shutil.which(name)
+    if os.access(local, os.X_OK) and not any(_inside(local, d) for d in (os.getcwd(), _repo_top()) if d):
+        return local  # the home folder can itself be a repo (dotfiles), so this is checked too
+    cli = which(name)
     if not cli:
         stop(3, "gemini-api is not installed")
     return cli
 
 
 def _run(cmd, **kw):
-    return subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, env=child_env(), timeout=30, **kw)
+    """Runs a probe in an empty folder, so nothing in the repo can steer it."""
+    with tempfile.TemporaryDirectory(prefix="gemini-") as empty:
+        return subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, env=child_env(), timeout=30,
+                              cwd=empty, **kw)
 
 
 def check_cli(cli):
@@ -101,11 +147,10 @@ def check_key(cli):
         creds = json.loads(out).get("credentials")
     except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
         pass
-    if isinstance(creds, dict):
-        for name in ("api-key", "access-token"):
-            entry = creds.get(name)
-            if isinstance(entry, dict) and entry.get("source") == "keyring":
-                return
+    if isinstance(creds, dict) and all(isinstance(e, dict) for e in creds.values()):
+        sources = [e.get("source") for e in creds.values() if e.get("source") not in (None, "unset")]
+        if sources and all(s == "keyring" for s in sources):  # every credential in use must come from the keyring
+            return
     stop(3, "Stopped: the Gemini key must be in the OS keyring (run `gemini-api auth login`). Nothing was sent.")
 
 
@@ -115,31 +160,33 @@ def check_range(rng):
 
 
 def git(*args):
-    return subprocess.run(["git", *args], stdin=subprocess.DEVNULL, capture_output=True)
+    exe = which("git")
+    if not exe:
+        stop(3, "Stopped: git was not found on PATH. Nothing was sent.")
+    try:
+        return subprocess.run([exe, *args], stdin=subprocess.DEVNULL, capture_output=True)
+    except OSError as e:
+        stop(3, "Stopped: git could not run (%s). Nothing was sent." % type(e).__name__)
 
 
 def go_to_root():
-    try:
-        r = git("rev-parse", "--show-toplevel")
-    except OSError:
-        r = None
-    if not r or r.returncode != 0 or not r.stdout.strip():
+    r = git("rev-parse", "--show-toplevel")
+    if r.returncode != 0 or not r.stdout.strip():
         stop(3, "Stopped: not in a git repo. Nothing was sent.")
     os.chdir(os.fsdecode(r.stdout.strip()))
 
 
-def read_repo():
-    """(name, visibility). Reads origin on purpose: a bare `gh repo view` prefers `upstream`, so a private fork would read as public."""
-    visibility = "UNKNOWN"
+def read_visibility():
+    """The origin repo's visibility (PUBLIC, PRIVATE, INTERNAL) or UNKNOWN. Reads origin on purpose: a bare `gh repo view` prefers `upstream`, so a private fork would read as public."""
     try:
         url = os.fsdecode(git("remote", "get-url", "origin").stdout.strip())
-        if url:
-            out = _run(["gh", "repo", "view", url, "--json", "nameWithOwner,visibility"], text=True, errors="replace")
-            info = json.loads(out.stdout)
-            return str(info.get("nameWithOwner", "")), str(info.get("visibility") or "UNKNOWN")
+        gh = which("gh")
+        if url and gh:
+            out = _run([gh, "repo", "view", url, "--json", "visibility"], text=True, errors="replace")
+            return str(json.loads(out.stdout).get("visibility") or "UNKNOWN")
     except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
         pass
-    return "", visibility
+    return "UNKNOWN"
 
 
 def git_diff(rng, paths):
@@ -151,7 +198,8 @@ def git_diff(rng, paths):
 
 
 def stop_on_secret(data):
-    if _SECRET_RE.search(data):
+    """Scans the text as it is and again with each line's diff marker (+, - or space) removed: a secret at the start of a removed line follows a `-`."""
+    if _SECRET_RE.search(data) or _SECRET_RE.search(re.sub(rb"(?m)^[-+ ]", b"", data)):
         stop(7, "Stopped: the text looks like it contains a secret. Nothing was sent.")
 
 
