@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the legacy claude/skills/ui-review/scripts/argon-review.sh. Run: python3 -B plugins/via/scripts/test_argon_review.py
+"""Tests for claude/skills/ui-review/scripts/argon_review.py. Run: python3 -B plugins/via/scripts/test_argon_review.py
 
 It must read the outbound allow-list in ~/.claude/via.json (through via_outbound.py) instead of a separate text file.
 Each test runs the script as a subprocess in a throwaway git repo, with a throwaway HOME and a stub gemini-api.
@@ -19,18 +19,22 @@ sys.dont_write_bytecode = True
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 SKILLS = os.path.join(REPO_ROOT, "claude", "skills")
-SCRIPT = os.path.join(SKILLS, "ui-review", "scripts", "argon-review.sh")
+SCRIPT = os.path.join(SKILLS, "ui-review", "scripts", "argon_review.py")
 KEY = "acme/app"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 STUB = """#!/bin/sh
 case "$1" in
   version) echo "gemini-api 0.4.5" ;;
+  whoami) echo '{"credentials": {"api-key": {"source": "keyring", "value": "AI******99"}}}' ;;
   analyze) echo "$@" > "$HOME/args.log"; cat > "$HOME/stdin.log"; echo '{"text": "NO FINDINGS", "usage": {}}' ;;
 esac
 """
 
 
 class ArgonReviewTest(unittest.TestCase):
+    CLI_NAME = "gemini-api"
+    PLATFORM_ARGS = []
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -40,7 +44,7 @@ class ArgonReviewTest(unittest.TestCase):
         os.makedirs(os.path.join(self.home, ".local", "bin"))
         os.makedirs(os.path.join(self.repo, "ui"))
         os.makedirs(os.path.join(self.repo, "other"))
-        stub = os.path.join(self.home, ".local", "bin", "gemini-api")
+        stub = os.path.join(self.home, ".local", "bin", self.CLI_NAME)
         with open(stub, "w") as f:
             f.write(STUB)
         os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR)
@@ -60,9 +64,11 @@ class ArgonReviewTest(unittest.TestCase):
         with open(os.path.join(self.home, ".config", "nousfx", "via.json"), "w") as f:
             json.dump({"version": 1, "outbound_allowlist": allowlist}, f)
 
-    def run_script(self, script=SCRIPT):
-        env = {"PATH": "%s:%s:/usr/bin:/bin" % (th.bin_dir(self.home), os.path.dirname(sys.executable)), **th.env(self.home)}
-        return subprocess.run(["bash", script, "--shot", self.shot, "--range", "HEAD", "--brief", "Home screen."],
+    def run_script(self, script=SCRIPT, brief="Home screen.", extra=()):
+        env = {"PATH": os.pathsep.join([th.bin_dir(self.home), os.path.dirname(sys.executable), "/usr/bin", "/bin"]),
+               **th.env(self.home)}
+        return subprocess.run([th.python(self.home), "-I", "-B", script, "--shot", self.shot, "--range", "HEAD",
+                               "--brief", brief, *extra, *self.PLATFORM_ARGS],
                               cwd=self.repo, capture_output=True, text=True, env=env)
 
     def logged(self, name):
@@ -110,9 +116,10 @@ class ArgonReviewTest(unittest.TestCase):
         copy = os.path.join(self.tmp, "copy", "ui-review", "scripts")
         os.makedirs(copy)
         shutil.copy(SCRIPT, copy)
-        shutil.copytree(os.path.join(SKILLS, "gemini-review"), os.path.join(self.tmp, "copy", "gemini-review"))
+        shutil.copytree(os.path.join(SKILLS, "gemini-review"), os.path.join(self.tmp, "copy", "gemini-review"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
         self.config({KEY: {"destinations": ["gemini"], "gemini_code_paths": ["ui/"]}})
-        r = self.run_script(os.path.join(copy, "argon-review.sh"))
+        r = self.run_script(os.path.join(copy, "argon_review.py"))
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertIn("via_outbound.py", r.stderr)
         self.assertIsNone(self.logged("args.log"))
@@ -125,9 +132,10 @@ class ArgonReviewTest(unittest.TestCase):
         copy = os.path.join(self.tmp, "copy", "ui-review", "scripts")
         os.makedirs(copy)
         shutil.copy(SCRIPT, copy)
-        shutil.copytree(os.path.join(SKILLS, "gemini-review"), os.path.join(self.tmp, "copy", "gemini-review"))
+        shutil.copytree(os.path.join(SKILLS, "gemini-review"), os.path.join(self.tmp, "copy", "gemini-review"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
         self.config({KEY: {"destinations": ["gemini"], "gemini_code_paths": ["ui/"]}})
-        r = self.run_script(os.path.join(copy, "argon-review.sh"))
+        r = self.run_script(os.path.join(copy, "argon_review.py"))
         self.assertEqual(r.returncode, 3, r.stderr)  # not found next to the script, and the cache copy is ignored
         self.assertIsNone(self.logged("args.log"))
 
@@ -136,9 +144,31 @@ class ArgonReviewTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.home, ".claude", "plugins")))
         self.assertEqual(self.run_script().returncode, 0)
 
+    def test_a_secret_in_the_brief_stops_with_exit_7(self):
+        self.config({KEY: {"destinations": ["gemini"], "gemini_code_paths": ["ui/"]}})
+        r = self.run_script(brief="key " + "AKIA" + "A" * 16)
+        self.assertEqual(r.returncode, 7, r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_a_key_that_is_not_in_the_keyring_stops_with_exit_3(self):
+        self.config({KEY: {"destinations": ["gemini"], "gemini_code_paths": ["ui/"]}})
+        stub = os.path.join(self.home, ".local", "bin", self.CLI_NAME)
+        with open(stub) as f:
+            text = f.read().replace('"source": "keyring"', '"source": "env"')
+        with open(stub, "w") as f:
+            f.write(text)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
     def test_no_reference_to_the_old_allow_list_file_remains_in_the_script(self):
         with open(SCRIPT) as f:
             self.assertNotIn("argon-" + "repos", f.read())  # the retired allow-list file's name
+
+
+class ArgonReviewWindowsTest(ArgonReviewTest):
+    CLI_NAME = "gemini-api.exe"
+    PLATFORM_ARGS = ["--platform", "windows"]
 
 
 if __name__ == "__main__":
