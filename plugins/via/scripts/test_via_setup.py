@@ -6,11 +6,14 @@ Each test runs the script as a subprocess with a throwaway HOME and a PATH holdi
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+
+import nousfx_testhome as th
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "via_setup.py")
 KEY_LIKE = re.compile(r"(AIza[0-9A-Za-z_-]{35}|AQ\.[0-9A-Za-z_-]{20,}|sk-[0-9A-Za-z_-]{20,})")
@@ -27,7 +30,9 @@ class ViaSetupTest(unittest.TestCase):
     def setUp(self):
         self.home = self.tempdir()
         self.bin = self.tempdir()
-        self.config = os.path.join(self.home, ".claude", "via.json")
+        os.symlink(shutil.which("git"), os.path.join(self.bin, "git"))  # the config check asks git about work trees
+        self.config = os.path.join(self.home, ".config", "nousfx", "via.json")
+        self.legacy = os.path.join(self.home, ".claude", "via.json")
 
     def tempdir(self):
         d = tempfile.TemporaryDirectory()
@@ -48,7 +53,7 @@ class ViaSetupTest(unittest.TestCase):
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
     def run_setup(self, *args, **extra_env):
-        env = {"HOME": self.home, "PATH": self.bin, **extra_env}
+        env = {"PATH": self.bin, **th.env(self.home), **extra_env}
         return subprocess.run([sys.executable, SCRIPT, *args], env=env, capture_output=True, text=True)
 
     def report(self, *args):
@@ -56,14 +61,15 @@ class ViaSetupTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
 
-    def test_a_config_outside_the_claude_folder_is_refused(self):
+    def test_a_config_outside_the_anchor_is_refused(self):
         elsewhere = os.path.join(self.tempdir(), "via.json")
         r = self.run_setup("--config", elsewhere)
         self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn(".claude", r.stderr)
+        self.assertIn("nousfx", r.stderr)
         self.assertFalse(os.path.exists(elsewhere))
-        r = self.run_setup(VIA_CONFIG=elsewhere)
-        self.assertEqual(r.returncode, 1, r.stdout)
+        r = self.run_setup(VIA_CONFIG=elsewhere)  # no longer read: setup writes to the anchor instead
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.isfile(self.config))
 
     def test_nothing_configured_lists_every_integration_as_missing_with_a_fix_link(self):
         rep = self.report()
@@ -163,8 +169,8 @@ class ViaSetupTest(unittest.TestCase):
         self.assertEqual(self.report("--skills")["integrations"]["skills"]["status"], "missing")
 
     def test_a_bare_config_filename_works(self):
-        env = {"HOME": self.home, "PATH": self.bin}
-        folder = os.path.join(self.home, ".claude")  # a config must live inside ~/.claude
+        env = {"PATH": self.bin, **th.env(self.home)}
+        folder = os.path.join(self.home, ".config", "nousfx")  # a config must live inside the anchor
         os.makedirs(folder)
         r = subprocess.run([sys.executable, SCRIPT, "--config", "via.json"], env=env, cwd=folder,
                            capture_output=True, text=True)
@@ -188,6 +194,45 @@ class ViaSetupTest(unittest.TestCase):
         r = self.run_setup()
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(read(target), "{}")
+
+    def test_setup_writes_to_the_new_home_and_never_to_the_old_path(self):
+        self.report()
+        self.assertTrue(os.path.isfile(self.config))
+        self.assertFalse(os.path.exists(self.legacy))
+
+    def test_an_old_config_is_migrated_once_and_kept_in_place(self):
+        os.makedirs(os.path.dirname(self.legacy))
+        with open(self.legacy, "w") as f:
+            json.dump({"outbound_allowlist": {"acme/app": {"destinations": ["gemini"]}}}, f)
+        first = self.report()
+        self.assertEqual(first["migration"], "migrated")
+        self.assertIn("acme/app", json.loads(read(self.config))["outbound_allowlist"])
+        self.assertTrue(os.path.exists(self.legacy))
+        mid = read(self.config)
+        with open(self.legacy, "w") as f:
+            f.write('{"outbound_allowlist": {"other/repo": {"destinations": ["jira"]}}}')
+        second = self.report()  # run twice: the new file is never overwritten by the old one
+        self.assertEqual(second["migration"], "none")
+        self.assertEqual(read(self.config), mid)
+
+    def test_a_fresh_install_has_nothing_to_migrate(self):
+        self.assertEqual(self.report()["migration"], "none")
+
+    def test_a_symlinked_old_config_is_not_migrated(self):
+        os.makedirs(os.path.dirname(self.legacy))
+        target = os.path.join(self.home, "elsewhere.json")
+        with open(target, "w") as f:
+            f.write("{}")
+        os.symlink(target, self.legacy)
+        self.assertNotEqual(self.run_setup().returncode, 0)
+        self.assertFalse(os.path.exists(self.config))
+
+    def test_a_home_inside_a_git_work_tree_is_refused_and_nothing_is_written(self):
+        subprocess.run(["git", "-C", self.home, "init", "-q"], check=True, capture_output=True)
+        r = self.run_setup()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("work tree", r.stderr)
+        self.assertFalse(os.path.exists(self.config))
 
     def test_a_secret_shaped_value_is_never_written(self):
         r = self.run_setup("--skills", FAKE_KEY)
