@@ -8,7 +8,7 @@ Usage: via_setup.py [--config PATH] [--atlassian present|missing]
                     [--figma authorized|needs-auth|missing] [--browser chrome|builtin|none]
                     [--skills a,b,c]
 
-The config (default ~/.claude/via.json, or VIA_CONFIG) holds statuses and paths only, never keys.
+The config (default ~/.config/nousfx/via.json; an old ~/.claude/via.json is copied there once) holds statuses and paths only, never keys.
 Exit 0 on success, 1 when the config is unsafe or cannot be written, 2 on a secret-shaped argument.
 """
 import argparse
@@ -19,6 +19,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+import via_home
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "..", "assets", "via.example.json")
@@ -163,14 +165,13 @@ def main():
             return 2
 
     home = os.path.expanduser("~")
-    path = os.path.abspath(args.config or os.environ.get("VIA_CONFIG") or os.path.join(home, ".claude", "via.json"))
-    if os.path.islink(path):
-        print("Stopped: %s is a symlink. Nothing was written." % path, file=sys.stderr)
-        return 1
-    claude = os.path.realpath(os.path.join(home, ".claude"))  # via_outbound.py refuses a config anywhere else
-    if os.path.commonpath([os.path.realpath(os.path.dirname(path)), claude]) != claude:
-        print("Stopped: the config must live inside %s, so the outbound checks can find it. Nothing was written."
-              % claude, file=sys.stderr)
+    try:
+        path = os.path.abspath(args.config) if args.config else via_home.default_config()
+        via_home.validate(path, via_home.anchor())
+        migration = "none" if args.config else via_home.migrate()
+    except via_home.Refused as e:
+        print("Stopped: %s. The config must live inside %s, outside any git work tree. Nothing was written."
+              % (e, via_home.anchor()), file=sys.stderr)
         return 1
 
     cfg, current = load_config(path)
@@ -226,7 +227,7 @@ def main():
 
     summary = "Via integrations: " + " · ".join(
         "%s %s" % (n, GLYPH.get(st, st)) for n, st in status.items())
-    json.dump({"integrations": report, "config": outcome, "config_path": path, "summary": summary},
+    json.dump({"integrations": report, "config": outcome, "config_path": path, "migration": migration, "summary": summary},
               sys.stdout, indent=2, ensure_ascii=False)
     print()
     return 0

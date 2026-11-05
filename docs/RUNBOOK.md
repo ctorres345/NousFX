@@ -130,7 +130,7 @@ Via comes from the marketplace in this repo, not from `install.sh`.
 
 3. In a Claude Code session run `/reload-plugins`, then `/via setup`. Check the table lists each integration and ends with the `Via integrations:` line.
 4. Run `/via setup` again. The answer must say the config is `unchanged`.
-5. To remove it: `claude plugin uninstall via`. `~/.claude/via.json` stays; delete it by hand if you want it gone.
+5. To remove it: `claude plugin uninstall via`. `~/.config/nousfx/via.json` stays (and so does an old `~/.claude/via.json`, which `/via setup` copied once); delete them by hand if you want them gone. If you once hand-copied `via_outbound.py` into `~/.claude/plugins/cache/nousfx/via/0.4.0/scripts/`, delete that copy: the Argon script now finds the script in the repo and never reads the cache.
 
 Before releasing a change, run `python3 plugins/via/scripts/test_via_setup.py`, `python3 plugins/via/scripts/test_via_run.py` and `claude plugin validate . --strict`.
 
