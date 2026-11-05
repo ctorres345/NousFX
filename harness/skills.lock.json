@@ -1,0 +1,227 @@
+{
+  "skills": {
+    "adaptive": {
+      "commit": "bf68e2d66a992a1e6aeb7e9263293cc23fcbf475",
+      "path": "jetpack-compose/adaptive",
+      "repo": "https://github.com/android/skills",
+      "sha256": "65d3fd62d5c9b173b8567b638f54833db26d98c1d2fc5bbc21afea46eb6acdb2"
+    },
+    "ask-matt": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/ask-matt",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "7ff2383b40fe9d8f3e753d267d964fb2b44d120a948fd2a57c3b26ddfc318370"
+    },
+    "code-review": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/code-review",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "ce86b40a3d1648a0018b712f0c70704e6c2316b2a9b9e915ab116916a31273dc"
+    },
+    "codebase-design": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/codebase-design",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "d40f025dc1b0f2020663260f38f2bcb8d6ed3523afb11e5fda624b01238677e8"
+    },
+    "diagnosing-bugs": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/diagnosing-bugs",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "87c78ae966e591f9ceb177789cc5cc9de69277cd26679ffd36ca5300f430d513"
+    },
+    "domain-modeling": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/domain-modeling",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "b78689833404148c769077355e12dbe5ad996a158a1e21e58ddf169e439d9d8c"
+    },
+    "edge-to-edge": {
+      "commit": "bf68e2d66a992a1e6aeb7e9263293cc23fcbf475",
+      "path": "system/edge-to-edge",
+      "repo": "https://github.com/android/skills",
+      "sha256": "954c391ab845f97ce160c04c3944d6c6da3c7ad0385970353b314ee2a3aabea2"
+    },
+    "git-guardrails-claude-code": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/misc/git-guardrails-claude-code",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "7aa92e9d469c6cd0b24ed8accb2e4be681c44c1524d71604c06b4055b7b56482"
+    },
+    "grill-me": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/productivity/grill-me",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "ab1acb9fbd9eaee03da254abb8a8de228d1e7a07475fe959da4a5eefa34ea4b9"
+    },
+    "grill-with-docs": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/grill-with-docs",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "02e258f41d210f9b2e7cce9faf62b3c59e8fcebe5d2736369c3cd07d471324f8"
+    },
+    "grilling": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/productivity/grilling",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "485451958784497cd4c4dbea13cb5bbb579da58fac0d0e45f3bcb310fab68ac7"
+    },
+    "implement": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/implement",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "560465496ad0669329993bfdd0604e5c93b5c2446309a76f486040010b063908"
+    },
+    "implement-spec": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/implement-spec",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "c3474ef320861d793e8b30d41fbdd2cb0ceaa1081bb5c81b7f26c455eb776573"
+    },
+    "improve-codebase-architecture": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/improve-codebase-architecture",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "f0820b18426a7d9a6c823a890988ba0ac70bf0fd596d30d7ef07c88558728c23"
+    },
+    "jetpack-compose-performance": {
+      "commit": "bf68e2d66a992a1e6aeb7e9263293cc23fcbf475",
+      "path": "jetpack-compose/jetpack-compose-performance",
+      "repo": "https://github.com/android/skills",
+      "sha256": "80b61358eca751c520492fca7d9571522ba3ed5af9258baa146cca9fd8fcedce"
+    },
+    "material-3": {
+      "commit": "14385f2bf3804d8779f8b4db2604211f1e70b4c1",
+      "path": "skills/material-3",
+      "repo": "https://github.com/hamen/material-3-skill",
+      "sha256": "eb072deb6fb42a9e3ce1853ffd8420adb99dfbe1d6327bc22c5ad47edb77f56c"
+    },
+    "migrate-to-shoehorn": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/misc/migrate-to-shoehorn",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "a63549df6d5b5c6595029f8c504ccf31a12f01312f03db70da4b45cb10ba5ca8"
+    },
+    "navigation-3": {
+      "commit": "bf68e2d66a992a1e6aeb7e9263293cc23fcbf475",
+      "path": "navigation/navigation-3",
+      "repo": "https://github.com/android/skills",
+      "sha256": "35a3bba0add09adb720a9507b0c841f950445a22a69229708fb4a979629b91d7"
+    },
+    "pr": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/pr",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "a66195583d0f9323004cdd4da169f93449071f29023671f3e31a916e740f6861"
+    },
+    "prototype": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/prototype",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "1e3ba2202a5b77b8aa50bc4447432331d6e42590e53ec0935689662cfed199ca"
+    },
+    "research": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/research",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "7662666af51f8b1672ed7d88360d4b82656da21bb7b11c49e956eeb3036b85d5"
+    },
+    "retro": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/retro",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "e260aefb7b75b3548a3ee9883afbf8808e521f2e86feec92399617894f83b7c2"
+    },
+    "scaffold-exercises": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/misc/scaffold-exercises",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "019bbcc250992c776244aa1c818aed4015364f65bb9d1dbfd3bef9bae196b065"
+    },
+    "setup-matt-pocock-skills": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/setup-matt-pocock-skills",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "9659e7025d4cf1c0a0b40ddff32ed4b8debb87a4b20d7a52ff89c506a638df69"
+    },
+    "setup-pre-commit": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/misc/setup-pre-commit",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "98523a8db5977c41a095834df8697123bb845ff6ddbb9500733b161f11441a37"
+    },
+    "tdd": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/tdd",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "e3e0f78ff1c2d52ffefa0378baa1e80e129d359288cf9a56f4e59afcd2aac86c"
+    },
+    "teach": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/productivity/teach",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "31bb3eed09dd2787e290e933def99fbf7d65044a29119c224af47c01404ab228"
+    },
+    "testing-setup": {
+      "commit": "bf68e2d66a992a1e6aeb7e9263293cc23fcbf475",
+      "path": "testing/testing-setup",
+      "repo": "https://github.com/android/skills",
+      "sha256": "085b6e1ce264cf5ee9724065ceb22241432f574719f75ccfad8def7184455acd"
+    },
+    "to-questionnaire": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/productivity/to-questionnaire",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "0bcb2b31a45a3d176daa07c16d6532ee7819b802de081090c3fa856702767b13"
+    },
+    "to-spec": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/to-spec",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "eb934b5eda9523c7853a2741544bd4721ee1bea471f5a04f8397827f67bdbdda"
+    },
+    "to-tickets": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/to-tickets",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "17496514c92954f68eacdf2b1221e2ddb39fa231b83f03c70bc7d4422f704b2d"
+    },
+    "triage": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/triage",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "4342a07c9ebe0696713ec93a883c46e56503a587a34d824fabab5ca61e3bdfbb"
+    },
+    "ui-ux-pro-max": {
+      "commit": "b7d5353e0130feb8c5574ef1251f8a1db1873ccb",
+      "path": ".claude/skills/ui-ux-pro-max",
+      "repo": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+      "sha256": "5811994f2a037d21f5437c4ebf87640d91f2d0ae5b1a3bc9c9250bef42f174af"
+    },
+    "wait-what": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/productivity/wait-what",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "70c9bf9f5a84b6849760f9492f569d5aa12307a0310323fde5f583144730c26c"
+    },
+    "wayfinder": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/wayfinder",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "bd82983c105881f6cb0c15e5d029c0d5fca756939b69eebe94e49003069a276f"
+    },
+    "wizard": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/engineering/wizard",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "806f7f7461824054ffaf3344e1e56e5e8a42344e22bdf8d22c6a8117eb9b1c38"
+    },
+    "writing-for-agents": {
+      "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+      "path": "skills/productivity/writing-for-agents",
+      "repo": "https://github.com/mattpocock/skills",
+      "sha256": "e79a2476b2417b228922453478d9505a6b9af19f3a412e560728ce62ed3555ca"
+    }
+  },
+  "version": 1
+}

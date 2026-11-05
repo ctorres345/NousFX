@@ -61,6 +61,19 @@ claude/skills/*, plugins/via/skills/via   sources
 - Old `install.sh` backups (`*.bak-YYYYMMDD-HHMMSS` of `CLAUDE.md`, `settings.json` and the files under `agents/`, `skills/`, `hooks/` in `~/.claude`) are listed in every run and never moved on their own. `--clean-backups` moves them into the run's backup, so `--restore` brings them back. `projects/`, `plugins/` and everything else are out of scope.
 - On Windows a failed symlink falls back to a junction. The command is fixed (`cmd /c mklink /J`); nothing in the environment can replace it. `NOUSFX_NO_SYMLINK=1` only forces that fallback and is test-only: tests pass `--platform windows` with a stand-in `cmd` first on PATH.
 
+### Outside skills
+
+Skills I use but do not write (Matt Pocock's workflow set, `ui-ux-pro-max`, the Android set, `material-3`) are pinned in `harness/skills.lock.json`. It has the same format as Via's `plugins/via/skills.lock.json`: a repo, a path, a full commit and a sha256 for each skill.
+
+- A real run fetches each skill that is missing, checks the sha256, and keeps the files in `<state home>/outside-skills/<name>-<12 characters of the sha256>/`. After that it links them like my own skills, so the manifest, collisions, backups and `--restore` all work the same. A skill already in the cache is not fetched again.
+- A skill that fails (the fetch fails, the checksum differs, or the tree is unsafe) is reported on stderr and left out. Nothing is written for it, and its existing links stay. Everything else is applied, and the run exits 1.
+- A hand-installed copy that holds exactly the pinned files is replaced without `--yes-replace`; the old folder is backed up first, so `--restore` brings it back. A copy that differs (an older version, or one I edited) is a collision as before.
+- `--check` exits 1 when a pinned skill is missing from the cache or its files were edited. `--dry-run` prints `would fetch NAME@commit`. Neither fetches anything.
+- The fetch and checksum code is Via's (`via_skills.py`): https only, a full commit, the tree read from git objects, size limits, files written as plain 0644, and nothing run.
+- A name that `claude/skills` or Via already ships cannot be in the lock. Old cache folders are never deleted, because `--restore` may link back to them. `.DS_Store`, `__pycache__` and `*.pyc` do not count as edits (a skill's own scripts write them), so the edit check guards the fetch and not the local disk: anyone who can write in the state folder can change a skill's scripts anyway. If I edit a skill through its link, the next run moves my edited folder to `<state home>/outside-skills/.edited-*/` before it puts the pinned files back.
+- To add or update a pin, use `python3 -I -B plugins/via/scripts/via_skills.py --lock harness/skills.lock.json add NAME --repo URL --path PATH --commit SHA` (or `update NAME`). It shows the files and the scripts the skill ships, and writes the lock only with `--approve` and the checksum it showed.
+- `NOUSFX_ALLOW_FILE_URLS=1` accepts `file://` repos. It is test-only.
+
 ## Real-machine check
 
 `python3 -B scripts/real_machine_regression.py --out DIR` builds the rules from the repo and my local file and compares them line by line with my real `~/.claude/CLAUDE.md`. The report in `DIR/regression.txt` classes each of today's lines as unchanged, reordered, reworded or dropped. `--state-home` tries a proposed local file, and `--fail-on-dropped` exits 1 when a rule has no home. It only reads the real home and is not part of CI. A fixture test runs the same guard.

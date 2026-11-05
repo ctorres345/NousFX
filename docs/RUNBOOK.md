@@ -34,7 +34,7 @@ The steps I repeat by hand for NousFX. Each one installs into my own `~/.claude/
 4. Start a **new** session (hooks and agents load at session start) and run `/agents`. You should see `Explore`, `researcher`, `reviewer`, `reviewer-deep`, `architect` and `test-runner`.
 5. [Verify the gate](#verify-the-gate).
 
-UI skills that `ui-review` uses are not in this repo (see the README). Missing ones are skipped and reported, so install them separately if you want them.
+UI skills that `ui-review` uses are not in this repo. `harness/skills.lock.json` pins most of them and sync installs them (see the README). Missing ones are skipped and reported.
 
 ## Re-install after a merge
 

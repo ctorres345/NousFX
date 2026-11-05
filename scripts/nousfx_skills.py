@@ -11,6 +11,10 @@ Layout (H = home):
 Rules: a folder that is not in the manifest is never overwritten or deleted. A NousFX skill replaces
 one only when its name is passed as --yes-replace NAME, and the old folder is moved into the run's
 backup first. Every change is journaled in <backup root>/skills.json so --restore can undo it.
+Pinned outside skills (harness/skills.lock.json, see nousfx_outside.py) are one more source: their
+verified files sit in <state>/outside-skills/ and are linked the same way. A hand-installed copy that
+holds exactly the pinned files is replaced without --yes-replace (and backed up); one that differs is a
+collision like any other.
 Old install.sh backups (<file>.bak-YYYYMMDD-HHMMSS) are only listed. With --clean-backups they are
 moved into the run's backup too, so --restore brings them back. Only what install.sh writes is
 searched: H/.claude/CLAUDE.md, settings.json and the files under agents/, skills/ and hooks/
@@ -146,11 +150,15 @@ def old_backups(dot_claude):
     return sorted(found)
 
 
-def plan(repo, home, state, yes_replace=(), clean_backups=False, extra_roots=(), claude=True):
+def plan(repo, home, state, yes_replace=(), clean_backups=False, extra_roots=(), claude=True,
+         extra_sources=None, identical=None, keep=()):
+    """extra_sources: more name -> folder skills (the pinned outside skills). identical(name, path): true when
+    what is at `path` holds exactly the pinned files, so it may be replaced without --yes-replace (it is
+    still backed up). keep: names whose links stay as they are (a skill that failed to fetch)."""
     manifest = _load(state)
     p = Plan(clean_backups)
     p.manifest = dict(manifest)
-    want = sources(repo)
+    want = {**sources(repo), **(extra_sources or {})}
     agents = os.path.join(home, ".agents", "skills")
     claude_dir = os.path.join(home, ".claude", "skills")
     for name, src in want.items():
@@ -170,7 +178,7 @@ def plan(repo, home, state, yes_replace=(), clean_backups=False, extra_roots=(),
                     steps.append(("relink", path, target))
             elif _is_link(path) and os.path.realpath(path) == real:
                 continue  # someone else's link to the same place: fine, not recorded
-            elif name in yes_replace:
+            elif name in yes_replace or (identical and identical(name, path)):
                 steps.append(("replace", path, target))
             else:
                 blocked = True
@@ -178,7 +186,7 @@ def plan(repo, home, state, yes_replace=(), clean_backups=False, extra_roots=(),
         if not blocked:
             p.actions += [{"op": o, "path": a, "target": t} for o, a, t in steps]
     for path in sorted(manifest):
-        if os.path.basename(path) in want:
+        if os.path.basename(path) in want or os.path.basename(path) in keep:
             continue
         p.actions.append({"op": "unlink" if _is_link(path) else "forget", "path": path})
     p.broken = [path for path in sorted(manifest)

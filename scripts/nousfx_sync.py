@@ -17,6 +17,11 @@ MCP servers (harness/mcp.toml, <state-home>/mcp.toml) go to <home>/.claude.json 
 sync added) and the agy plugin. --project DIR sets up one repo instead (nousfx_project.py, docs/sync.md
 "Project mode"): stubs, the pre-push hook, a skills link and its MCP files from DIR/.nousfx/mcp.toml.
 
+Outside skills: <repo>/harness/skills.lock.json pins skills from other repos (commit and sha256). A real run
+fetches the missing ones into <state-home>/outside-skills/ and links them like NousFX's own skills
+(nousfx_outside.py). --check and --dry-run fetch nothing. A skill that fails its fetch or checksum is
+reported, left out, and makes the run exit 1 once the rest is applied.
+
 Sources: <repo>/harness/AGENTS.md, the tool's overlay under <repo>/harness/overlays/ and the optional,
 never committed <state-home>/local.md (every tool), local.claude.md, local.agy.md. The home comes from
 the user record, never from the HOME variable. The state home defaults to <home>/.config/nousfx.
@@ -39,6 +44,7 @@ import time
 import nousfx_agents
 import nousfx_agy
 import nousfx_mcp
+import nousfx_outside
 import nousfx_project
 import nousfx_skills
 
@@ -466,6 +472,7 @@ def main(argv=None):
     try:
         if args.restore:
             return restore(state) or 0
+        outside = {} if project else nousfx_outside.load(repo, nousfx_skills.sources(repo), SyncError)
         seen_before = {p: read_or_none(p) for p in mcp_merged_files(home, project)}  # before plan() reads them
         extras = {}
         wanted = plan(repo, home, state, args.platform, tools, project, args.yes_replace, extras)
@@ -477,15 +484,27 @@ def main(argv=None):
         todo = changes(wanted)
         mcp_merged = mcp_merged_files(home, project) & set(todo)
         seen = {p: seen_before[p] for p in mcp_merged}
+        failed, need = {}, {}
+        if outside and (args.check or args.dry_run):  # these fetch nothing: they only report what would happen
+            need = {n: s for n, s in nousfx_outside.status(state, outside).items() if s != "ok"}
+        elif outside:
+            failed = nousfx_outside.ensure(state, outside, lambda m: print(f"nousfx_sync: {m}"))
+            for n, why in sorted(failed.items()):
+                print(f"nousfx_sync: outside skill {n}: {why}", file=sys.stderr)
         if project:  # project mode does not touch skills
             sk = nousfx_skills.Plan()
         else:
             extra = [os.path.join(nousfx_agy.plugin_dir(home), "skills")] if "agy" in tools else []
-            sk = nousfx_skills.plan(repo, home, state, args.yes_replace, args.clean_backups, extra,
-                                    claude="claude" in tools)
+            sk = nousfx_skills.plan(
+                repo, home, state, args.yes_replace, args.clean_backups, extra, claude="claude" in tools,
+                extra_sources={n: nousfx_outside.cache_dir(state, n, e) for n, e in outside.items()
+                               if n not in failed},
+                identical=lambda n, path: n in outside and nousfx_outside.same_as_lock(path, outside[n]["sha256"]),
+                keep=set(failed))
+        rc = 1 if failed else 0  # a failed outside skill is reported after everything else was applied
         links = pp.links
         unrunnable = nousfx_project.not_executable(pp.executable)
-        pending = bool(todo or links or unrunnable or sk.pending)
+        pending = bool(todo or links or unrunnable or sk.pending or need)
         for note in pp.notes:
             print(note)
         if args.check:
@@ -495,9 +514,11 @@ def main(argv=None):
                 print(f"drift: {l} is missing (would link to {t})")
             for p in unrunnable:
                 print(f"drift: {p} is not executable")
+            for n, st in need.items():
+                print(f"drift: outside skill {n} {st}")
             for line in sk.lines() + sk.listing():
                 print(line)
-            bad = bool(todo or links or unrunnable or sk.actions or sk.collisions or sk.broken)
+            bad = bool(todo or links or unrunnable or sk.actions or sk.collisions or sk.broken or need)
             print("drift found" if bad else "no drift")
             return 1 if bad else 0
         if args.dry_run:
@@ -507,9 +528,11 @@ def main(argv=None):
                 print(f"would link {l} -> {t}")
             for p in unrunnable:
                 print(f"would make {p} executable")
+            for n, st in need.items():
+                print(f"would {'fetch' if st == 'missing' else 'fetch again'} {n}@{outside[n]['commit'][:7]}")
             for line in sk.lines() + sk.listing():
                 print(line)
-            print(f"{len(todo) + len(links) + len(unrunnable)} file(s) would change" if pending
+            print(f"{len(todo) + len(links) + len(unrunnable) + len(need)} file(s) would change" if pending
                   else "nothing would change")
             return 0
         for line in sk.lines():
@@ -527,7 +550,7 @@ def main(argv=None):
         if not pending:
             print("nothing to change")
             self_tests()
-            return 0
+            return rc
         root = backup(state, list(todo) + [l for l, _ in links], mcp_merged, todo if project else None)
         try:
             nousfx_skills.apply(sk, root, is_windows(args.platform), state)
@@ -552,7 +575,7 @@ def main(argv=None):
                             "previous files back.")
         print(f"backup: {root}")
         self_tests()
-        return 0
+        return rc
     except SyncError as e:
         print(f"nousfx_sync: {e}", file=sys.stderr)
         return e.code
