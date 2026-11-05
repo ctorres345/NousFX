@@ -1,0 +1,13 @@
+# Maps each role used in harness/agents/*.md to a model and an effort level, per tool.
+# Change a model here and only the agents with that role change. An agent may override effort.
+[claude.fast]
+model = "haiku"
+effort = "medium"
+
+[claude.strong]
+model = "opus"
+effort = "medium"
+
+[claude.deep]
+model = "fable"
+effort = "medium"
