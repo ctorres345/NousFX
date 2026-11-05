@@ -165,9 +165,9 @@ def allow_branch(argv):
     return 0
 
 
-def branch_blocked(cwd):
-    """Message to print when the current branch breaks the naming rule, else None."""
-    branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+def branch_blocked(cwd, branch=None):
+    """Message to print when the branch (default: the current one) breaks the naming rule, else None."""
+    branch = branch or git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
     if branch == "HEAD" or BRANCH_OK.match(branch):  # detached HEAD: nothing to judge
         return None
     try:
@@ -179,8 +179,9 @@ def branch_blocked(cwd):
     return BRANCH_BLOCK.format(branch=branch, script=SCRIPT)
 
 
-def check_repo(cwd):
-    """Exit code for a create running in cwd."""
+def check_repo(cwd, tree=None, branch=None):
+    """Exit code for a create running in cwd. With tree and branch, judge that tree and branch
+    instead of the working tree and the checked-out branch (the pre-push hook does this per ref)."""
     script = SCRIPT
     if cwd is None:
         print(CD_BLOCK, file=sys.stderr)
@@ -194,7 +195,7 @@ def check_repo(cwd):
             if "not a git repository" in str(e):
                 return 0
             raise
-        msg = branch_blocked(cwd)
+        msg = branch_blocked(cwd, branch)
         if msg:
             print(msg, file=sys.stderr)
             return 2
@@ -204,7 +205,7 @@ def check_repo(cwd):
             ok = marker["tree"]
         except (OSError, KeyError, ValueError):
             ok = None
-        if ok and ok in {worktree_tree(cwd), head_tree(cwd)}:
+        if ok and ok in ({tree} if tree else {worktree_tree(cwd), head_tree(cwd)}):
             if marker.get("skipped"):
                 return 0
             count = marker.get("findings_open")
@@ -240,6 +241,12 @@ def check(argv):
     except (OSError, RuntimeError) as e:
         print(ERROR_BLOCK.format(error=e, script=SCRIPT), file=sys.stderr)
         return 2
+    tree, branch = option(argv, "--tree"), option(argv, "--branch")
+    if tree or branch:  # judge a pushed commit: the pre-push hook passes both
+        if not (tree and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", tree)) or not branch:
+            print("Blocked: --tree needs a tree hash and --branch a branch name, together.", file=sys.stderr)
+            return 2
+        return check_repo(cwd, tree, branch)
     return evaluate("Bash", command, cwd)
 
 

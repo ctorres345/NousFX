@@ -83,7 +83,6 @@ class Check(Base):
 ZERO = "0" * 40
 ONE = "1" * 40
 TWO = "2" * 40
-FEATURE = "refs/heads/cesar/DEM-1 " + ONE + " refs/heads/cesar/DEM-1 " + ZERO + "\n"
 MAIN = "refs/heads/main " + ONE + " refs/heads/main " + TWO + "\n"
 
 
@@ -102,7 +101,18 @@ class PrePush(Base):
             self.sh("git", "branch", "-m", branch)
         return dest
 
-    def run_hook(self, hook, stdin=FEATURE, env=None):
+    def head(self):
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def feature(self):
+        return "refs/heads/cesar/DEM-1 " + self.head() + " refs/heads/cesar/DEM-1 " + ZERO + "\n"
+
+    def line(self, branch, sha):
+        return f"refs/heads/{branch} {sha} refs/heads/{branch} {ZERO}\n"
+
+    def run_hook(self, hook, stdin=None, env=None):
+        stdin = self.feature() if stdin is None else stdin
         env = env or {**os.environ, "GIT_DIR": os.path.join(self.repo, ".git"),
                       "REVIEW_GATE_DIR": self.gate_dir}
         return subprocess.run(["/bin/sh", hook, "origin", "x"], cwd=self.repo, input=stdin, env=env,
@@ -150,7 +160,44 @@ class PrePush(Base):
         self.assertEqual(self.run_hook(hook, "refs/tags/v1 " + ONE + " refs/tags/v1 " + ZERO + "\n"), ALLOWED)
 
     def test_blocks_when_any_ref_is_a_feature_branch(self):
-        self.assertEqual(self.run_hook(self.install(), MAIN + FEATURE), BLOCKED)
+        self.assertEqual(self.run_hook(self.install(), MAIN + self.feature()), BLOCKED)
+
+    def test_judges_the_pushed_commit_not_the_checked_out_branch(self):
+        hook = self.install()
+        self.mark("--findings", "0")  # covers the tree of cesar/DEM-1
+        reviewed = self.head()
+        self.sh("git", "checkout", "-q", "-b", "cesar/DEM-2")
+        with open(os.path.join(self.repo, "g.txt"), "w", encoding="utf-8") as f:
+            f.write("y")
+        self.sh("git", "add", "-A")
+        self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "two")
+        unreviewed = self.head()
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1", reviewed)), ALLOWED)
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-2", unreviewed)), BLOCKED)
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1", unreviewed)), BLOCKED)
+
+    def test_blocks_a_sha_that_is_not_a_commit(self):
+        hook = self.install()
+        self.mark("--findings", "0")
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1", ONE)), BLOCKED)
+
+    def test_judges_the_pushed_branch_name(self):
+        hook = self.install()
+        self.mark("--findings", "0")
+        self.assertEqual(self.run_hook(hook, self.line("claude/x", self.head())), BLOCKED)
+
+    def test_refuses_a_gate_dir_inside_a_work_tree(self):
+        hook = self.install()
+        self.mark("--findings", "0")
+        inside = os.path.join(self.repo, "gate-copy")
+        os.makedirs(inside)
+        shutil.copy(GATE, inside)
+        shutil.copy(PARSER, inside)
+        env = {**os.environ, "GIT_DIR": os.path.join(self.repo, ".git"), "REVIEW_GATE_DIR": inside}
+        r = subprocess.run(["/bin/sh", hook, "origin", "x"], cwd=self.repo, input=self.feature(), env=env,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, BLOCKED)
+        self.assertIn("work tree", r.stderr)
 
 
 if __name__ == "__main__":

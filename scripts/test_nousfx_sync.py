@@ -90,6 +90,11 @@ class FirstRun(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.snapshot(), before)
 
+    def test_posix_hook_command_skips_bytecode(self):
+        self.sync()
+        hook = json.loads(read(self.settings))["hooks"]["PreToolUse"][0]["hooks"][0]
+        self.assertEqual(hook["command"], f'python3 -B "{self.hook}"')
+
     def test_existing_settings_are_kept_and_hook_not_duplicated(self):
         write(self.settings, json.dumps({"model": "x", "hooks": {"PreToolUse": [
             {"matcher": "Bash", "hooks": [{"type": "command", "command": "other.sh"}]},
@@ -110,7 +115,7 @@ class FirstRun(Base):
     def test_windows_hook_command(self):
         self.sync("--platform", "windows")
         hook = json.loads(read(self.settings))["hooks"]["PreToolUse"][0]["hooks"][0]
-        self.assertTrue(hook["command"].startswith('python "'))
+        self.assertTrue(hook["command"].startswith('python -B "'))
         self.assertNotIn("\\", hook["command"])
         self.assertEqual(hook["shell"], "powershell")
 
@@ -141,6 +146,50 @@ class DryRunAndCheck(Base):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("CLAUDE.md", r.stdout)
         self.assertEqual(self.snapshot(), before)
+
+
+class DriftHeader(Base):
+    """The header names a hash of the sources, so a repo commit alone is never drift."""
+
+    def vcs(self, *args):
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+        subprocess.run(["git", "-C", self.repo, "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       check=True, capture_output=True, env=env)
+
+    def header(self):
+        return read(self.rules).splitlines()[0]
+
+    def test_an_unrelated_commit_is_not_drift(self):
+        self.vcs("init", "-q")
+        self.vcs("add", "-A")
+        self.vcs("commit", "-qm", "one")
+        self.assertEqual(self.sync().returncode, 0)
+        write(os.path.join(self.repo, "unrelated.txt"), "x")
+        self.vcs("add", "-A")
+        self.vcs("commit", "-qm", "two")
+        r = self.sync("--check")
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_header_changes_with_each_source_and_not_with_the_commit(self):
+        self.sync()
+        first = self.header()
+        self.assertNotRegex(first, r"nousfx_sync (unknown|[0-9a-f]{7})\.")
+        for path in (os.path.join(self.repo, "harness", "AGENTS.md"),
+                     os.path.join(self.repo, "harness", "overlays", "claude.overlay.md"),
+                     os.path.join(self.state, "local.md")):
+            original = read(path)
+            write(path, original + "\nmore\n")
+            self.assertEqual(self.sync("--check").returncode, 1, path)
+            self.sync()
+            self.assertNotEqual(self.header(), first, path)
+            write(path, original)
+            self.sync()
+            self.assertEqual(self.header(), first, path)
+
+    def test_editing_the_generated_file_is_drift(self):
+        self.sync()
+        write(self.rules, read(self.rules).replace("Fixture rules", "Edited rules", 1))
+        self.assertEqual(self.sync("--check").returncode, 1)
 
 
 class Restore(Base):

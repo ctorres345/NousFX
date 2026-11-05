@@ -11,7 +11,7 @@ CI on the PR    ───┘
 ## The plain entry
 
 ```
-python3 claude/hooks/review-gate.py check --cwd DIR --command "gh pr create"
+python3 -B claude/hooks/review-gate.py check --cwd DIR --command "gh pr create"
 ```
 
 - Exit 0 allows. Exit 2 blocks, with the reason on stderr.
@@ -24,9 +24,9 @@ python3 claude/hooks/review-gate.py check --cwd DIR --command "gh pr create"
 
 - Template: `claude/githooks/pre-push`. Install it with `cp claude/githooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push`, or point `core.hooksPath` at the folder.
 - The gate script runs from outside the repo: `<home>/.claude/hooks/review-gate.py`, with `pr_create_parser.py` beside it. Copy both there from this repo's `claude/hooks/`. `<home>` comes from the passwd record, not `$HOME`. A copy inside the repo is code under review, and a branch could edit it to pass.
-- `REVIEW_GATE_DIR` overrides that folder. It is for tests and for my own shell.
+- `REVIEW_GATE_DIR` overrides that folder. It is for tests and for my own shell. The hook refuses it, and blocks the push, when the folder is inside any git work tree (or git cannot say), because code in a work tree is code under review.
 - It fails closed. A missing gate script, missing `python3` or any git error blocks the push.
-- It reads the ref list git sends on stdin. Deletes, tag pushes and pushes of the default branch (`main`, `master`, or `origin/HEAD`) pass. Any other branch push is judged against the checked-out branch.
+- It reads the ref list git sends on stdin. Deletes, tag pushes and pushes of the default branch (`main`, `master`, or `origin/HEAD`) pass. Any other branch push is judged on the tree of the pushed commit (`local_sha`), not the checked-out branch. That tree needs a valid review mark, and the pushed branch name must be `cesar/<KEY>`. A sha that is not a commit blocks. It calls `review-gate.py check ... --tree TREE --branch NAME`.
 - It is advisory. `git push --no-verify` skips it, and nothing on the client can stop that. I never treat it as the only control.
 
 ## CI: the real gate for tools without hooks
@@ -50,7 +50,7 @@ CI: git rev-parse HEAD^{tree} == hash in the line? ◄────────�
 ```
 
 1. Finish the code and run the review loop. It records the mark.
-2. Run `python3 claude/hooks/review-gate.py attest`. It prints one line and exits 0 only when a clean mark (or a recorded skip) covers the current code. Otherwise it exits 2 and prints nothing.
+2. Run `python3 -B claude/hooks/review-gate.py attest`. It prints one line and exits 0 only when a clean mark (or a recorded skip) covers the current code. Otherwise it exits 2 and prints nothing.
 3. Paste the line into the PR body, as its own line. A commit trailer on the last commit works too.
 4. Any later change to the tree (a new commit, an amended file) changes the hash. Run the review again, run `attest` again, edit the body.
 

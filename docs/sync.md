@@ -7,8 +7,8 @@ harness/AGENTS.md                  neutral rules, models named by role (fast / s
 harness/overlays/claude.overlay.md Claude only: Skill tool, goal runs, subagent names
 ~/.config/nousfx/local.md          mine alone, never committed (copy harness/local.md.example)
         |
-        v   python3 scripts/nousfx_sync.py
-~/.claude/CLAUDE.md                generated, header names the commit
+        v   python3 -B scripts/nousfx_sync.py
+~/.claude/CLAUDE.md                generated, header holds a hash of the sources
 ~/.claude/settings.json            review gate registered (other settings kept)
 ~/.claude/hooks/                   review-gate.py and pr_create_parser.py
 ```
@@ -21,12 +21,15 @@ harness/overlays/claude.overlay.md Claude only: Skill tool, goal runs, subagent 
 | `--dry-run` | print a diff, write nothing |
 | `--check` | list drifted files, exit 1 on drift, write nothing |
 | `--restore` | put back the last backup (files that did not exist are removed) |
+| `--clean-backups` | also move old `install.sh` backups into the backup (otherwise they are only listed) |
 | `--yes-replace NAME` | let my skill NAME replace a folder sync does not own (moved into the backup first) |
 | `--home`, `--state-home`, `--repo` | override locations; tests always use these |
 
 ## Rules I keep
 
 - The home dir comes from the user record, never the `HOME` variable.
+- The generated header holds a short hash of the sources that made the file (rules: neutral file, overlay, local file; agents: the agent file and its role entry in `models.toml`), never the repo commit. `--check` flags a real source change or a hand edit, not every commit.
+- The installed hook runs `python3 -B "<gate>"` (`python -B` on Windows), so the gate leaves no bytecode behind.
 - A backup goes to `<state home>/backups/<stamp>/` before every write. A run with nothing to change writes and backs up nothing.
 - A secret scan runs over the generated rules and the hook files. A hit fails the run before anything is written.
 - After writing, the installed gate runs twice: a PR create on a wrong branch must block, a harmless command must pass. If not, the run fails and `--restore` undoes it.
@@ -48,8 +51,8 @@ claude/skills/*, plugins/via/skills/via   sources
 - A folder of the same name that is not in the manifest is a collision. Sync reports it and skips that skill. I re-run with `--yes-replace NAME` once I have looked at it; the old folder is backed up first.
 - Removing a skill from the repo removes only its manifest-owned link.
 - `--check` exits 1 on a collision, a broken link or a missing link. `--dry-run` and `--restore` cover the links, the manifest and the moved folders.
-- Old `install.sh` backups (`*.bak-YYYYMMDD-HHMMSS` under `~/.claude`) are listed, then moved into the run's backup, so `--restore` brings them back.
-- On Windows a failed symlink falls back to a junction (`mklink /J`).
+- Old `install.sh` backups (`*.bak-YYYYMMDD-HHMMSS` of `CLAUDE.md`, `settings.json` and the files under `agents/`, `skills/`, `hooks/` in `~/.claude`) are listed in every run and never moved on their own. `--clean-backups` moves them into the run's backup, so `--restore` brings them back. `projects/`, `plugins/` and everything else are out of scope.
+- On Windows a failed symlink falls back to a junction. The command is fixed (`cmd /c mklink /J`); nothing in the environment can replace it. `NOUSFX_NO_SYMLINK=1` only forces that fallback and is test-only: tests pass `--platform windows` with a stand-in `cmd` first on PATH.
 
 ## Real-machine check
 

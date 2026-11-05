@@ -1,7 +1,7 @@
 # Working rules
 
 ## Delegation
-- Keep edits in the main thread. Re-read any file yourself before editing it; do not rely on a Haiku summary alone.
+- Keep edits in the main thread. Re-read any file yourself before editing it; do not rely on a fast agent's summary alone.
 - Every subagent call needs an objective, expected output format, and boundaries. Max ~3 parallel agents for simple tasks.
 
 ## Tickets and branches
