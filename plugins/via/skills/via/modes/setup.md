@@ -11,13 +11,13 @@ Look at your loaded tools and skill list. Decide:
 
 ## 2. Run the doctor
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/via_setup.py" --atlassian <present|missing> --figma <authorized|needs-auth|missing> --browser <chrome|builtin|none> [--skills <comma list>]
+python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_setup.py" --atlassian <present|missing> --figma <authorized|needs-auth|missing> --browser <chrome|builtin|none> [--skills <comma list>]
 ```
-Substitute the real plugin path for `${CLAUDE_PLUGIN_ROOT}` in the command, because the variable is not set inside Bash. The script detects Gemini (key source only, never the key), the Obsidian vault, simulators and emulators, then creates or refreshes `~/.claude/via.json`.
+Substitute the real plugin path for `${CLAUDE_PLUGIN_ROOT}` in the command, because the variable is not set inside Bash. The script detects Gemini (key source only, never the key), the Obsidian vault, simulators and emulators, then creates or refreshes `~/.config/nousfx/via.json`.
 
 ## 3. Report
 - Print a table: integration | status | why it matters | fix link. Use the script's JSON.
-- Outbound allow-list: tell the user that a project sends nothing to Gemini, Jira, Figma, Artifacts or Obsidian until it is listed in `outbound_allowlist` in `~/.claude/via.json` (key `owner/repo`, value `{"destinations": [...]}`, plus `gemini_code_paths` for the legacy Argon code review). Add a project only when the user says so in chat. The file must stay inside `~/.claude`: the scripts refuse a config kept in a project.
+- Outbound allow-list: tell the user that a project sends nothing to Gemini, Jira, Figma, Artifacts or Obsidian until it is listed in `outbound_allowlist` in `~/.config/nousfx/via.json` (key `owner/repo`, value `{"destinations": [...]}`, plus `gemini_code_paths` for the legacy Argon code review). Add a project only when the user says so in chat. The file must stay inside `~/.config/nousfx`, outside any git work tree: the scripts refuse a config kept in a project. The home comes from the system user record, so no variable moves it. An old `~/.claude/via.json` is copied there once and still read for one release.
 - If an Obsidian vault shows as `detected`, tell the user the path and ask before setting `obsidian.vault_path`.
 - Print the script's `summary` line as the last line.
 - Say whether the config was `written` or `unchanged`.

@@ -8,8 +8,10 @@ Usage:
 DEST is one of gemini, jira, figma, artifacts, obsidian.
 The project key is owner/repo, taken from the `origin` remote of the git repo at --project (default: the
 current folder). A remote with no host (a local path or file:// URL) gives no key. The config is --config, else
-$VIA_CONFIG, else ~/.claude/via.json, and it must be a real file inside ~/.claude: a config kept in a project
-is refused, so a repo cannot allow-list itself. Its `outbound_allowlist` maps a key
+~/.config/nousfx/via.json (home taken from the system user record; no environment variable moves it). It must be
+a real file inside ~/.config/nousfx, and that folder must not be in a git work tree: a config kept in a project
+is refused, so a repo cannot allow-list itself. While the new file is absent, the old ~/.claude/via.json is read
+(one release). Its `outbound_allowlist` maps a key
 to {"destinations": [...], "gemini_code_paths": [...]}. A project that is not listed, has no remote, or has
 no config is local-only. There is no exemption for public repos.
 
@@ -28,6 +30,9 @@ import os
 import re
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import via_home  # noqa: E402
 
 DESTINATIONS = ("gemini", "jira", "figma", "artifacts", "obsidian")
 LOCAL_ONLY = {
@@ -67,13 +72,12 @@ def project_key(project):
 
 
 def config_path(arg):
-    """The personal config. It must sit inside ~/.claude and not be a symlink, whatever --config or VIA_CONFIG say."""
-    home = os.path.realpath(os.path.expanduser("~"))
-    path = os.path.abspath(arg or os.environ.get("VIA_CONFIG") or os.path.join(home, ".claude", "via.json"))
-    allowed = os.path.realpath(os.path.join(home, ".claude"))  # ~/.claude may itself be a symlink (dotfiles)
-    if os.path.islink(path) or os.path.commonpath([os.path.realpath(os.path.dirname(path)), allowed]) != allowed:
-        raise Bad("the config %s is not a regular file inside %s" % (path, allowed))
-    return path
+    """--config, else ~/.config/nousfx/via.json (the old ~/.claude/via.json is read while that is absent).
+    It must be a real file inside ~/.config/nousfx, outside any git work tree. No environment variable moves it."""
+    try:
+        return via_home.config_path(arg)
+    except via_home.Refused as e:
+        raise Bad(str(e))
 
 
 def load_allowlist(path):

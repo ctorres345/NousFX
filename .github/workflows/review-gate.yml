@@ -1,0 +1,56 @@
+name: review-gate
+
+# Server-side check of the review gate (docs/review-gate.md). The PR must carry a
+# `Review-Gate: <tree hash>` line (from `review-gate.py attest`) for the tree of its head commit.
+# The gate script is taken from the BASE branch, never from the PR, so a PR cannot edit it to pass.
+# Marking this check "required" in the repo settings is a manual step.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: Verify the review attestation with the base branch's gate
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -eu
+          gate_dir="$RUNNER_TEMP/gate"
+          mkdir -p "$gate_dir"
+          if ! git show "origin/$BASE_REF:claude/hooks/review-gate.py" > "$gate_dir/review-gate.py" 2>/dev/null \
+             || ! git show "origin/$BASE_REF:claude/hooks/pr_create_parser.py" > "$gate_dir/pr_create_parser.py" 2>/dev/null; then
+            echo "::error::The base branch '$BASE_REF' has no review gate yet (claude/hooks/review-gate.py). The first PR that introduces the gate cannot be verified; merge it by hand as the repo owner."
+            exit 1
+          fi
+          if ! grep -q "verify-attestation" "$gate_dir/review-gate.py"; then
+            echo "::error::The gate on '$BASE_REF' predates attestations (no verify-attestation). The PR that introduces them cannot be verified; merge it by hand as the repo owner."
+            exit 1
+          fi
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.txt"
+          git log -1 --format=%B HEAD > "$RUNNER_TEMP/commit-msg.txt"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          out=$(python3 -B "$gate_dir/review-gate.py" verify-attestation --tree "$tree" \
+                  --text-file "$RUNNER_TEMP/pr-body.txt" --text-file "$RUNNER_TEMP/commit-msg.txt" </dev/null) || {
+            echo "::error::No valid Review-Gate line for tree $tree in the PR description or last commit message. Run 'review-gate.py attest' on the final code and paste the line into the PR body."
+            exit 1
+          }
+          echo "$out"
+          case "$out" in
+            *"Review attestation found for tree $tree."*) ;;
+            *) echo "::error::The base gate did not confirm the attestation."; exit 1 ;;
+          esac
+      - name: Gate unit tests (code from the PR, informational about the PR's own gate)
+        run: |
+          python3 -B claude/hooks/test_review_gate.py
+          python3 -B claude/hooks/test_review_gate_check.py
+          python3 -B claude/hooks/test_review_gate_attest.py

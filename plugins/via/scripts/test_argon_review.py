@@ -13,6 +13,8 @@ import sys
 import tempfile
 import unittest
 
+import nousfx_testhome as th
+
 sys.dont_write_bytecode = True
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
@@ -54,12 +56,12 @@ class ArgonReviewTest(unittest.TestCase):
             f.write(PNG)
 
     def config(self, allowlist):
-        os.makedirs(os.path.join(self.home, ".claude"), exist_ok=True)
-        with open(os.path.join(self.home, ".claude", "via.json"), "w") as f:
+        os.makedirs(os.path.join(self.home, ".config", "nousfx"), exist_ok=True)
+        with open(os.path.join(self.home, ".config", "nousfx", "via.json"), "w") as f:
             json.dump({"version": 1, "outbound_allowlist": allowlist}, f)
 
     def run_script(self, script=SCRIPT):
-        env = {"HOME": self.home, "PATH": "%s:/usr/bin:/bin" % os.path.dirname(sys.executable)}
+        env = {"PATH": "%s:%s:/usr/bin:/bin" % (th.bin_dir(self.home), os.path.dirname(sys.executable)), **th.env(self.home)}
         return subprocess.run(["bash", script, "--shot", self.shot, "--range", "HEAD", "--brief", "Home screen."],
                               cwd=self.repo, capture_output=True, text=True, env=env)
 
@@ -97,8 +99,8 @@ class ArgonReviewTest(unittest.TestCase):
         self.assertNotIn("other/Private.kt", sent)
 
     def test_a_malformed_config_stops_with_exit_3(self):
-        os.makedirs(os.path.join(self.home, ".claude"))
-        with open(os.path.join(self.home, ".claude", "via.json"), "w") as f:
+        os.makedirs(os.path.join(self.home, ".config", "nousfx"))
+        with open(os.path.join(self.home, ".config", "nousfx", "via.json"), "w") as f:
             f.write("{nope")
         r = self.run_script()
         self.assertEqual(r.returncode, 3, r.stderr)
@@ -114,6 +116,25 @@ class ArgonReviewTest(unittest.TestCase):
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertIn("via_outbound.py", r.stderr)
         self.assertIsNone(self.logged("args.log"))
+
+    def test_a_via_outbound_in_the_plugin_cache_is_never_used(self):
+        cache = os.path.join(self.home, ".claude", "plugins", "cache", "nousfx", "via", "9.9.9", "scripts")
+        os.makedirs(cache)
+        with open(os.path.join(cache, "via_outbound.py"), "w") as f:
+            f.write("import sys\nif sys.argv[1] == 'paths':\n    sys.stdout.write('ui/\\0')\nsys.exit(0)\n")  # always allows
+        copy = os.path.join(self.tmp, "copy", "ui-review", "scripts")
+        os.makedirs(copy)
+        shutil.copy(SCRIPT, copy)
+        shutil.copytree(os.path.join(SKILLS, "gemini-review"), os.path.join(self.tmp, "copy", "gemini-review"))
+        self.config({KEY: {"destinations": ["gemini"], "gemini_code_paths": ["ui/"]}})
+        r = self.run_script(os.path.join(copy, "argon-review.sh"))
+        self.assertEqual(r.returncode, 3, r.stderr)  # not found next to the script, and the cache copy is ignored
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_via_is_found_next_to_the_repo_without_any_plugin_cache(self):
+        self.config({KEY: {"destinations": ["gemini"], "gemini_code_paths": ["ui/"]}})
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".claude", "plugins")))
+        self.assertEqual(self.run_script().returncode, 0)
 
     def test_no_reference_to_the_old_allow_list_file_remains_in_the_script(self):
         with open(SCRIPT) as f:

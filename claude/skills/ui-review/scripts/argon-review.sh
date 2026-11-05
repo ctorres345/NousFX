@@ -5,6 +5,7 @@
 # Exit codes: 3 setup, 4 project not allowed by the via.json outbound allow-list, 5 no UI changes, 6 too large, 7 likely secret, 8 bad screenshots, 9 gemini-api failed.
 set -euo pipefail
 
+self_dir="$(cd "$(dirname "$0")" && pwd)"
 source "$(dirname "$0")/../../gemini-review/scripts/common.sh"
 
 model="gemini-4-argon"
@@ -44,23 +45,20 @@ done
 
 go_to_root
 
-# The project must be on the outbound allow-list in ~/.claude/via.json (destination gemini), public or private.
+# The project must be on the outbound allow-list in ~/.config/nousfx/via.json (destination gemini), public or private.
 # Only the paths listed there as gemini_code_paths are sent. Any doubt stops the run.
-outbound=""
-for candidate in "$(ls -d "$HOME"/.claude/plugins/cache/nousfx/via/*/scripts/via_outbound.py 2>/dev/null | sort -V | tail -1)" \
-                 "$(dirname "$0")/../../../../plugins/via/scripts/via_outbound.py"; do
-  [ -n "$candidate" ] && [ -f "$candidate" ] && { outbound="$candidate"; break; }
-done
-[ -n "$outbound" ] || { echo "Stopped: via_outbound.py not found (install the via plugin). Nothing was sent." >&2; exit 3; }
+# Found next to this repo, never in the plugin cache: a cache copy can be stale or hand-edited.
+outbound="$self_dir/../../../../plugins/via/scripts/via_outbound.py"
+[ -f "$outbound" ] || { echo "Stopped: via_outbound.py not found (run this from a NousFX checkout). Nothing was sent." >&2; exit 3; }
 rc=0
-python3 -B "$outbound" check --dest gemini --project "$PWD" >/dev/null 2>&1 || rc=$?
+python3 -I -B "$outbound" check --dest gemini --project "$PWD" >/dev/null 2>&1 || rc=$?
 case "$rc" in
   0) ;;
-  20) echo "Stopped: this project is not on the outbound allow-list for gemini in ~/.claude/via.json. Nothing was sent." >&2; exit 4 ;;
+  20) echo "Stopped: this project is not on the outbound allow-list for gemini in ~/.config/nousfx/via.json. Nothing was sent." >&2; exit 4 ;;
   *) echo "Stopped: could not read the outbound allow-list (via_outbound.py exit $rc). Nothing was sent." >&2; exit 3 ;;
 esac
 paths=()
-while IFS= read -r -d '' listed; do paths+=("$listed"); done < <(python3 -B "$outbound" paths --dest gemini --project "$PWD")
+while IFS= read -r -d '' listed; do paths+=("$listed"); done < <(python3 -I -B "$outbound" paths --dest gemini --project "$PWD")
 [ "${#paths[@]}" -ge 1 ] || { echo "Stopped: the allow-list entry names no gemini_code_paths. Nothing was sent." >&2; exit 4; }
 
 if [ -z "$range" ]; then

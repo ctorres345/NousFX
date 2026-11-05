@@ -14,6 +14,8 @@ import sys
 import tempfile
 import unittest
 
+import nousfx_testhome as th
+
 sys.dont_write_bytecode = True
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "via_second_opinion.py")
@@ -38,8 +40,8 @@ class ViaSecondOpinionTest(unittest.TestCase):
         self.elsewhere = os.path.join(tmp.name, "elsewhere")
         for d in (self.home, self.project, self.elsewhere):
             os.makedirs(d)
-        os.makedirs(os.path.join(self.home, ".claude"))
-        self.config = os.path.join(self.home, ".claude", "via.json")  # a config must live in ~/.claude
+        os.makedirs(os.path.join(self.home, ".config", "nousfx"))
+        self.config = os.path.join(self.home, ".config", "nousfx", "via.json")  # a config must live in ~/.config/nousfx
         self.git("init", "-q")
         self.git("remote", "add", "origin", "git@github.com:%s.git" % KEY)
         self.run_dir = os.path.join(self.project, ".via", "runs", "20261103T000000Z")
@@ -84,8 +86,8 @@ class ViaSecondOpinionTest(unittest.TestCase):
             args += ["--shot", s]
         if brief is not None:
             args += ["--brief", brief]
-        return subprocess.run([sys.executable, "-B", SCRIPT, *args], capture_output=True, text=True,
-                              cwd=self.elsewhere, env={"PATH": "/usr/bin:/bin", "HOME": self.home})
+        return subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, *args], capture_output=True, text=True,
+                              cwd=self.elsewhere, env={"PATH": "/usr/bin:/bin", **th.env(self.home)})
 
     def logged(self, name):
         path = os.path.join(self.home, name)

@@ -13,6 +13,14 @@ Branch check: the branch must be named cesar/<JIRA-KEY> (for example cesar/MOB-2
 user approves another name for this PR, `review-gate.py --allow-branch "reason"` records an
 exception for the current branch (stored in the git dir, never committed).
 
+Check mode: `review-gate.py check --cwd DIR --command "gh pr create"` asks the same question without
+a hook payload (pre-push hook, CI, other tools). Exit 0 allows, 2 blocks, and bad input blocks.
+The hook above parses its payload and calls the same evaluate() function.
+
+Attest mode: `review-gate.py attest` prints `Review-Gate: <tree>` (with ` skipped: <reason>` for a skip)
+when a valid mark covers the current code, else exits 2. `verify-attestation --tree H --text-file F`
+(CI) exits 0 when F holds that line for tree H. An honor-system claim, see docs/review-gate.md.
+
 Mark mode: `review-gate.py --mark --findings N` or `--mark --skip "reason"` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
 Open findings above 0 keep the PR blocked unless a --skip reason was recorded.
@@ -157,9 +165,9 @@ def allow_branch(argv):
     return 0
 
 
-def branch_blocked(cwd):
-    """Message to print when the current branch breaks the naming rule, else None."""
-    branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+def branch_blocked(cwd, branch=None):
+    """Message to print when the branch (default: the current one) breaks the naming rule, else None."""
+    branch = branch or git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
     if branch == "HEAD" or BRANCH_OK.match(branch):  # detached HEAD: nothing to judge
         return None
     try:
@@ -171,8 +179,9 @@ def branch_blocked(cwd):
     return BRANCH_BLOCK.format(branch=branch, script=SCRIPT)
 
 
-def check_repo(cwd):
-    """Exit code for a create running in cwd."""
+def check_repo(cwd, tree=None, branch=None):
+    """Exit code for a create running in cwd. With tree and branch, judge that tree and branch
+    instead of the working tree and the checked-out branch (the pre-push hook does this per ref)."""
     script = SCRIPT
     if cwd is None:
         print(CD_BLOCK, file=sys.stderr)
@@ -186,7 +195,7 @@ def check_repo(cwd):
             if "not a git repository" in str(e):
                 return 0
             raise
-        msg = branch_blocked(cwd)
+        msg = branch_blocked(cwd, branch)
         if msg:
             print(msg, file=sys.stderr)
             return 2
@@ -196,7 +205,7 @@ def check_repo(cwd):
             ok = marker["tree"]
         except (OSError, KeyError, ValueError):
             ok = None
-        if ok and ok in {worktree_tree(cwd), head_tree(cwd)}:
+        if ok and (ok == tree if tree else covers(cwd, ok)):
             if marker.get("skipped"):
                 return 0
             count = marker.get("findings_open")
@@ -212,7 +221,98 @@ def check_repo(cwd):
         return 2
 
 
+def covers(cwd, tree):
+    """True when tree is HEAD's tree or the working tree. Both are always computed on purpose: a git
+    failure on either one must block, so no short-circuit when HEAD already matches."""
+    return tree in {worktree_tree(cwd), head_tree(cwd)}
+
+
+def option(argv, name):
+    i = argv.index(name) + 1 if name in argv else len(argv)
+    return argv[i] if i < len(argv) and not argv[i].startswith("--") else None
+
+
+def check(argv):
+    """Plain entry for tools without Claude hooks: `check --cwd DIR --command "..."`.
+
+    Same allow (0) and block (2) codes as the hook. Unlike the hook, bad input blocks: a missing
+    option, a missing folder or a folder that is not a git repo all exit 2.
+    """
+    cwd, command = option(argv, "--cwd"), option(argv, "--command")
+    if not cwd or not command:
+        print('Blocked: usage: review-gate.py check --cwd DIR --command "gh pr create"', file=sys.stderr)
+        return 2
+    try:
+        git(["rev-parse", "--git-dir"], cwd)
+    except (OSError, RuntimeError) as e:
+        print(ERROR_BLOCK.format(error=e, script=SCRIPT), file=sys.stderr)
+        return 2
+    tree, branch = option(argv, "--tree"), option(argv, "--branch")
+    if tree or branch:  # judge a pushed commit: the pre-push hook passes both
+        if not (tree and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", tree)) or not branch:
+            print("Blocked: --tree needs a tree hash and --branch a branch name, together.", file=sys.stderr)
+            return 2
+        return check_repo(cwd, tree, branch)
+    return evaluate("Bash", command, cwd)
+
+
+ATTEST_LINE = re.compile(r"^[ \t]*Review-Gate:[ \t]+([0-9a-f]{40}|[0-9a-f]{64})(?:[ \t]+skipped:[ \t]*(.*?))?[ \t]*$",
+                         re.I | re.M)
+
+
+def attest(cwd):
+    """Print `Review-Gate: <tree>` (plus ` skipped: <reason>`) when a valid mark covers this code.
+
+    Same validity rule as check_repo: the mark's tree is the working tree or HEAD, and the review
+    is clean (0 open findings) or skipped with a reason. Otherwise exit 2 with nothing on stdout.
+    """
+    try:
+        with open(git_path("claude-review-ok", cwd), encoding="utf-8") as f:
+            marker = json.load(f)
+        tree = marker["tree"]
+        if not covers(cwd, tree):
+            raise ValueError("the review mark is for other code")
+        skipped = " ".join(str(marker.get("skipped") or "").split())
+        if not skipped and marker.get("findings_open") != 0:
+            raise ValueError("the review has open findings or none was recorded")
+    except (OSError, KeyError, ValueError, RuntimeError) as e:
+        print(f"No attestation: no valid review for the current code ({e}). Run the review loop first.",
+              file=sys.stderr)
+        return 2
+    print(f"Review-Gate: {tree}" + (f" skipped: {skipped}" if skipped else ""))
+    return 0
+
+
+def verify_attestation(argv):
+    """`verify-attestation --tree HASH --text-file F [--text-file G ...]`: exit 0 if any file
+    holds a line `Review-Gate: HASH`. Prints `skipped: <reason>` for a skip attestation."""
+    tree = option(argv, "--tree")
+    files = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--text-file"]
+    if not tree or not files:
+        print("Blocked: usage: review-gate.py verify-attestation --tree HASH --text-file FILE",
+              file=sys.stderr)
+        return 2
+    for path in files:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError as e:
+            print(f"Blocked: cannot read {path}: {e}", file=sys.stderr)
+            return 2
+        for m in ATTEST_LINE.finditer(text):
+            if m.group(1).lower() == tree.strip().lower():
+                if m.group(2):
+                    print(f"skipped: {m.group(2)}")
+                print(f"Review attestation found for tree {tree}.")
+                return 0
+    print(f"Blocked: no `Review-Gate: {tree}` line in the PR description or last commit message. "
+          "Run `review-gate.py attest` on the final code and paste its line into the PR body.",
+          file=sys.stderr)
+    return 2
+
+
 def gate():
+    """Claude PreToolUse hook: parse the payload, then ask evaluate()."""
     try:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
         tool = str(payload.get("tool_name") or "")
@@ -220,6 +320,11 @@ def gate():
         cwd = payload.get("cwd") or os.getcwd()
     except Exception:
         return 0  # not a call we can read: never break unrelated work
+    return evaluate(tool, command, cwd)
+
+
+def evaluate(tool, command, cwd):
+    """Exit code for one tool call. The single decision path for the hook and for `check`."""
     if MCP_PR_CREATE.search(tool):
         dirs = [cwd]
     elif PARSER_ERROR:
@@ -242,6 +347,12 @@ def gate():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["check"]:
+        sys.exit(check(sys.argv))
+    if sys.argv[1:2] == ["attest"]:
+        sys.exit(attest(os.getcwd()))
+    if sys.argv[1:2] == ["verify-attestation"]:
+        sys.exit(verify_attestation(sys.argv))
     if "--allow-branch" in sys.argv:
         sys.exit(allow_branch(sys.argv))
     sys.exit(mark(sys.argv) if "--mark" in sys.argv else gate())
