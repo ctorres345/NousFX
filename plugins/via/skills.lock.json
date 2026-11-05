@@ -1,0 +1,59 @@
+{
+  "skills": {
+    "animate": {
+      "commit": "c8a79627b59d72d764d6ab6f2c87c09a48169833",
+      "path": "skills/animate",
+      "repo": "https://github.com/emilkowalski/skills",
+      "sha256": "60613e9badee4110074d32e1f5d8bf63b720961c2acb9eefe962cd0e591e2e58"
+    },
+    "animation-vocabulary": {
+      "commit": "c8a79627b59d72d764d6ab6f2c87c09a48169833",
+      "path": "skills/animation-vocabulary",
+      "repo": "https://github.com/emilkowalski/skills",
+      "sha256": "1c50a737b755ff021f5216c7b89af3734ba0f9a908d0b540d3e9979f52fef3e2"
+    },
+    "flutter-add-widget-preview": {
+      "commit": "b7d5a0be4195b82fe073620fb52f594b0809eacf",
+      "path": "skills/flutter-add-widget-preview",
+      "repo": "https://github.com/flutter/agent-plugins",
+      "sha256": "a6866e150ae9f804349bf399bb887e8ede45f888657411deb4e8179400633c88"
+    },
+    "flutter-build-responsive-layout": {
+      "commit": "b7d5a0be4195b82fe073620fb52f594b0809eacf",
+      "path": "skills/flutter-build-responsive-layout",
+      "repo": "https://github.com/flutter/agent-plugins",
+      "sha256": "bdb7ab7ca812ee719237a718376a5f2e15b659201ff66818f1012c5d13751487"
+    },
+    "flutter-fix-layout-issues": {
+      "commit": "b7d5a0be4195b82fe073620fb52f594b0809eacf",
+      "path": "skills/flutter-fix-layout-issues",
+      "repo": "https://github.com/flutter/agent-plugins",
+      "sha256": "66c9d468f894704bfd760c9c6f60651e634fadb099f1977ab9d4e2bf73eb5fc1"
+    },
+    "impeccable": {
+      "commit": "c8891a9ae865d6ee311836ae5199bfce0fe115b1",
+      "path": "plugin/skills/impeccable",
+      "repo": "https://github.com/pbakaus/impeccable",
+      "sha256": "a0a7477f47718502f8f1530c2046efc59a1a708b9d4bb9aaa2cc861ae6d584d4"
+    },
+    "improve-animations": {
+      "commit": "c8a79627b59d72d764d6ab6f2c87c09a48169833",
+      "path": "skills/improve-animations",
+      "repo": "https://github.com/emilkowalski/skills",
+      "sha256": "197db8a2e4a2f009ad5aeef57fb9aafbec83f9023bfff269a4bf5ede1106584a"
+    },
+    "review-animations": {
+      "commit": "c8a79627b59d72d764d6ab6f2c87c09a48169833",
+      "path": "skills/review-animations",
+      "repo": "https://github.com/emilkowalski/skills",
+      "sha256": "7d23a794b6cb0191a68485b87d546adc9bb5ea93aa4168b299e2fefeea940790"
+    },
+    "swiftui-expert-skill": {
+      "commit": "204dba7c67256a8b707ee3fbc5759a824191974f",
+      "path": "skills/swiftui-expert-skill",
+      "repo": "https://github.com/AvdLee/SwiftUI-Agent-Skill",
+      "sha256": "8ee42b77e96864241cf1cb36d8934b637dc51ab84e21df95a86df1ea1be4dcf7"
+    }
+  },
+  "version": 1
+}
