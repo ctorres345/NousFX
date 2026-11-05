@@ -21,8 +21,8 @@ env-none | env-emulator | env-device, and the devices needed
 - Prototype: link and artboard or screen name
 - Values: colors, sizes, radii, spacing, icons, states (open, pressed, selected, empty, dark)
 - [ ] Matches the prototype on the values above
-- [ ] Before and after screenshots, light and dark, on the listed devices
-- [ ] Screen recording if it involves motion, a flow, or a bug that shows over time
+- [ ] Before and after screenshots, light and dark, on the listed devices, captured by the agent (simulator, emulator or browser) and attached in the PR description's Screenshots / recording section
+- [ ] Screen recording instead of or besides screenshots if it involves motion, a flow, or a bug that shows over time
 
 ## Review
 - [ ] review-loop

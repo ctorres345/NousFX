@@ -293,6 +293,26 @@ class DroppedSectionGuard(Base):
         self.assertIn("# Forgotten section", report)
         self.assertIn("A rule nobody carried over", report)
 
+    def test_rule_moved_to_a_skill_is_kept(self):
+        rule = "Always archive the quarterly widget ledger before closing the books."
+        write(os.path.join(self.repo, "claude", "skills", "demo", "SKILL.md"), f"---\nname: demo\n---\n\n{rule}\n")
+        r, report = self.regress(f"# Fixture rules\n- {rule}\n")
+        self.assertEqual(r.returncode, 0, report)
+        self.assertIn("moved: 1", report)
+
+    def test_half_moved_rule_is_dropped(self):
+        moved = "Always archive the quarterly widget ledger before closing the books."
+        write(os.path.join(self.repo, "claude", "skills", "demo", "SKILL.md"), f"---\nname: demo\n---\n\n{moved}\n")
+        r, report = self.regress(f"# Fixture rules\n- {moved} Then shred every printed ledger copy afterwards.\n")
+        self.assertEqual(r.returncode, 1, report)
+        self.assertIn("dropped: 1", report)
+
+    def test_rule_made_of_words_found_in_different_files_is_dropped(self):
+        write(os.path.join(self.repo, "claude", "skills", "a", "SKILL.md"), "---\nname: a\n---\n\nWidgets ledger archive quarterly.\n")
+        write(os.path.join(self.repo, "claude", "skills", "b", "SKILL.md"), "---\nname: b\n---\n\nShred printed copies afterwards.\n")
+        r, report = self.regress("# Fixture rules\n- Widgets ledger quarterly archive, shred printed copies afterwards.\n")
+        self.assertEqual(r.returncode, 1, report)
+
     def test_reordered_and_reworded_do_not_fail(self):
         today = ("# Fixture local rules\n- Branch prefix: demo, so a ticket branch is `demo/KEY-1`.\n\n"
                  "# Fixture rules\n- Use a fast agent for searching code.\n")
