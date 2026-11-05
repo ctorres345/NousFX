@@ -72,6 +72,62 @@ class Check(Base):
                      ["--cwd", self.tmp, "--command", "gh pr create"]):  # not a git repo
             self.assertEqual(self.check(*args).returncode, BLOCKED, args)
 
+    def test_allow_non_repo_judges_the_command_not_the_folder(self):
+        """agy has no per-command folder: a workspace that is not a repo must not block every command,
+        but a create that cd's into a repo with no review is still blocked."""
+        flag = "--allow-non-repo"
+        self.assertEqual(self.check("--cwd", self.tmp, "--command", "git status", flag).returncode, ALLOWED)
+        self.assertEqual(self.check("--cwd", self.tmp, "--command", f"cd {self.repo} && gh pr create",
+                                    flag).returncode, BLOCKED)
+        self.mark("--findings", "0")
+        self.assertEqual(self.check("--cwd", self.tmp, "--command", f"cd {self.repo} && gh pr create",
+                                    flag).returncode, ALLOWED)
+        self.assertEqual(self.check("--cwd", self.repo, "--command", "gh pr create", flag).returncode, ALLOWED)
+
+    def test_allow_non_repo_still_fails_closed_on_bad_input(self):
+        flag = "--allow-non-repo"
+        for args in ([flag], ["--cwd", self.tmp, flag],
+                     ["--cwd", os.path.join(self.tmp, "nope"), "--command", "git status", flag]):
+            self.assertEqual(self.check(*args).returncode, BLOCKED, args)
+
+    def test_allow_non_repo_blocks_when_git_cannot_run(self):
+        """Lenient only for a real "not a git repository" answer; a missing git is not that."""
+        env = {**os.environ, "PATH": os.path.join(self.tmp, "no-bin")}
+        r = subprocess.run([sys.executable, "-B", GATE, "check", "--cwd", self.repo, "--command", "gh pr create",
+                            "--allow-non-repo"], cwd=self.tmp, capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, BLOCKED)
+
+    def test_git_repo_variables_in_a_create_command_block(self):
+        """GIT_DIR / GIT_WORK_TREE in the command can point gh at another repo than the one checked."""
+        self.mark("--findings", "0")
+        for command in ("GIT_DIR=/x/.git GIT_WORK_TREE=/x gh pr create", "env GIT_DIR=/x/.git gh pr create",
+                        "export GIT_DIR=/x/.git; gh pr create", "GIT_WORK_TREE=/x gh pr create --fill"):
+            self.assertEqual(self.check("--cwd", self.repo, "--command", command).returncode, BLOCKED, command)
+        for command in ("GIT_DIR=/x/.git git log", "git status", "gh pr create"):
+            self.assertEqual(self.check("--cwd", self.repo, "--command", command).returncode, ALLOWED, command)
+
+    def test_allow_non_repo_blocks_an_mcp_create_outside_a_repo(self):
+        args = ("--cwd", self.tmp, "--command", "x", "--tool", "mcp__github__create_pull_request",
+                "--allow-non-repo")
+        self.assertEqual(self.check(*args).returncode, BLOCKED)
+
+    def test_a_command_may_start_with_dashes(self):
+        self.assertEqual(self.check("--cwd", self.repo, "--command", "--version").returncode, ALLOWED)
+
+    def test_tool_option_picks_the_parser(self):
+        """The same obfuscated create is caught as PowerShell and missed as bash (known parser limit)."""
+        obfuscated = "g`h pr create"
+        self.assertEqual(self.check("--cwd", self.repo, "--command", obfuscated, "--tool", "PowerShell").returncode,
+                         BLOCKED)
+        self.assertEqual(self.check("--cwd", self.repo, "--command", "gh pr create", "--tool", "Bash").returncode,
+                         BLOCKED)
+
+    def test_tool_option_accepts_an_mcp_create_tool(self):
+        args = ("--cwd", self.repo, "--command", "x", "--tool", "mcp__github__create_pull_request")
+        self.assertEqual(self.check(*args).returncode, BLOCKED)
+        self.mark("--findings", "0")
+        self.assertEqual(self.check(*args).returncode, ALLOWED)
+
     def test_missing_parser_module_fails_closed(self):
         d = os.path.join(self.tmp, "hooks")
         os.makedirs(d)

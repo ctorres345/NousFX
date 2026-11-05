@@ -14,6 +14,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
 ~/.claude/CLAUDE.md                generated, header holds a hash of the sources
 ~/.claude/settings.json            review gate registered (other settings kept)
 ~/.claude/hooks/                   review-gate.py and pr_create_parser.py
+~/.gemini/config/plugins/nousfx/   (agy) hooks.json, and hooks/ with agy_gate.py and its own copy of the gate
 ```
 
 ## Switches
@@ -99,6 +100,8 @@ harness/AGENTS.md + agy.overlay.md + local.md + local.agy.md
 ~/.gemini/config/plugins/nousfx/rules/AGENTS.md     generated, same header style as CLAUDE.md
 ~/.gemini/config/plugins/nousfx/skills/<name>       link to ~/.agents/skills/<name>
 ~/.gemini/config/plugins/nousfx/mcp_config.json     from the MCP list (below)
+~/.gemini/config/plugins/nousfx/hooks.json          the review gate on run_command
+~/.gemini/config/plugins/nousfx/hooks/              agy_gate.py, review-gate.py, pr_create_parser.py (copies)
 ```
 
 - My own `~/.gemini/config/rules/AGENTS.md` and the global `mcp_config.json` are never read or written. To turn the plugin off I run `agy plugin disable nousfx`.
@@ -106,6 +109,7 @@ harness/AGENTS.md + agy.overlay.md + local.md + local.agy.md
 - The agy rules have no Claude-only terms. A test checks the generated file, and sync warns when my `local.md` holds one.
 - The rules file must stay under agy's 24,000 byte cap, or the run fails before writing.
 - The skill links use the same manifest, collision rule and `--restore` journal as the other skill links.
+- The review gate is wired too (`docs/review-gate.md`, "agy adapter"), with the hashes of its three files in `hooks.json`. After writing, sync runs the adapter once: a PR create in a throwaway repo must be denied and a harmless command must get no answer. If not, the run fails and `--restore` undoes it.
 
 ## MCP
 

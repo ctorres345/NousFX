@@ -3,15 +3,24 @@
 Sync owns one folder, <home>/.gemini/config/plugins/nousfx/:
   plugin.json       the plugin manifest
   rules/AGENTS.md   generated header + neutral rules + agy overlay + local.md + local.agy.md
+  hooks.json        the review gate as a PreToolUse hook on run_command
+  hooks/            agy_gate.py (harness/agy) and a copy of the gate with its parser (claude/hooks)
 (skills/<name> links come from nousfx_skills.plan). Nothing else under .gemini is touched.
 """
 import hashlib
 import json
 import os
 import re
+import shlex
+import subprocess
+import sys
+import tempfile
 
 PLUGIN_REL = os.path.join(".gemini", "config", "plugins", "nousfx")
 MAX_BYTES = 24000
+GATE_FILES = ("review-gate.py", "pr_create_parser.py")  # copied from claude/hooks next to the adapter
+ADAPTER = "agy_gate.py"  # copied from harness/agy
+MATCHER = "run_command|.*create_pull_request"  # shell calls and any create-PR tool (regex on the tool name)
 
 CLAUDE_ONLY_TERMS = (
     r"Skill tool", r"ToolSearch", r"\bOpus\b", r"\bHaiku\b", r"\bFable\b", r"\bSonnet\b",
@@ -67,8 +76,72 @@ def manifest_text():
     return json.dumps(manifest, indent=2) + "\n"
 
 
-def plan_agy(repo, home, state, SyncError):
-    """{absolute path: text} for plugin.json and rules/AGENTS.md."""
+def sha256(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def hooks_text(adapter_path, python, hashes):
+    """hooks.json: run the adapter before every shell command. -I keeps PYTHONPATH from shadowing the stdlib.
+    hashes (adapter, gate, parser) go into the command: the adapter denies when a file no longer matches."""
+    hook = {"type": "command", "command": f'{python} -I -B "{adapter_path}" --expect {",".join(hashes)}',
+            "timeout": 30}
+    return json.dumps({"nousfx-review-gate": {"PreToolUse": [{"matcher": MATCHER, "hooks": [hook]}]}},
+                      indent=2) + "\n"
+
+
+def plan_agy(repo, home, state, SyncError, python="python3", native=lambda p: p):
+    """{absolute path: text} for plugin.json, rules/AGENTS.md, hooks.json and hooks/*.
+    python and native (path -> the form the hook command needs) differ on Windows."""
     base = plugin_dir(home)
-    return {os.path.join(base, "plugin.json"): manifest_text(),
-            os.path.join(base, "rules", "AGENTS.md"): build_rules(repo, state, SyncError)}
+    wanted = {os.path.join(base, "plugin.json"): manifest_text(),
+              os.path.join(base, "rules", "AGENTS.md"): build_rules(repo, state, SyncError)}
+    sources = [(os.path.join(repo, "harness", "agy", ADAPTER), ADAPTER)]
+    sources += [(os.path.join(repo, "claude", "hooks", name), name) for name in GATE_FILES]
+    texts = {}
+    for src, name in sources:
+        text = _read(src)
+        if text is None:
+            raise SyncError(f"missing agy gate source: {src}", 2)
+        texts[name] = wanted[os.path.join(base, "hooks", name)] = text
+    hashes = [sha256(texts[name]) for name in (ADAPTER, *GATE_FILES)]
+    wanted[os.path.join(base, "hooks.json")] = hooks_text(native(os.path.join(base, "hooks", ADAPTER)), python, hashes)
+    return wanted
+
+
+def self_test(base, SyncError):
+    """Run the written hook as agy would, with the command from hooks.json: a PR create in a repo on a wrong
+    branch must be denied by the branch rule, a harmless command must get no answer. A broken, missing or
+    always-allow adapter fails one of them."""
+    try:
+        with open(os.path.join(base, "hooks.json"), encoding="utf-8") as f:
+            command = json.load(f)["nousfx-review-gate"]["PreToolUse"][0]["hooks"][0]["command"]
+        argv = [a.strip('"') for a in shlex.split(command, posix=os.name != "nt")]
+    except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
+        raise SyncError(f"agy gate self-test failed: cannot read the hook command from hooks.json ({e}).")
+    with tempfile.TemporaryDirectory(prefix="nousfx-agy-selftest-") as d:
+        # no inherited GIT_DIR and friends: run from a git hook they would point at another repo
+        env = {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")}, "GIT_CONFIG_GLOBAL": os.devnull,
+               "GIT_CONFIG_SYSTEM": os.devnull}
+        for git in (["init", "-q", "-b", "selftest/none"],
+                    ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]):
+            if subprocess.run(["git", *git], cwd=d, capture_output=True, env=env).returncode:
+                raise SyncError("agy gate self-test could not create a temp git repo")
+
+        def run(command):
+            payload = {"toolCall": {"name": "run_command", "args": {"CommandLine": command}}, "workspacePaths": [d]}
+            try:
+                r = subprocess.run(argv, input=json.dumps(payload), capture_output=True, text=True, timeout=60, env=env)
+            except (OSError, subprocess.SubprocessError) as e:
+                return None, f"{type(e).__name__}: {e}"
+            try:
+                out = json.loads(r.stdout) if r.stdout.strip() else {}
+            except ValueError:
+                return r.returncode, "unreadable"
+            return r.returncode, (out.get("decision"), out.get("reason", "")) if out else None
+        blocked, allowed = run("gh pr create"), run("git status")
+    denied_by_branch_rule = (blocked[0] == 0 and isinstance(blocked[1], tuple) and blocked[1][0] == "deny"
+                             and "is not named cesar/" in blocked[1][1])
+    if not denied_by_branch_rule or allowed != (0, None):
+        raise SyncError(f"agy gate self-test failed: PR create gave {blocked} (want a deny for the branch name), "
+                        f"harmless command gave {allowed} (want (0, None)). Fix the adapter source and run "
+                        f"sync again; --restore undoes the files a run wrote.")

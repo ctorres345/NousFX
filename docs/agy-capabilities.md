@@ -70,7 +70,7 @@ Project-level `.agents/hooks.json`, tested:
 ## Plugins and subagents
 
 - A plugin is a folder with `plugin.json` plus optional `rules/`, `skills/`, `agents/`, `hooks.json`, `mcp_config.json`. Installed plugins live in `~/.gemini/config/plugins/` and `agy plugin list` shows them.
-- My `gemini-orchestrator` plugin defines subagents (`gemini-executor`, `gemini-scout`) as `agents/*.md` with `name` and `description` frontmatter, and `agy agents` lists them. **The plan said agy has no subagents; agy at least has a subagent concept.** I have not called one, so whether delegating works as the plan needs is untested.
+- My `gemini-orchestrator` plugin defines subagents (`gemini-executor`, `gemini-scout`) as `agents/*.md` with `name` and `description` frontmatter, and `agy agents` lists them. **The plan said agy has no subagents; agy at least has a subagent concept.** I have now called one (see "Subagent call" below), so delegating works.
 - `agy plugin install` stages Claude Code plugins (`.claude-plugin/plugin.json`) (**docs**, `plugins.md`), and `agy plugin import` appears in `agy --help`. Neither was tried.
 
 ## Plugin loading (NFX-42 spike, 2026-11-05)
@@ -104,3 +104,24 @@ Effect on tickets: NFX-42 (skills via `skills.json`, rules collision), NFX-43 (t
 1. Make a temp git repo with `.agents/skills/x` (a symlink to a folder holding a `SKILL.md`) and `.agents/hooks.json` as above.
 2. `agy -p "Do you have skill x? Then run echo hi with run_command."` shows the skill loaded and the command denied.
 3. Add `.agents/skills.json` with an `entries` path. Compare `~/...` and absolute.
+
+## Gate adapter (NFX-44, 2026-11-05)
+
+I wrote the adapter (`harness/agy/agy_gate.py`), had sync generate the plugin, copied the plugin folder to `<temp repo>/.agents/plugins/nousfx/` and ran `agy -p "Run this exact shell command with run_command ...: gh pr create --fill"`.
+
+| Question | Result | Evidence |
+|---|---|---|
+| Does a plugin's `hooks.json` load, with the same named-object shape as the project-level file? | Yes | **ran**: the call came back `tool call denied by pre-tool hook: Blocked: no review recorded for this code ...` |
+| Does the deny reason reach the model? | Yes, the gate's full message | **ran** |
+| Does the gate message name the right gate? | Yes: the plugin folder's own copy, not `~/.claude/hooks` | **ran** |
+| Does it load from the global `~/.gemini/config/plugins/`? | Not run. I only tried the project-level plugin folder; the first real sync needs a live check | untested |
+| Does a hook timeout block or fall back to a prompt? | Not run. The adapter has one 25 s deadline for all its checks and denies when it runs out, so agy's 30 s limit is not reached | untested |
+| Does `allow` skip agy's permission prompt? | Not run. The adapter prints nothing to allow, which is the proven "no decision" path | untested |
+
+## Subagent call (NFX-43, 2026-11-05)
+
+I asked `agy -p` in a temp git repo to delegate "find the line of `needle` in notes.txt" to `gemini-scout`, one of my `gemini-orchestrator` plugin's agents (`agents/*.md`, frontmatter `name` and `description`).
+
+- **ran:** agy delegated to the subagent, which read the file and reported back. agy answered with the right line (2) and, when asked, said it used the subagent (conversation ID shown). A plugin can therefore carry real subagents as `agents/<name>.md`.
+- **Not tested:** how a model is chosen per subagent. My orchestrator rules name the model in the call (`Model='flash_lite'`); I did not find a `model` key in the agent file. A role-to-model mapping for agy needs that answer first.
+- **Decision (2026-11-05):** sync writes no agy agent files. agy keeps the inline fallback in its rules, and my `gemini-orchestrator` plugin stays the owner of agy delegation and model choice. Mapping roles for agy, and the fresh-CLI reviewer for tools with no subagents at all (OpenCode), move to NFX-50.

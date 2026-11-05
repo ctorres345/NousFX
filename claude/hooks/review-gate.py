@@ -48,6 +48,7 @@ except Exception as e:  # missing or broken: a crash exits 1, which lets the cal
 
 BRANCH_OK = re.compile(r"^cesar/[A-Z][A-Z0-9]+-\d+$")
 MCP_PR_CREATE = re.compile(r"create_pull_request", re.I)
+GIT_REPO_VARS = re.compile(r"\bGIT_(?:DIR|WORK_TREE)\b", re.I)
 
 BLOCK = """\
 Blocked: no review recorded for this code. Before opening a PR:
@@ -64,6 +65,16 @@ FINDINGS_BLOCK = """\
 Blocked: the recorded review has {count} open high/med finding(s).
 - Fix them and run the `review-loop` skill again. When none are open, it records: python3 "{script}" --mark --findings 0
 - If the user explicitly approves opening the PR anyway: python3 "{script}" --mark --skip "<reason>"
+"""
+
+GIT_VARS_BLOCK = """\
+Blocked: this PR create sets GIT_DIR or GIT_WORK_TREE, which can point gh at another repo than the one the
+gate checked. Run `gh pr create` from the repo, without those variables.
+"""
+
+MCP_OUTSIDE_BLOCK = """\
+Blocked: a create-PR tool was called from a folder that is not a git repo, so the gate cannot check any
+review. Open the repo as the workspace and try again.
 """
 
 CD_BLOCK = """\
@@ -233,27 +244,36 @@ def option(argv, name):
 
 
 def check(argv):
-    """Plain entry for tools without Claude hooks: `check --cwd DIR --command "..."`.
+    """Plain entry for tools without Claude hooks: `check --cwd DIR --command "..." [--tool Bash|PowerShell|<mcp tool name>] [--allow-non-repo]`.
 
     Same allow (0) and block (2) codes as the hook. Unlike the hook, bad input blocks: a missing
     option, a missing folder or a folder that is not a git repo all exit 2.
     """
-    cwd, command = option(argv, "--cwd"), option(argv, "--command")
+    cwd = option(argv, "--cwd")
+    command = argv[argv.index("--command") + 1] if "--command" in argv[:-1] else None  # may start with dashes
     if not cwd or not command:
         print('Blocked: usage: review-gate.py check --cwd DIR --command "gh pr create"', file=sys.stderr)
         return 2
+    tree, branch, tool = option(argv, "--tree"), option(argv, "--branch"), option(argv, "--tool") or "Bash"
+    # --allow-non-repo (agy sends no per-command folder): a workspace that is not a repo is judged by the
+    # command alone, so a create that cd's into a repo is still checked there. Only for git's own answer
+    # "not a git repository": a missing git, a missing folder or a pushed commit (--tree) still block.
+    lenient = "--allow-non-repo" in argv and os.path.isdir(cwd) and not (tree or branch)
     try:
-        git(["rev-parse", "--git-dir"], cwd)
+        git(["rev-parse", "--git-dir"], cwd, {**os.environ, "LC_ALL": "C"})
     except (OSError, RuntimeError) as e:
-        print(ERROR_BLOCK.format(error=e, script=SCRIPT), file=sys.stderr)
-        return 2
-    tree, branch = option(argv, "--tree"), option(argv, "--branch")
+        if not (lenient and isinstance(e, RuntimeError) and "not a git repository" in str(e)):
+            print(ERROR_BLOCK.format(error=e, script=SCRIPT), file=sys.stderr)
+            return 2
+        if MCP_PR_CREATE.search(tool):  # a command can cd into a repo; a create-PR tool has no such thing to judge
+            print(MCP_OUTSIDE_BLOCK, file=sys.stderr)
+            return 2
     if tree or branch:  # judge a pushed commit: the pre-push hook passes both
         if not (tree and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", tree)) or not branch:
             print("Blocked: --tree needs a tree hash and --branch a branch name, together.", file=sys.stderr)
             return 2
         return check_repo(cwd, tree, branch)
-    return evaluate("Bash", command, cwd)
+    return evaluate(tool, command, cwd)
 
 
 ATTEST_LINE = re.compile(r"^[ \t]*Review-Gate:[ \t]+([0-9a-f]{40}|[0-9a-f]{64})(?:[ \t]+skipped:[ \t]*(.*?))?[ \t]*$",
@@ -339,6 +359,9 @@ def evaluate(tool, command, cwd):
             if not (isinstance(command, str) and mentions_create(command)):
                 return 0
             dirs = [None if CD_MENTION.search(command) else cwd]  # the parse lost track of any cd
+    if dirs and not MCP_PR_CREATE.search(tool) and isinstance(command, str) and GIT_REPO_VARS.search(command):
+        print(GIT_VARS_BLOCK, file=sys.stderr)
+        return 2
     for d in dict.fromkeys(dirs):
         code = check_repo(d)
         if code:
