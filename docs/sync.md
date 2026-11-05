@@ -39,3 +39,22 @@ harness/overlays/claude.overlay.md Claude only: Skill tool, goal runs, subagent 
 ## Tests
 
 `python3 -B scripts/test_nousfx_sync.py`. They run the CLI as a subprocess against a temp home. The golden test builds `scripts/fixtures/sync/expected_CLAUDE.md` from generic fixtures.
+
+## Agents by role
+
+My agents name a role, not a model. Sync turns that into Claude's agent files.
+
+```
+harness/agents/*.md     frontmatter says role: fast | strong | deep (no model line)
+harness/models.toml     per tool, each role -> model + effort (claude: haiku / opus / fable)
+        |
+        v
+~/.claude/agents/*.md   model and effort filled in, generated header after the frontmatter
+```
+
+- Change one model in `models.toml` and only the agents with that role change.
+- An agent can set its own `effort:` and that wins over the role default (test-runner uses `low`).
+- An unknown or missing role fails the run with the agent and role named. Nothing is written.
+- `--dry-run`, `--check`, `--restore` and the backup cover these files like the rest.
+- Sync never deletes an agent file I removed from the sources.
+- The one intended difference from `claude/agents/*.md` is the generated header. The golden test in `scripts/test_nousfx_agents.py` enforces it, so the old files stay as the reference while `install.sh` still uses them.
