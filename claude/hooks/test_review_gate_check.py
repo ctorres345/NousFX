@@ -80,14 +80,21 @@ class Check(Base):
         self.assertEqual(r.returncode, BLOCKED)
 
 
+ZERO = "0" * 40
+ONE = "1" * 40
+TWO = "2" * 40
+FEATURE = "refs/heads/cesar/DEM-1 " + ONE + " refs/heads/cesar/DEM-1 " + ZERO + "\n"
+MAIN = "refs/heads/main " + ONE + " refs/heads/main " + TWO + "\n"
+
+
 class PrePush(Base):
     def install(self, with_gate=True, branch=None):
-        """Copy the hook and the gate into the repo the way a user would."""
-        hooks = os.path.join(self.repo, ".claude", "hooks")
+        """Copy the hook into the repo and the gate into a folder OUTSIDE the repo, as the docs say."""
+        self.gate_dir = os.path.join(self.tmp, "gate-home")
         if with_gate:
-            os.makedirs(hooks)
-            shutil.copy(GATE, hooks)
-            shutil.copy(PARSER, hooks)
+            os.makedirs(self.gate_dir)
+            shutil.copy(GATE, self.gate_dir)
+            shutil.copy(PARSER, self.gate_dir)
         dest = os.path.join(self.repo, ".git", "hooks", "pre-push")
         shutil.copy(PRE_PUSH, dest)
         os.chmod(dest, 0o755)
@@ -95,9 +102,10 @@ class PrePush(Base):
             self.sh("git", "branch", "-m", branch)
         return dest
 
-    def run_hook(self, hook, env=None):
-        env = env or {**os.environ, "GIT_DIR": os.path.join(self.repo, ".git")}
-        return subprocess.run(["/bin/sh", hook, "origin", "x"], cwd=self.repo, input="", env=env,
+    def run_hook(self, hook, stdin=FEATURE, env=None):
+        env = env or {**os.environ, "GIT_DIR": os.path.join(self.repo, ".git"),
+                      "REVIEW_GATE_DIR": self.gate_dir}
+        return subprocess.run(["/bin/sh", hook, "origin", "x"], cwd=self.repo, input=stdin, env=env,
                               capture_output=True, text=True).returncode
 
     def test_blocks_when_script_missing(self):
@@ -108,19 +116,41 @@ class PrePush(Base):
 
     def test_allows_after_review(self):
         hook = self.install()
-        self.mark("--findings", "0")  # recorded after the install, so the tree hash includes .claude
+        self.mark("--findings", "0")
         self.assertEqual(self.run_hook(hook), ALLOWED)
+
+    def test_ignores_gate_copy_inside_the_repo(self):
+        hook = self.install()
+        inside = os.path.join(self.repo, "claude", "hooks")
+        os.makedirs(inside)
+        with open(os.path.join(inside, "review-gate.py"), "w", encoding="utf-8") as f:
+            f.write("import sys\nsys.exit(0)\n")
+        shutil.copy(PARSER, inside)
+        self.assertEqual(self.run_hook(hook), BLOCKED)
 
     def test_blocks_non_cesar_branch(self):
         hook = self.install(branch="main")
         self.mark("--findings", "0")
-        self.assertEqual(self.run_hook(hook), BLOCKED)
+        stdin = "refs/heads/claude/x " + ONE + " refs/heads/claude/x " + ZERO + "\n"
+        self.assertEqual(self.run_hook(hook, stdin), BLOCKED)
 
     def test_blocks_when_python_missing(self):
         hook = self.install()
         self.mark("--findings", "0")
-        self.assertEqual(self.run_hook(hook, {"PATH": "/nonexistent", "GIT_DIR": os.path.join(self.repo, ".git")}),
-                         BLOCKED)
+        env = {"PATH": "/nonexistent", "GIT_DIR": os.path.join(self.repo, ".git"),
+               "REVIEW_GATE_DIR": self.gate_dir}
+        self.assertEqual(self.run_hook(hook, env=env), BLOCKED)
+
+    def test_allows_push_of_default_branch_without_review(self):
+        self.assertEqual(self.run_hook(self.install(branch="main"), MAIN), ALLOWED)
+
+    def test_allows_delete_and_tag_pushes(self):
+        hook = self.install()
+        self.assertEqual(self.run_hook(hook, "(delete) " + ZERO + " refs/heads/cesar/DEM-1 " + TWO + "\n"), ALLOWED)
+        self.assertEqual(self.run_hook(hook, "refs/tags/v1 " + ONE + " refs/tags/v1 " + ZERO + "\n"), ALLOWED)
+
+    def test_blocks_when_any_ref_is_a_feature_branch(self):
+        self.assertEqual(self.run_hook(self.install(), MAIN + FEATURE), BLOCKED)
 
 
 if __name__ == "__main__":

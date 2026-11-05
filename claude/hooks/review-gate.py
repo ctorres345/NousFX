@@ -17,6 +17,10 @@ Check mode: `review-gate.py check --cwd DIR --command "gh pr create"` asks the s
 a hook payload (pre-push hook, CI, other tools). Exit 0 allows, 2 blocks, and bad input blocks.
 The hook above parses its payload and calls the same evaluate() function.
 
+Attest mode: `review-gate.py attest` prints `Review-Gate: <tree>` (with ` skipped: <reason>` for a skip)
+when a valid mark covers the current code, else exits 2. `verify-attestation --tree H --text-file F`
+(CI) exits 0 when F holds that line for tree H. An honor-system claim, see docs/review-gate.md.
+
 Mark mode: `review-gate.py --mark --findings N` or `--mark --skip "reason"` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
 Open findings above 0 keep the PR blocked unless a --skip reason was recorded.
@@ -239,6 +243,61 @@ def check(argv):
     return evaluate("Bash", command, cwd)
 
 
+ATTEST_LINE = re.compile(r"^[ \t]*Review-Gate:[ \t]+([0-9a-f]{40}|[0-9a-f]{64})(?:[ \t]+skipped:[ \t]*(.*?))?[ \t]*$",
+                         re.I | re.M)
+
+
+def attest(cwd):
+    """Print `Review-Gate: <tree>` (plus ` skipped: <reason>`) when a valid mark covers this code.
+
+    Same validity rule as check_repo: the mark's tree is the working tree or HEAD, and the review
+    is clean (0 open findings) or skipped with a reason. Otherwise exit 2 with nothing on stdout.
+    """
+    try:
+        with open(git_path("claude-review-ok", cwd), encoding="utf-8") as f:
+            marker = json.load(f)
+        tree = marker["tree"]
+        if tree not in {worktree_tree(cwd), head_tree(cwd)}:
+            raise ValueError("the review mark is for other code")
+        skipped = " ".join(str(marker.get("skipped") or "").split())
+        if not skipped and marker.get("findings_open") != 0:
+            raise ValueError("the review has open findings or none was recorded")
+    except (OSError, KeyError, ValueError, RuntimeError) as e:
+        print(f"No attestation: no valid review for the current code ({e}). Run the review loop first.",
+              file=sys.stderr)
+        return 2
+    print(f"Review-Gate: {tree}" + (f" skipped: {skipped}" if skipped else ""))
+    return 0
+
+
+def verify_attestation(argv):
+    """`verify-attestation --tree HASH --text-file F [--text-file G ...]`: exit 0 if any file
+    holds a line `Review-Gate: HASH`. Prints `skipped: <reason>` for a skip attestation."""
+    tree = option(argv, "--tree")
+    files = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--text-file"]
+    if not tree or not files:
+        print("Blocked: usage: review-gate.py verify-attestation --tree HASH --text-file FILE",
+              file=sys.stderr)
+        return 2
+    for path in files:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError as e:
+            print(f"Blocked: cannot read {path}: {e}", file=sys.stderr)
+            return 2
+        for m in ATTEST_LINE.finditer(text):
+            if m.group(1).lower() == tree.strip().lower():
+                if m.group(2):
+                    print(f"skipped: {m.group(2)}")
+                print(f"Review attestation found for tree {tree}.")
+                return 0
+    print(f"Blocked: no `Review-Gate: {tree}` line in the PR description or last commit message. "
+          "Run `review-gate.py attest` on the final code and paste its line into the PR body.",
+          file=sys.stderr)
+    return 2
+
+
 def gate():
     """Claude PreToolUse hook: parse the payload, then ask evaluate()."""
     try:
@@ -277,6 +336,10 @@ def evaluate(tool, command, cwd):
 if __name__ == "__main__":
     if sys.argv[1:2] == ["check"]:
         sys.exit(check(sys.argv))
+    if sys.argv[1:2] == ["attest"]:
+        sys.exit(attest(os.getcwd()))
+    if sys.argv[1:2] == ["verify-attestation"]:
+        sys.exit(verify_attestation(sys.argv))
     if "--allow-branch" in sys.argv:
         sys.exit(allow_branch(sys.argv))
     sys.exit(mark(sys.argv) if "--mark" in sys.argv else gate())

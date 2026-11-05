@@ -1,17 +1,51 @@
 #!/bin/sh
 # Advisory pre-push gate for tools without Claude hooks (Antigravity, OpenCode, plain git).
-# Asks the review gate whether this code has a recorded review. Checks every branch, not only
-# cesar/*, and fails CLOSED: a missing repo, script, python3 or git error blocks the push.
+# Asks the review gate whether this code has a recorded review, and fails CLOSED: a missing repo,
+# gate script, python3 or git error blocks the push.
+#
+# What it judges: git sends one line per ref on stdin ("local_ref local_sha remote_ref remote_sha").
+# Deletes, tag pushes and pushes of the default branch are allowed without a review. Any other
+# branch push is judged against the checked-out branch and its review mark.
+#
+# The gate script runs from OUTSIDE the repo: <home>/.claude/hooks/review-gate.py, with
+# pr_create_parser.py beside it. A copy inside the repo would be code under review, and a branch
+# could edit it to pass. <home> comes from the passwd record, not $HOME. REVIEW_GATE_DIR (set in
+# your own shell, used by the tests) overrides the folder.
+#
 # It is advisory: `git push --no-verify` skips it. CI is the real gate (see docs/review-gate.md).
 #
-# Install in a repo that has .claude/hooks/review-gate.py and pr_create_parser.py:
+# Install: copy the gate files from this repo's claude/hooks/ to <home>/.claude/hooks/, then
 #   cp claude/githooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
 # or: git config core.hooksPath <dir holding this file>
 fail() { echo "pre-push: blocked: $1" >&2; exit 2; }
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || fail "not inside a git work tree"
-script="$root/.claude/hooks/review-gate.py"
-[ -f "$script" ] || fail "review gate not found at $script (install it or push with --no-verify)"
 command -v python3 >/dev/null 2>&1 || fail "python3 not found"
+
+dir=${REVIEW_GATE_DIR:-}
+if [ -z "$dir" ]; then
+  home=$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)' 2>/dev/null) || fail "cannot find the home folder"
+  dir="$home/.claude/hooks"
+fi
+script="$dir/review-gate.py"
+[ -f "$script" ] || fail "review gate not found at $script (copy claude/hooks/review-gate.py and pr_create_parser.py there, or push with --no-verify)"
+
+default=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+default=${default#origin/}
+
+judge=0
+zero=0000000000000000000000000000000000000000
+while read -r lref lsha rref rsha; do
+  [ -n "$lref" ] || continue
+  case "$rref" in refs/tags/*) continue ;; esac
+  case "$lref" in refs/tags/*) continue ;; esac
+  [ "$lsha" = "$zero" ] && continue
+  [ "$lsha" = "0000000000000000000000000000000000000000000000000000000000000000" ] && continue
+  branch=${rref#refs/heads/}
+  case "$branch" in main|master) continue ;; esac
+  [ -n "$default" ] && [ "$branch" = "$default" ] && continue
+  judge=1
+done
+[ "$judge" = 1 ] || exit 0
 
 python3 -B "$script" check --cwd "$root" --command "gh pr create" || exit 2
