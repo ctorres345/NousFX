@@ -3,6 +3,7 @@
 
 Modules are called directly against a temp home, temp state and a temp repo. Nothing real is touched.
 """
+import json
 import os
 import shutil
 import sys
@@ -27,8 +28,10 @@ class Base(unittest.TestCase):
         self.home, self.state, self.repo = (os.path.join(self.tmp, d) for d in ("home", "state", "repo"))
         os.makedirs(self.home)
         os.makedirs(self.state)
-        for rel in ("AGENTS.md", os.path.join("overlays", "agy.overlay.md")):
+        for rel in ("AGENTS.md", os.path.join("overlays", "agy.overlay.md"), os.path.join("agy", "agy_gate.py")):
             write(os.path.join(self.repo, "harness", rel), read(os.path.join(ROOT, "harness", rel)))
+        for name in agy.GATE_FILES:
+            write(os.path.join(self.repo, "claude", "hooks", name), read(os.path.join(ROOT, "claude", "hooks", name)))
 
     def src(self, *rel):
         return os.path.join(self.repo, "harness", *rel)
@@ -42,7 +45,9 @@ class Rules(Base):
     def test_paths_and_manifest(self):
         out = agy.plan_agy(self.repo, self.home, self.state, SyncError)
         base = os.path.join(self.home, ".gemini", "config", "plugins", "nousfx")
-        self.assertEqual(sorted(out), [os.path.join(base, "plugin.json"), os.path.join(base, "rules", "AGENTS.md")])
+        self.assertEqual(sorted(out), sorted(os.path.join(base, *rel) for rel in (
+            ("plugin.json",), ("rules", "AGENTS.md"), ("hooks.json",), ("hooks", "agy_gate.py"),
+            ("hooks", "review-gate.py"), ("hooks", "pr_create_parser.py"))))
         self.assertIn('"name": "nousfx"', out[os.path.join(base, "plugin.json")])
         self.assertTrue(out[os.path.join(base, "plugin.json")].endswith("\n"))
 
@@ -86,6 +91,83 @@ class Rules(Base):
                 self.rules()
             self.assertEqual(cm.exception.code, 2)
             write(path, saved)
+
+
+class Hooks(Base):
+    def plan(self, **kw):
+        return agy.plan_agy(self.repo, self.home, self.state, SyncError, **kw)
+
+    def test_hooks_json_runs_the_adapter_from_the_plugin_folder(self):
+        base = agy.plugin_dir(self.home)
+        cfg = json.loads(self.plan()[os.path.join(base, "hooks.json")])
+        (name, events), = cfg.items()
+        (entry,) = events["PreToolUse"]
+        self.assertEqual(entry["matcher"], "run_command|.*create_pull_request")
+        (hook,) = entry["hooks"]
+        self.assertEqual(hook["type"], "command")
+        adapter = os.path.join(base, "hooks", "agy_gate.py")
+        self.assertTrue(hook["command"].startswith(f'python3 -I -B "{adapter}" --expect '), hook["command"])
+        hashes = hook["command"].rsplit(" ", 1)[1].split(",")
+        plan = self.plan()
+        self.assertEqual(hashes, [agy.sha256(plan[os.path.join(base, "hooks", n)])
+                                  for n in ("agy_gate.py", "review-gate.py", "pr_create_parser.py")])
+        self.assertGreaterEqual(hook["timeout"], 30)
+
+    def test_command_uses_the_given_interpreter_and_path(self):
+        out = self.plan(python="python", native=lambda p: p.replace(os.sep, "/") + ".x")
+        cfg = json.loads(out[os.path.join(agy.plugin_dir(self.home), "hooks.json")])
+        command = cfg[next(iter(cfg))]["PreToolUse"][0]["hooks"][0]["command"]
+        self.assertTrue(command.startswith('python -I -B "') and 'agy_gate.py.x" --expect ' in command, command)
+
+    def test_hook_files_are_copies_of_the_sources(self):
+        out = self.plan()
+        hooks = os.path.join(agy.plugin_dir(self.home), "hooks")
+        self.assertEqual(out[os.path.join(hooks, "agy_gate.py")], read(self.src("agy", "agy_gate.py")))
+        for name in agy.GATE_FILES:
+            self.assertEqual(out[os.path.join(hooks, name)], read(os.path.join(self.repo, "claude", "hooks", name)))
+
+    def test_missing_source_raises_code_2(self):
+        for path in (self.src("agy", "agy_gate.py"), os.path.join(self.repo, "claude", "hooks", "review-gate.py")):
+            os.rename(path, path + ".off")
+            with self.assertRaises(SyncError) as cm:
+                self.plan()
+            self.assertEqual(cm.exception.code, 2)
+            os.rename(path + ".off", path)
+
+    def test_self_test_passes_on_the_real_adapter_and_fails_on_a_broken_one(self):
+        out = self.plan()
+        for path, text in out.items():
+            write(path, text)
+        agy.self_test(agy.plugin_dir(self.home), SyncError)  # does not raise
+        write(os.path.join(agy.plugin_dir(self.home), "hooks", "agy_gate.py"), "import sys\nsys.exit(0)\n")
+        with self.assertRaises(SyncError) as cm:
+            agy.self_test(agy.plugin_dir(self.home), SyncError)
+        self.assertIn("self-test failed", str(cm.exception))
+
+
+class SelfTestEnvironment(Base):
+    def test_inherited_git_variables_do_not_reach_the_decoy_repo(self):
+        """Run from a git hook, GIT_DIR points at another repo: the self-test must not commit there."""
+        import subprocess
+        import nousfx_sync
+        decoy = os.path.join(self.tmp, "decoy")
+        os.makedirs(decoy)
+        subprocess.run(["git", "init", "-q", "-b", "decoy/main"], cwd=decoy, check=True, capture_output=True)
+        for path, text in agy.plan_agy(self.repo, self.home, self.state, SyncError).items():
+            write(path, text)
+        hook = os.path.join(self.home, ".claude", "hooks")
+        for name in agy.GATE_FILES:
+            write(os.path.join(hook, name), read(os.path.join(ROOT, "claude", "hooks", name)))
+        saved = dict(os.environ)
+        os.environ["GIT_DIR"] = os.path.join(decoy, ".git")
+        try:
+            agy.self_test(agy.plugin_dir(self.home), SyncError)
+            nousfx_sync.self_test(os.path.join(hook, "review-gate.py"))
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        log = subprocess.run(["git", "log", "--oneline"], cwd=decoy, capture_output=True, text=True)
+        self.assertNotEqual(log.returncode, 0, "the decoy repo got a commit: " + log.stdout)  # still unborn
 
 
 class ExtraRoot(Base):

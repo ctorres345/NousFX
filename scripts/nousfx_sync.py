@@ -12,7 +12,7 @@ Writes under <home>/.claude (tool "claude", the default):
   hooks/pr_create_parser.py
   agents/*.md                from harness/agents (roles) and harness/models.toml (role -> model)
 Writes under <home>/.gemini/config/plugins/nousfx (tool "agy", only when named):
-  plugin.json, rules/AGENTS.md, skills/<name> links, mcp_config.json
+  plugin.json, rules/AGENTS.md, hooks.json and hooks/ (the review gate), skills/<name> links, mcp_config.json
 MCP servers (harness/mcp.toml, <state-home>/mcp.toml) go to <home>/.claude.json (only the entries
 sync added) and the agy plugin. --project DIR writes only DIR's MCP files, from DIR/.nousfx/mcp.toml.
 
@@ -41,7 +41,7 @@ import nousfx_mcp
 import nousfx_skills
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HOOK_FILES = ("review-gate.py", "pr_create_parser.py")
+HOOK_FILES = nousfx_agy.GATE_FILES  # the gate and its parser: the same pair goes to Claude and to agy
 MATCHER = "Bash|PowerShell|mcp__.*create_pull_request"
 TOOLS = nousfx_mcp.TOOLS
 
@@ -208,7 +208,9 @@ def plan(repo, home, state, platform, tools=("claude",), project=None):
     else:
         wanted = claude_files(repo, home, state, platform) if "claude" in tools else {}
         if "agy" in tools:
-            wanted.update(nousfx_agy.plan_agy(repo, home, state, SyncError))
+            win = is_windows(platform)
+            wanted.update(nousfx_agy.plan_agy(repo, home, state, SyncError, interpreter(win),
+                                              windows_path if win else (lambda p: p)))
         wanted.update(nousfx_mcp.plan_mcp(repo, home, state, tools, SyncError, SECRET_PATTERNS))
     # Folders the user may legitimately link (dotfiles) are not checked; sync's own files and folders are.
     skip = {os.path.join(home, ".claude"), home, state} | ({project} if project else set())
@@ -355,18 +357,21 @@ def self_test(hook_path):
     """Run the installed gate once: a PR create on a repo with a wrong branch must block (2),
     and a harmless command must pass (0). A broken or always-allow hook fails one of them."""
     with tempfile.TemporaryDirectory(prefix="nousfx-selftest-") as d:
-        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
-        init = subprocess.run(["git", "init", "-q", "-b", "selftest/none", d], capture_output=True, env=env)
-        if init.returncode != 0:
-            raise SyncError("self-test could not create a temp git repo")
+        # no inherited GIT_DIR and friends: run from a git hook they would point at another repo
+        env = {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")}, "GIT_CONFIG_GLOBAL": os.devnull,
+               "GIT_CONFIG_SYSTEM": os.devnull}
+        for git in (["init", "-q", "-b", "selftest/none"],
+                    ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]):
+            if subprocess.run(["git", *git], cwd=d, capture_output=True, env=env).returncode != 0:
+                raise SyncError("self-test could not create a temp git repo")
         def run(command):
             return subprocess.run([sys.executable, "-I", "-B", hook_path, "check", "--cwd", d, "--command", command],
-                                  capture_output=True, text=True, timeout=60)
+                                  capture_output=True, text=True, timeout=60, env=env)
         blocked, allowed = run("gh pr create"), run("git status")
-    if blocked.returncode != 2 or allowed.returncode != 0:
-        raise SyncError(f"hook self-test failed: PR create exited {blocked.returncode} (want 2), "
-                        f"harmless command exited {allowed.returncode} (want 0). "
-                        f"Run --restore to put the previous files back.")
+    if blocked.returncode != 2 or "is not named cesar/" not in blocked.stderr or allowed.returncode != 0:
+        raise SyncError(f"hook self-test failed: PR create exited {blocked.returncode} (want 2 with the branch-name "
+                        f"message), harmless command exited {allowed.returncode} (want 0). Fix the hook source and run "
+                        f"sync again; --restore undoes the files a run wrote.")
 
 
 def main(argv=None):
@@ -436,8 +441,16 @@ def main(argv=None):
                 print(line)
         for line in sk.listing():
             print(line)
+        def self_tests():  # also after a run that writes nothing: files left by a failed run must not pass for good
+            if "claude" in tools and not project:
+                self_test(os.path.join(home, ".claude", "hooks", "review-gate.py"))
+                print("hook self-test passed")
+            if "agy" in tools and not project:
+                nousfx_agy.self_test(nousfx_agy.plugin_dir(home), SyncError)
+                print("agy gate self-test passed")
         if not todo and not sk.pending:
             print("nothing to change")
+            self_tests()
             return 0
         root = backup(state, list(todo), mcp_merged)
         try:
@@ -449,6 +462,7 @@ def main(argv=None):
                 print(line)
         if not todo:
             print(f"backup: {root}")
+            self_tests()
             return 0
         for p, old in seen.items():  # Claude rewrites its own files while it runs: never write over a newer one
             if read_or_none(p) != old:
@@ -458,9 +472,7 @@ def main(argv=None):
             write_atomic(p, t)
             print(f"wrote {p}")
         print(f"backup: {root}")
-        if "claude" in tools and not project:
-            self_test(os.path.join(home, ".claude", "hooks", "review-gate.py"))
-            print("hook self-test passed")
+        self_tests()
         return 0
     except SyncError as e:
         print(f"nousfx_sync: {e}", file=sys.stderr)

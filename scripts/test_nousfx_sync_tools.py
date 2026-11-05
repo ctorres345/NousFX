@@ -25,6 +25,8 @@ class Fixture(Base):
         super().setUp()
         write(os.path.join(self.repo, "harness", "overlays", "agy.overlay.md"), "## agy overlay\n- agy only line\n")
         shutil.copy(os.path.join(ROOT, "harness", "mcp.toml"), os.path.join(self.repo, "harness", "mcp.toml"))
+        write(os.path.join(self.repo, "harness", "agy", "agy_gate.py"),
+              read(os.path.join(ROOT, "harness", "agy", "agy_gate.py")))
         write(os.path.join(self.repo, "claude", "skills", "demo", "SKILL.md"), "---\nname: demo\n---\nx\n")
         self.plugin = os.path.join(self.home, ".gemini", "config", "plugins", "nousfx")
         self.agy_rules = os.path.join(self.plugin, "rules", "AGENTS.md")
@@ -35,6 +37,41 @@ class Fixture(Base):
         r = self.sync(*args)
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         return r
+
+
+class AgyGate(Fixture):
+    def test_adapter_files_written_and_second_run_changes_nothing(self):
+        r = self.ok("--tools", "claude,agy")
+        self.assertIn("agy gate self-test passed", r.stdout)
+        for rel in ("hooks.json", os.path.join("hooks", "agy_gate.py"), os.path.join("hooks", "review-gate.py"),
+                    os.path.join("hooks", "pr_create_parser.py")):
+            self.assertTrue(os.path.isfile(os.path.join(self.plugin, rel)), rel)
+        self.assertIn("nothing to change", self.ok("--tools", "claude,agy").stdout)
+        self.assertEqual(self.sync("--tools", "claude,agy", "--check").returncode, 0)
+
+    def test_hand_edit_of_the_adapter_is_drift(self):
+        self.ok("--tools", "claude,agy")
+        with open(os.path.join(self.plugin, "hooks", "agy_gate.py"), "a", encoding="utf-8") as f:
+            f.write("# edited\n")
+        self.assertEqual(self.sync("--tools", "claude,agy", "--check").returncode, 1)
+
+    def test_broken_adapter_fails_the_run_and_restore_undoes_it(self):
+        write(os.path.join(self.repo, "harness", "agy", "agy_gate.py"), "import sys\nsys.exit(0)\n")  # allows everything
+        r = self.sync("--tools", "claude,agy")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("agy gate self-test failed", r.stderr)
+        self.assertEqual(self.sync("--restore").returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.plugin, "hooks.json")))
+
+    def test_a_second_run_does_not_hide_a_broken_adapter(self):
+        write(os.path.join(self.repo, "harness", "agy", "agy_gate.py"), "import sys\nsys.exit(0)\n")
+        self.assertEqual(self.sync("--tools", "claude,agy").returncode, 1)
+        r = self.sync("--tools", "claude,agy")  # the broken files are already installed: nothing to write
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("agy gate self-test failed", r.stderr)
+
+    def test_claude_only_run_has_no_agy_self_test(self):
+        self.assertNotIn("agy gate", self.ok().stdout)
 
 
 class Tools(Fixture):

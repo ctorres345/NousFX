@@ -35,7 +35,7 @@ Merge into existing files, and keep what is already there.
 |---|---|
 | `.gitignore` | Allowlist: `.claude/*`, `!.claude/settings.json`, `!.claude/agents/`, `!.claude/skills/`, `!.claude/hooks/`, then `.claude/**/*.bak*`, `.claude/**/.env*`, `CLAUDE.local.md`, `graphify-out/`; replaces any blanket `.claude/` ignore |
 | `.claude/settings.json` | [`assets/settings.json`](assets/settings.json), merged |
-| `.claude/hooks/review-gate.py`, `.claude/hooks/pr_create_parser.py` | The same two files from `~/.claude/hooks/`, together: the gate imports the parser |
+| `.claude/hooks/review-gate.py`, `.claude/hooks/pr_create_parser.py` | The same two files from the gate your tool runs (this repo's `claude/hooks/` is the source), together: the gate imports the parser |
 | `.claude/agents/` | `reviewer.md`, `test-runner.md` from `~/.claude/agents/` |
 | `.claude/skills/` | `review-loop` from `~/.claude/skills/`, without backups; point its gate command at `"$(git rev-parse --show-toplevel)/.claude/hooks/review-gate.py"` and its prototype reference at `docs/agents/ticket-template.md`; keep its branch scope and when-to-record rules as written. Do not install `pr`: its body format conflicts with the PR template |
 | `docs/agents/ticket-template.md` | [`assets/ticket-template.md`](assets/ticket-template.md) |
