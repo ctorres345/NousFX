@@ -1,16 +1,5 @@
-# Claude Code specifics
-
-## Model roles
-| Role | Claude Code |
-|---|---|
-| fast | the `Explore` subagent for code search, `researcher` for docs lookups, `test-runner` for build and test output (Haiku) |
-| strong | the main model (Opus), and the `reviewer` subagent for the review loop |
-| deep | the `architect` and `reviewer-deep` subagents (Fable) |
-
-## Keep working until done (Claude Code)
+## Claude Code
 - A missing tool is not a stop: load it with `ToolSearch` and continue. Report a blocker only after the obvious fix failed, and name what you tried.
-
-## Delegation policy (Claude Code)
 - Code search and "where is X" questions: use the `Explore` subagent (Haiku). Docs and API lookups: use `researcher` (Haiku). Noisy build/test output: `test-runner` (Haiku). Prefer these over the cavecrew/caveman-explore skills.
 - Before a PR, run the `review-loop` skill yourself (Skill tool): `/simplify`, then the Opus `reviewer` for max 5 rounds, once per feature, not per edit. Never wait for the user to type `/review-loop`. Order: when the work is done, ask the user once whether to open the PR; on a yes, run the review loop, then `gh pr create`, without asking again. It replaces running `/simplify` and `/code-review` by hand and is also the one for unattended `/goal` runs. A PreToolUse hook (`review-gate.py`) blocks `gh pr create` until a review is recorded for the current code; if blocked, run the loop instead of working around the hook. Skip only with the user's explicit approval, via `--mark --skip "<reason>"`.
 - Any request to review, critique, polish, or optimize UI/UX, visual design, responsiveness, or accessibility: invoke the `ui-review` skill first, in any project. It detects the platform (Android/Compose, Flutter, iOS, web) and runs the matching design skills; do not improvise a UI review from memory or skip skills it lists.
