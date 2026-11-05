@@ -34,7 +34,7 @@ harness/overlays/claude.overlay.md Claude only: Skill tool, goal runs, subagent 
 
 ## Real-machine check
 
-`python3 -B scripts/real_machine_regression.py --out DIR` generates the rules into a throwaway home and writes the diff against my real `~/.claude/CLAUDE.md` into `DIR`. It only reads the real home. It is not part of CI.
+`python3 -B scripts/real_machine_regression.py --out DIR` builds the rules from the repo and my local file and compares them line by line with my real `~/.claude/CLAUDE.md`. The report in `DIR/regression.txt` classes each of today's lines as unchanged, reordered, reworded or dropped. `--state-home` tries a proposed local file, and `--fail-on-dropped` exits 1 when a rule has no home. It only reads the real home and is not part of CI. A fixture test runs the same guard.
 
 ## Tests
 
