@@ -218,7 +218,10 @@ class ClaudeMerge(Base):
     def test_owner_record_written(self):
         self.shared()
         r = self.plan(tools=("claude",))
-        self.assertEqual(json.loads(r[self.owned]), {"claude": {self.claude: ["both", "claudeonly"]}})
+        got = json.loads(r[self.owned])["claude"][self.claude]
+        self.assertEqual(sorted(got), ["both", "claudeonly"])
+        servers = json.loads(r[self.claude])["mcpServers"]
+        self.assertEqual(got["both"], M._entry_hash(servers["both"]))
 
 
 class Project(Base):
@@ -232,7 +235,7 @@ class Project(Base):
         self.assertEqual(set(r) - {self.owned}, {pc, pa})
         self.assertEqual(json.loads(r[pc])["mcpServers"], {"p": {"type": "http", "url": "https://p.example.com"}})
         self.assertEqual(json.loads(r[pa])["mcpServers"], {"p": {"url": "https://p.example.com"}})
-        self.assertEqual(json.loads(r[self.owned])["claude"], {pc: ["p"]})
+        self.assertEqual(list(json.loads(r[self.owned])["claude"][pc]), ["p"])
 
     def test_global_entries_never_in_project(self):
         self.shared()
@@ -346,6 +349,96 @@ class ReviewFixes(Base):
         self.assertRegex(self.fails(self.entry('command = "t"\nargs = ["--secret-key", "literal1"]')), "never a literal")
         self.shared(self.entry('command = "docker"\nargs = ["-e", "BRAVE_API_KEY=${BRAVE_API_KEY}"]'))
         self.plan()
+
+
+class Nfx52(Base):
+    """Fable review follow-up: ownership by content, required shared list, record shape, dash values."""
+
+    def one(self, tools=("claude",)):
+        self.shared('[servers.foo]\ntools = ["claude"]\nurl = "https://foo.example.com/mcp"\n')
+        self.apply(self.plan(tools=tools))
+
+    def test_a_users_own_server_under_an_owned_name_is_not_overwritten(self):
+        self.one()
+        data = json.loads(open(self.claude, encoding="utf-8").read())
+        data["mcpServers"]["foo"] = {"command": "USERS-OWN"}
+        put(self.claude, json.dumps(data))
+        with self.assertRaises(SyncError) as c:
+            self.plan(tools=("claude",))
+        self.assertIn("not what sync wrote", str(c.exception))
+
+    def test_a_users_own_server_is_not_deleted_when_the_entry_is_removed(self):
+        self.one()
+        data = json.loads(open(self.claude, encoding="utf-8").read())
+        data["mcpServers"]["foo"] = {"command": "USERS-OWN"}
+        put(self.claude, json.dumps(data))
+        self.shared('[servers.other]\ntools = ["claude"]\nurl = "https://o.example.com"\n')
+        with self.assertRaises(SyncError):
+            self.plan(tools=("claude",))
+
+    def test_an_owned_entry_that_sync_wrote_still_updates_and_a_dropped_one_is_re_added(self):
+        self.one()
+        self.shared('[servers.foo]\ntools = ["claude"]\nurl = "https://foo.example.com/v2"\n')
+        r = self.plan(tools=("claude",))
+        self.assertEqual(json.loads(r[self.claude])["mcpServers"]["foo"]["url"], "https://foo.example.com/v2")
+        put(self.claude, "{}")  # Claude rewrote its file and dropped the entry
+        self.assertIn("foo", json.loads(self.plan(tools=("claude",))[self.claude])["mcpServers"])
+
+    def test_an_older_record_without_hashes_still_works(self):
+        self.one()
+        rec = json.loads(open(self.owned, encoding="utf-8").read())
+        rec["claude"][self.claude] = sorted(rec["claude"][self.claude])
+        put(self.owned, json.dumps(rec))
+        self.assertEqual(self.plan(tools=("claude",))[self.claude], open(self.claude, encoding="utf-8").read())
+
+    def test_missing_shared_list_is_an_error(self):
+        with self.assertRaises(SyncError) as c:
+            self.plan()
+        self.assertEqual(c.exception.code, 2)
+        self.assertIn("missing shared list", str(c.exception))
+
+    def test_a_run_stopped_between_record_and_file_is_not_refused(self):
+        self.one()
+        old_text = open(self.claude, encoding="utf-8").read()
+        self.shared('[servers.foo]\ntools = ["claude"]\nurl = "https://foo.example.com/v2"\n')
+        r = self.plan(tools=("claude",))
+        put(self.owned, r[self.owned])  # the record landed, the file did not
+        again = self.plan(tools=("claude",))
+        self.assertEqual(json.loads(again[self.claude])["mcpServers"]["foo"]["url"], "https://foo.example.com/v2")
+        self.apply(again)
+        h = M._entry_hash(json.loads(open(self.claude, encoding="utf-8").read())["mcpServers"]["foo"])
+        rec = lambda: json.loads(open(self.owned, encoding="utf-8").read())["claude"][self.claude]["foo"]
+        self.assertIn("+", rec())
+        self.apply(self.plan(tools=("claude",)))  # the file now holds the new entry: the old hash is dropped
+        self.assertEqual(rec(), h)
+        self.assertNotIn(self.owned, {p for p, t in self.plan(tools=("claude",)).items()
+                                      if t != open(p, encoding="utf-8").read()})
+        self.assertNotEqual(old_text, open(self.claude, encoding="utf-8").read())
+
+    def test_state_list_and_project_list_stay_optional(self):
+        self.shared()
+        self.plan()
+        self.plan(project=os.path.join(self.tmp, "no-such-project"))
+
+    def test_owned_names_validates_the_shape(self):
+        for bad in ('{"claude": {"p": "abc"}}', '{"claude": {"p": [1]}}', '{"claude": []}', '{"claude": {"p": {"a": 5}}}'):
+            with self.assertRaises(ValueError):
+                M.owned_names(bad, "p")
+        self.assertEqual(M.owned_names('{"claude": {"p": {"a": "h1"}}}', "p"), ["a"])
+        self.assertEqual(M.owned_names('{"claude": {"p": ["a"]}}', "p"), ["a"])
+
+    def test_dash_led_literal_after_a_secret_flag_is_refused(self):
+        e = '[servers.s]\ntools = ["agy"]\ncommand = "t"\nargs = ["--token", "-NotAnEnvRef1234567890"]\n'
+        self.assertRegex(self.fails(e), "never a literal")
+        self.assertRegex(self.fails(e.replace("-NotAnEnvRef1234567890", "-abc123def")), "never a literal")
+        self.shared('[servers.s]\ntools = ["agy"]\ncommand = "t"\nargs = ["--token", "--port", "3000", "-y"]\n')
+        self.plan()
+
+    def test_servers_slice_keeps_only_mcp_servers(self):
+        out = json.loads(M.servers_slice(json.dumps({"oauthAccount": {"x": 1}, "mcpServers": {"a": {}}})))
+        self.assertEqual(out, {"mcpServers": {"a": {}}})
+        self.assertEqual(json.loads(M.servers_slice(json.dumps({"oauthAccount": 1}))), {})
+        self.assertEqual(M.servers_slice("{nope"), "{nope")
 
 
 if __name__ == "__main__":

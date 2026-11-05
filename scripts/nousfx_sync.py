@@ -265,17 +265,23 @@ def write_atomic(path, text):
 def backup(state, paths, merged=()):
     """Copy the current version of each path (or note it was absent) before it is overwritten.
     `merged` lists files sync only changes a part of (they hold the user's own content): restore
-    undoes just sync's part there, never the whole file."""
+    undoes just sync's part there, never the whole file, so only the mcpServers part is saved (the rest
+    holds account data that does not belong in a backup). The backup folder is private to me."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
+    os.makedirs(os.path.join(state, "backups"), mode=0o700, exist_ok=True)
+    os.chmod(os.path.join(state, "backups"), 0o700)  # also for a folder an older version created
     root = os.path.join(state, "backups", stamp)
     n = 0
     while os.path.exists(root):
         n += 1
         root = os.path.join(state, "backups", f"{stamp}-{n}")
-    os.makedirs(root)
+    os.mkdir(root, 0o700)
     manifest = {}
     for i, p in enumerate(paths):
-        if os.path.exists(p):
+        if p in merged and os.path.exists(p):
+            write_atomic(os.path.join(root, str(i)), nousfx_mcp.servers_slice(read_text(p)))
+            manifest[p] = str(i)
+        elif os.path.exists(p):
             shutil.copy2(p, os.path.join(root, str(i)))
             manifest[p] = str(i)
         else:
@@ -290,15 +296,13 @@ def undo_merged(path, saved_path, names):
     """Put back only the MCP servers sync changed in a file Claude also writes; never delete a file
     that holds anything else."""
     live = read_or_none(path)
-    if live is None:
-        if saved_path:  # the file vanished since: bring the saved one back
-            write_atomic(path, read_text(saved_path))
+    if live is None:  # the file vanished since; a backup holds only its servers, so it is not recreated
+        if saved_path:
+            print(f"warning: {path} no longer exists; left as it is", file=sys.stderr)
         return
     saved = read_text(saved_path) if saved_path else None
     try:
         text = nousfx_mcp.unmerge(live, saved, names)
-        if text is not None and saved is not None and json.loads(text) == json.loads(saved):
-            text = saved  # nothing else changed since: bring back the exact original bytes
     except ValueError as e:
         raise SyncError(f"{path} is not usable JSON now ({e}); fix it by hand. Nothing in it was changed.")
     if text is None:

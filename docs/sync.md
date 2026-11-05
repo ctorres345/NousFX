@@ -125,6 +125,9 @@ url = "https://mcp.atlassian.com/v1/mcp"
 
 - Claude gets the entry in `~/.claude.json` (only the `mcpServers` key, only names sync added). agy gets it in the plugin's `mcp_config.json`. Atlassian is agy only, because Claude has its own connector.
 - A value is either a URL or an environment variable written as `${NAME}`. A literal token anywhere fails the run before anything is written, and the message names the server, never the value.
-- Sync never overwrites a server it did not add. It stops and tells me.
+- Sync never overwrites a server it did not add. It stops and tells me. The ownership record keeps a hash of what sync wrote for each name, so a server I changed by hand, or one Claude rewrote, under a name sync owns is also left alone.
+- `harness/mcp.toml` is required. A missing one stops the run, because an empty list would delete every server sync added.
+- A backup of `~/.claude.json` keeps only its `mcpServers` part, and the backup folder is private (mode 0700). `--restore` puts back only the servers sync changed, with the JSON reformatted.
+- I run sync with no Claude Code session open. A session that is already running can rewrite `~/.claude.json` from its own state later and drop sync's servers. `--check` then reports drift, and a normal run adds them back.
 - `--project DIR` reads only `DIR/.nousfx/mcp.toml` and writes `DIR/.mcp.json` (Claude) and `DIR/.agents/plugins/nousfx/mcp_config.json` (agy). Global servers never go there. This is the small first step; project mode proper is NFX-46.
 - `agy mcp list` shows only the global file, not plugin servers, so I check a plugin server by running agy and asking for it.

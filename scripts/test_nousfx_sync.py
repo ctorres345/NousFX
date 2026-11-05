@@ -46,6 +46,7 @@ class Base(unittest.TestCase):
         write(os.path.join(self.repo, "harness", "overlays", "claude.overlay.md"),
               read(os.path.join(FIX, "claude.overlay.md")))
         write(os.path.join(self.state, "local.md"), read(os.path.join(FIX, "local.md")))
+        write(os.path.join(self.repo, "harness", "mcp.toml"), "# no servers\n")  # the shared list is required
 
     def sync(self, *args, repo=None):
         return subprocess.run(

@@ -5,6 +5,7 @@ Project mode reads only <project>/.nousfx/mcp.toml. No secret is ever written: e
 exactly "${VAR}", and every string is scanned. Env references are NOT expanded here. Whether agy
 expands ${VAR} in env is unverified (docs are silent); that is a manual check.
 """
+import hashlib
 import json
 import os
 import re
@@ -29,6 +30,7 @@ ARG_CREDENTIAL = re.compile(
     # removed ("token ", "Digest ") is not a credential
     r"|(?<![A-Za-z0-9])(?:authorization|cookie|(?:api|access|secret|auth)[-_]?key|token|secret|passw\w*)[\"']?\s*[:=]\s*[\"']?"
     r"(?!(?:bearer|basic)\b)(?!(?:digest|token|ssws|apikey|negotiate)\s+$)\S{4,}")
+FLAG_LIKE = re.compile(r"-{1,2}[a-z][a-z-]*(?:=.*)?")  # "--port", "-y"; "-Literal123", "-abc123def" are values
 # Exact flag names that take a secret ("--api_key", "--personal-access-token"); "--max-tokens", "--token-file",
 # "--no-auth" and key-file flags such as "--private-key" do not.
 SECRET_FLAG = re.compile(
@@ -79,7 +81,7 @@ def _check(name, e, SyncError, patterns):
         flag, eq, val = a.partition("=")
         if SECRET_FLAG.fullmatch(flag):
             nxt = args[i + 1] if i + 1 < len(args) else ""
-            value = val if eq else ("" if nxt.startswith("-") else nxt)
+            value = val if eq else ("" if FLAG_LIKE.fullmatch(nxt) else nxt)
             if value and not ENV_REF.fullmatch(value):
                 raise SyncError(f"mcp: server {name}: argument {flag} must be given as ${{VAR}}, "
                                 "never a literal value")
@@ -101,9 +103,11 @@ def _check(name, e, SyncError, patterns):
     return out
 
 
-def _load_file(path, SyncError, patterns):
+def _load_file(path, SyncError, patterns, required=False):
     text = _read(path)
     if text is None:
+        if required:  # an empty list would make sync delete every server it owns
+            raise SyncError(f"mcp: missing shared list: {path}", 2)
         return {}
     try:
         servers = tomllib.loads(text).get("servers", {})
@@ -117,7 +121,7 @@ def _load_file(path, SyncError, patterns):
 def load(repo, state, SyncError, patterns, project=None):
     if project:
         return _load_file(os.path.join(project, ".nousfx", "mcp.toml"), SyncError, patterns)
-    got = _load_file(os.path.join(repo, "harness", "mcp.toml"), SyncError, patterns)
+    got = _load_file(os.path.join(repo, "harness", "mcp.toml"), SyncError, patterns, required=True)
     got.update(_load_file(os.path.join(state, "mcp.toml"), SyncError, patterns))
     return got
 
@@ -162,19 +166,54 @@ def unmerge(live_text, saved_text, names):
     return None if saved_text is None and not live else _dump(live)
 
 
-def owned_names(record_text, path):
-    """Names the ownership record lists for a merged file. Empty if there is no record; ValueError if
-    there is one and it is unusable (restore must not guess which servers sync added)."""
+def _entry_hash(entry):
+    return hashlib.sha256(json.dumps(entry, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _owned_map(value):
+    """{name: hash of the entry sync wrote} from one record value. An older record is a plain list of
+    names (hash None: no content check). ValueError if the shape is wrong."""
+    if isinstance(value, list):
+        value = {n: None for n in value}
+    if not isinstance(value, dict) or not all(
+            isinstance(n, str) and NAME.fullmatch(n) and (h is None or isinstance(h, str))
+            for n, h in value.items()):
+        raise ValueError("bad record shape")
+    return value
+
+
+def _record_claude(record_text):
+    """The record's per-file owned maps, validated. {} when there is no record; ValueError if unusable."""
     if not record_text:
-        return []
+        return {}
     try:
-        return list(json.loads(record_text).get("claude", {}).get(path, []))
+        claude = json.loads(record_text).get("claude", {})
+        if not isinstance(claude, dict):
+            raise ValueError("bad record shape")
+        return {p: _owned_map(v) for p, v in claude.items()}
     except (ValueError, TypeError, AttributeError):
         raise ValueError("ownership record is not usable")
 
 
+def servers_slice(text):
+    """What a backup keeps of a merged file: only its mcpServers (JSON text), or {} when it has none.
+    An unusable file is saved whole, so nothing is lost; restore then reports it the same way."""
+    try:
+        data = json.loads(text)
+        return _dump({"mcpServers": data["mcpServers"]} if "mcpServers" in data else {})
+    except (ValueError, TypeError):
+        return text
+
+
+def owned_names(record_text, path):
+    """Names the ownership record lists for a merged file. Empty if there is no record; ValueError if
+    there is one and it is unusable (restore must not guess which servers sync added)."""
+    return list(_record_claude(record_text).get(path, {}))
+
+
 def _merge_claude(path, entries, owned, SyncError):
-    """Merge sync-owned names into the file's mcpServers. Returns (text or None, new owned names)."""
+    """Merge sync-owned names into the file's mcpServers. `owned` is {name: hash of what sync wrote}.
+    Returns (text or None, {name: hash} now owned)."""
     old = _read(path)
     try:
         data = json.loads(old) if old is not None else {}
@@ -188,13 +227,24 @@ def _merge_claude(path, entries, owned, SyncError):
         if n in servers and n not in owned:
             raise SyncError(f"mcp: {path} already has a server named {n}: not mine, left untouched. "
                             "Rename it in the shared list or remove it by hand.")
+    for n, h in owned.items():  # a name in the record is mine only while its content is still what I wrote
+        # "new+old": a run stopped between the record and the file leaves the old entry, which is mine too
+        if n in servers and h is not None and _entry_hash(servers[n]) not in h.split("+") \
+                and servers[n] != entries.get(n):
+            raise SyncError(f"mcp: {path}: server {n} is not what sync wrote (changed by hand or by Claude), "
+                            "left untouched. Remove or restore it by hand, or run --restore.")
+    new_owned = {}
+    for n in names:  # "new+old" only while the file still holds something else that sync wrote
+        h = _entry_hash(entries[n])
+        on_disk = _entry_hash(servers[n]) if n in servers else h
+        new_owned[n] = h if on_disk == h or owned.get(n) is None else f"{h}+{on_disk}"
     merged = {k: v for k, v in servers.items() if k not in owned or k in entries}
     merged.update({n: entries[n] for n in names})
     if merged == servers and (old is not None or not merged):
-        return old, names
+        return old, new_owned
     if merged or "mcpServers" in data:
         data["mcpServers"] = merged
-    return _dump(data), names
+    return _dump(data), new_owned
 
 
 def plan_mcp(repo, home, state, tools, SyncError, patterns, project=None):
@@ -210,17 +260,14 @@ def plan_mcp(repo, home, state, tools, SyncError, patterns, project=None):
         rec_old = _read(rec_path)
         try:
             record = json.loads(rec_old) if rec_old else {}
-            claude = record.setdefault("claude", {})
-            if not isinstance(claude, dict) or not all(
-                    isinstance(v, list) and all(isinstance(n, str) and NAME.fullmatch(n) for n in v)
-                    for v in claude.values()):
-                raise ValueError("bad record shape")
-            owned = set(claude.get(path, []))
+            maps = _record_claude(rec_old)
+            claude = record["claude"] = {p: m for p, m in maps.items()} if rec_old else {}
+            owned = maps.get(path, {})
         except (ValueError, AttributeError, TypeError):
             raise SyncError(f"mcp: {rec_path} is not usable JSON; delete it only if you know what "
                             "sync owns", code=2)
         entries = {n: _shape(e, "claude") for n, e in servers.items() if "claude" in e["tools"]}
-        text, names = _merge_claude(path, entries, owned, SyncError) if entries or owned else (None, [])
+        text, names = _merge_claude(path, entries, owned, SyncError) if entries or owned else (None, {})
         if text is not None:
             result[path] = text
         if names:
