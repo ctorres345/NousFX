@@ -36,7 +36,8 @@ Safety rules, all enforced before anything is written under the skills home:
     paths with `..` or `.git`, and more than 2000 files or 20 MB are refused;
   - git runs with a clean environment (no GIT_* variables, no user or system git config);
   - a skill is installed only if every locked skill verified, and an unowned folder is never touched;
-  - nothing from a skill is run. Files are only copied.
+  - nothing from a skill is run. Files are only copied, always as 0644 (never executable);
+  - `check` re-fetches the whole lock and lists the scripts each skill ships; the lock fixes bytes, not behavior.
 
 Installed skills go to the shared skills home (default ~/.agents/skills) with a link in Claude's skills folder
 (default ~/.claude/skills). Ownership is recorded in <state>/locked-skills.json (state = ~/.config/nousfx).
@@ -80,10 +81,15 @@ def check_path(path):
         raise Fail("unsafe path %r" % path)
 
 
+REPO_RE = re.compile(r"^https://[A-Za-z0-9.-]+(:[0-9]+)?/[\x21-\x7e]+$")
+
+
 def check_repo(repo, allow_file):
-    if repo.startswith("https://") or (allow_file and repo.startswith("file://")):
+    if REPO_RE.match(repo) and "@" not in repo.split("/")[2]:  # no user:token@ in a committed URL
         return
-    raise Fail("the repo must be an https URL, got %r" % repo)
+    if allow_file and re.match(r"^file:///[\x21-\x7e]+$", repo):
+        return
+    raise Fail("the repo must be a plain https URL without credentials, got %r" % escape(repo))
 
 
 def check_commit(commit):
@@ -140,7 +146,8 @@ def git_env(scratch):
 
 
 def run_git(args, scratch, allow_file, data=None):
-    cmd = ["git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "core.hooksPath=" + os.devnull]
+    cmd = ["git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "core.hooksPath=" + os.devnull,
+           "-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true", "-c", "http.followRedirects=initial"]
     if allow_file:
         cmd += ["-c", "protocol.file.allow=always"]
     try:
@@ -369,7 +376,7 @@ def write_skill(stage_dir, files):
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "wb") as f:
             f.write(data)
-        os.chmod(target, 0o755 if exe else 0o644)
+        os.chmod(target, 0o644)  # never +x: an agent must run a script explicitly; the mode is not part of the pin
 
 
 def cmd_install(a, lock, owned):
@@ -394,6 +401,8 @@ def cmd_install(a, lock, owned):
             on_disk = disk_tree(tmp)  # what a case-insensitive disk really holds must still match the lock
             if on_disk is None or checksum(on_disk) != e["sha256"]:
                 raise Fail("the files written for %s do not match the lock; nothing was put in place" % name)
+            if classify(name, e, owned, a.skills_home, a.claude_skills)[0] not in ("install", "replace"):
+                raise Fail("%s changed while the files were being fetched; nothing more was changed" % name)
             kept = None
             if os.path.isdir(folder):  # owned (classify refused anything else): keep the old copy
                 backup = os.path.join(via_home.anchor(), "backups", "skills-" + stamp)
@@ -443,8 +452,26 @@ def cmd_verify(a, lock, owned):
     return 1 if bad else 0
 
 
+SCRIPT_EXT = (".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl", ".ps1", ".bat", ".cmd")
+
+
+def is_script(path, data):
+    return path.lower().endswith(SCRIPT_EXT) or data.startswith(b"#!")
+
+
 def listing(files):
-    return "\n".join("  %s  (%d bytes)" % (p, len(files[p][1])) for p in sorted(files))
+    return "\n".join("  %s  (%d bytes)%s" % (p, len(files[p][1]), "  [script]" if is_script(p, files[p][1]) else "")
+                     for p in sorted(files))
+
+
+def cmd_check(a, lock, owned):
+    """Re-fetch every locked skill, compare the checksums, and list the scripts each one ships."""
+    files = verified_many(lock["skills"], a.allow_file_urls)
+    for name in sorted(files):
+        scripts = [p for p in sorted(files[name]) if is_script(p, files[name][p][1])]
+        print("ok %s: %d files, %d scripts%s" % (name, len(files[name]), len(scripts),
+                                                 " (" + ", ".join(escape(p) for p in scripts) + ")" if scripts else ""))
+    return 0
 
 
 def escape(line):
@@ -453,17 +480,14 @@ def escape(line):
 
 
 def show_diff(old, new):
-    lines = []
+    names, lines = [], []
     for path in sorted(set(old) | set(new)):
         o, n = old.get(path), new.get(path)
         if o is not None and n is not None and o[1] == n[1]:
             continue
-        if o is None:
-            lines.append("added: " + path)
-        elif n is None:
-            lines.append("removed: " + path)
-        else:
-            lines.append("changed: " + path)
+        kind = "added" if o is None else "removed" if n is None else "changed"
+        names.append("%s: %s%s" % (kind, path, "  [script]" if is_script(path, (n or o)[1]) else ""))
+        lines.append("%s: %s" % (kind, path))
         try:
             a_ = o[1].decode("utf-8").splitlines() if o else []
             b_ = n[1].decode("utf-8").splitlines() if n else []
@@ -471,11 +495,11 @@ def show_diff(old, new):
             lines.append("  (binary file)")
             continue
         lines += [escape(l) for l in difflib.unified_diff(a_, b_, "pinned/" + path, "new/" + path, lineterm="")]
-    if not lines:
+    if not names:
         return "no file changes"
     if len(lines) > DIFF_LINES:
-        lines = lines[:DIFF_LINES] + ["... diff cut at %d lines" % DIFF_LINES]
-    return "\n".join(lines)
+        lines = lines[:DIFF_LINES] + ["... diff text cut at %d lines; the file list above is complete" % DIFF_LINES]
+    return "files that differ:\n" + "\n".join("  " + escape(n) for n in names) + "\n" + "\n".join(lines)
 
 
 def remote_head(repo, allow_file):
@@ -542,12 +566,13 @@ def parser():
     home = via_home.home_dir()
     ap = argparse.ArgumentParser(prog="via_skills", description=__doc__.split("\n")[0])
     ap.add_argument("--lock", default=os.path.join(os.path.dirname(here), "skills.lock.json"))
-    ap.add_argument("--skills-home", default=os.path.join(home, ".agents", "skills"))
-    ap.add_argument("--claude-skills", default=os.path.join(home, ".claude", "skills"))
+    ap.add_argument("--skills-home", type=os.path.abspath, default=os.path.join(home, ".agents", "skills"))
+    ap.add_argument("--claude-skills", type=os.path.abspath, default=os.path.join(home, ".claude", "skills"))
     ap.add_argument("--allow-file-urls", action="store_true", help="accept file:// repos (tests only)")
     sub = ap.add_subparsers(dest="command", required=True)
     sub.add_parser("plan")
     sub.add_parser("verify")
+    sub.add_parser("check")
     p = sub.add_parser("install")
     p.add_argument("--confirm", metavar="DIGEST", help="the digest printed by plan, after the user agreed to it")
     p = sub.add_parser("add")
@@ -572,7 +597,7 @@ def main(argv=None):
         if a.command == "update":
             return cmd_update(a, lock)
         owned = load_manifest()
-        return {"plan": cmd_plan, "install": cmd_install, "verify": cmd_verify}[a.command](a, lock, owned)
+        return {"plan": cmd_plan, "install": cmd_install, "verify": cmd_verify, "check": cmd_check}[a.command](a, lock, owned)
     except (Fail, via_home.Refused, OSError) as e:
         print("via_skills: %s" % e, file=sys.stderr)
         return 2

@@ -426,6 +426,39 @@ class ViaSkillsTest(unittest.TestCase):
         r = self.run_tool("add", "Foo", "--repo", "file://" + self.remote, "--path", "skills/foo", "--commit", c)
         self.assertNotEqual(r.returncode, 0)
 
+    def test_repo_urls_with_control_characters_or_credentials_are_refused(self):
+        c = self.commit(self.BASE)
+        for repo in ("https://github.com/a/b\x1b[2K\rok", "https://user:tok@github.com/a/b", "https://github.com/a b"):
+            self.write_lock(c, self.BASE, repo=repo)
+            r = self.run_tool("plan")
+            self.assertEqual(r.returncode, 2, repo)
+            self.assertNotIn("\x1b", r.stdout + r.stderr)
+
+    def test_installed_files_are_never_executable_and_check_lists_scripts(self):
+        files = dict(self.BASE, **{"scripts/run.sh": b"#!/bin/sh\necho hi\n", "tool": b"#!/usr/bin/env python3\n"})
+        c = self.commit(files)
+        self.write_lock(c, files)
+        self.assertEqual(self.install().returncode, 0)
+        for rel in files:
+            self.assertFalse(os.access(os.path.join(self.shared, "foo", rel), os.X_OK), rel)
+        r = self.run_tool("check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("2 scripts", r.stdout)
+        self.assertIn("scripts/run.sh", r.stdout)
+
+    def test_check_fails_when_the_lock_checksum_is_wrong(self):
+        c = self.commit(self.BASE)
+        self.write_lock(c, self.BASE, sha256="0" * 64)
+        self.assertNotEqual(self.run_tool("check").returncode, 0)
+
+    def test_the_diff_names_every_changed_file_first_and_flags_scripts(self):
+        c = self.commit(self.BASE)
+        self.write_lock(c, self.BASE)
+        c2 = self.commit(dict(self.BASE, **{"scripts/x.py": b"print(1)\n"}))
+        r = self.run_tool("update", "foo", "--commit", c2)
+        self.assertIn("added: scripts/x.py  [script]", r.stdout)
+        self.assertLess(r.stdout.index("files that differ"), r.stdout.index("+print(1)"))
+
     def test_lock_names_that_differ_only_by_case_are_refused(self):
         c = self.commit(self.BASE)
         entry = {"repo": "file://" + self.remote, "path": "skills/foo", "commit": c, "sha256": checksum(self.BASE)}
