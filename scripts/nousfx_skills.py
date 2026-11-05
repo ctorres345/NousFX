@@ -9,16 +9,18 @@ Layout (H = home):
 Rules: a folder that is not in the manifest is never overwritten or deleted. A NousFX skill replaces
 one only when its name is passed as --yes-replace NAME, and the old folder is moved into the run's
 backup first. Every change is journaled in <backup root>/skills.json so --restore can undo it.
-Old install.sh backups (<file>.bak-YYYYMMDD-HHMMSS under H/.claude) are listed and moved into the
-backup too.
+Old install.sh backups (<file>.bak-YYYYMMDD-HHMMSS) are only listed. With --clean-backups they are
+moved into the run's backup too, so --restore brings them back. Only what install.sh writes is
+searched: H/.claude/CLAUDE.md, settings.json and the files under agents/, skills/ and hooks/
+(links are not followed). projects/, plugins/ and everything else are never touched.
 
-Windows: if a symlink cannot be created, a junction is made with `mklink /J` (NOUSFX_JUNCTION_CMD
-replaces that command, NOUSFX_NO_SYMLINK=1 forces the fallback; both exist for tests).
+Windows: if a symlink cannot be created, a junction is made with the fixed command
+`cmd /c mklink /J`. NOUSFX_NO_SYMLINK=1 only forces that fallback and runs no command; it is
+test-only. Tests put a stand-in `cmd` first on PATH and pass --platform windows.
 """
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 
@@ -69,8 +71,7 @@ def make_link(path, target, win):
         if not win:
             raise
         err = e
-    cmd = shlex.split(os.environ.get("NOUSFX_JUNCTION_CMD", "")) or ["cmd", "/c", "mklink", "/J"]
-    r = subprocess.run([*cmd, path, target], capture_output=True, text=True)
+    r = subprocess.run(["cmd", "/c", "mklink", "/J", path, target], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"cannot link {path}: symlink failed ({err}) and junction failed ({r.stderr.strip()})")
 
@@ -86,19 +87,28 @@ def sources(repo):
 
 
 class Plan:
-    def __init__(self):
+    def __init__(self, clean_backups=False):
         self.actions, self.collisions, self.broken, self.old_backups = [], [], [], []
+        self.clean_backups = clean_backups
 
     @property
     def pending(self):
-        return bool(self.actions or self.old_backups)
+        return bool(self.actions or (self.clean_backups and self.old_backups))
+
+    def listing(self):
+        """Old backups that stay where they are (shown in every mode, never counted as work)."""
+        if self.clean_backups:
+            return []
+        return [f"old install.sh backup (left in place; pass --clean-backups to move it): {p}"
+                for p in self.old_backups]
 
     def lines(self):
         out = [f"skill {a['op']}: {a['path']}" for a in self.actions]
         out += [f"skill collision (not mine, left untouched; pass --yes-replace {n} to replace): {p}"
                 for n, p in self.collisions]
         out += [f"broken skill link: {p}" for p in self.broken]
-        out += [f"old install.sh backup: {p}" for p in self.old_backups]
+        if self.clean_backups:
+            out += [f"old install.sh backup: {p}" for p in self.old_backups]
         return out
 
 
@@ -107,9 +117,26 @@ def _load(state):
     return json.loads(text).get("links", {}) if text else {}
 
 
-def plan(repo, home, state, yes_replace=()):
+def old_backups(dot_claude):
+    """install.sh backup files: CLAUDE.md and settings.json, plus every file under agents, skills, hooks."""
+    found = []
+    for name in ("CLAUDE.md", "settings.json"):
+        try:
+            found += [os.path.join(dot_claude, n) for n in os.listdir(dot_claude)
+                      if BAK_RE.search(n) and n[:BAK_RE.search(n).start()] == name
+                      and os.path.isfile(os.path.join(dot_claude, n))]
+        except OSError:
+            pass
+    for sub in ("agents", "skills", "hooks"):
+        for base, dirs, files in os.walk(os.path.join(dot_claude, sub)):  # os.walk does not follow links
+            found += [os.path.join(base, n) for n in files
+                      if BAK_RE.search(n) and not os.path.islink(os.path.join(base, n))]
+    return sorted(found)
+
+
+def plan(repo, home, state, yes_replace=(), clean_backups=False):
     manifest = _load(state)
-    p = Plan()
+    p = Plan(clean_backups)
     p.manifest = dict(manifest)
     want = sources(repo)
     agents = os.path.join(home, ".agents", "skills")
@@ -142,10 +169,7 @@ def plan(repo, home, state, yes_replace=()):
         p.actions.append({"op": "unlink" if _is_link(path) else "forget", "path": path})
     p.broken = [path for path in sorted(manifest)
                 if os.path.islink(path) and not os.path.exists(path)]
-    dot_claude = os.path.join(home, ".claude")
-    for base, dirs, files in os.walk(dot_claude):
-        p.old_backups += [os.path.join(base, n) for n in sorted(files + dirs) if BAK_RE.search(n)]
-        dirs[:] = [d for d in dirs if not BAK_RE.search(d)]
+    p.old_backups = old_backups(os.path.join(home, ".claude"))
     return p
 
 
@@ -164,7 +188,7 @@ def apply(p, root, win):
         shutil.move(path, dest)
         return str(n)
 
-    for old in p.old_backups:
+    for old in (p.old_backups if p.clean_backups else []):
         journal["ops"].append({"op": "moved", "path": old, "saved": save(old)})
     for a in p.actions:
         op, path = a["op"], a["path"]

@@ -88,7 +88,7 @@ def main():
     with open(today_path, encoding="utf-8") as f:
         today = f.read()
     repo = os.path.abspath(args.repo)
-    generated = nousfx_sync.build_rules(repo, state, nousfx_sync.commit_of(repo))
+    generated = nousfx_sync.build_rules(repo, state)
 
     res = classify(today, generated)
     text = report(res)

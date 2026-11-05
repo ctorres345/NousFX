@@ -8,6 +8,7 @@ import glob
 import os
 import re
 import shutil
+import subprocess
 import sys
 import unittest
 
@@ -82,6 +83,40 @@ class Mapping(AgentBase):
         r = self.sync()
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(self.tree(), {})
+
+
+class AgentDrift(AgentBase):
+    def header(self, name):
+        return self.agent(name).split("<!--", 1)[1].split("-->", 1)[0]
+
+    def test_an_unrelated_commit_is_not_drift(self):
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+        def vcs(*args):
+            subprocess.run(["git", "-C", self.repo, "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                           check=True, capture_output=True, env=env)
+        vcs("init", "-q")
+        vcs("add", "-A")
+        vcs("commit", "-qm", "one")
+        self.assertEqual(self.sync().returncode, 0)
+        write(os.path.join(self.repo, "unrelated.txt"), "x")
+        vcs("add", "-A")
+        vcs("commit", "-qm", "two")
+        self.assertEqual(self.sync("--check").returncode, 0)
+
+    def test_header_follows_the_agent_source_and_its_role_only(self):
+        self.sync()
+        before = {n[:-3]: self.header(n[:-3]) for n in self.listing()}
+        models = os.path.join(self.repo, "harness", "models.toml")
+        write(models, read(models).replace('model = "opus"', 'model = "opus-next"'))
+        self.sync()
+        after = {n[:-3]: self.header(n[:-3]) for n in self.listing()}
+        self.assertEqual([n for n in before if before[n] != after[n]], ["reviewer"])
+        path = os.path.join(self.repo, "harness", "agents", "reviewer.md")
+        write(path, read(path) + "\nExtra line.\n")
+        self.assertEqual(self.sync("--check").returncode, 1)
+        self.sync()
+        self.assertNotEqual(self.header("reviewer"), after["reviewer"])
 
 
 class Modes(AgentBase):

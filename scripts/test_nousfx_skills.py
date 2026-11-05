@@ -184,40 +184,100 @@ class Collisions(SkillsBase):
 
 
 class OldBackups(SkillsBase):
-    def test_listed_then_moved_and_restorable(self):
-        bak = os.path.join(self.home, ".claude", "agents", "x.md.bak-20250101-101010")
-        keep = os.path.join(self.home, ".claude", "notes.bak")
-        write(bak, "old")
-        write(keep, "keep")
-        self.assertIn("old install.sh backup", self.run_ok("--dry-run").stdout)
-        self.assertTrue(os.path.exists(bak))
+    STAMP = ".bak-20250101-101010"
+
+    def put(self, *parts):
+        path = os.path.join(self.home, *parts)
+        write(path, "old")
+        return path
+
+    def test_a_normal_run_lists_them_and_moves_nothing(self):
+        bak = self.put(".claude", "agents", "x.md" + self.STAMP)
         r = self.run_ok()
         self.assertIn(bak, r.stdout)
-        self.assertFalse(os.path.exists(bak))
+        self.assertIn("--clean-backups", r.stdout)
+        self.assertTrue(os.path.exists(bak))
+        again = self.run_ok()  # nothing else to do, the listing still shows
+        self.assertIn("nothing to change", again.stdout)
+        self.assertIn(bak, again.stdout)
+        self.assertTrue(os.path.exists(bak))
+        self.assertIn(bak, self.run_ok("--dry-run").stdout)
+        self.assertIn(bak, self.sync("--check").stdout)
+        self.assertEqual(self.sync("--check").returncode, 0)
+
+    def test_clean_backups_moves_them_and_restore_brings_them_back(self):
+        names = [(".claude", "CLAUDE.md" + self.STAMP), (".claude", "settings.json" + self.STAMP),
+                 (".claude", "agents", "x.md" + self.STAMP),
+                 (".claude", "hooks", "review-gate.py" + self.STAMP),
+                 (".claude", "skills", "mine", "SKILL.md" + self.STAMP)]
+        baks = [self.put(*n) for n in names]
+        keep = self.put(".claude", "notes.bak")
+        self.run_ok()
+        self.assertTrue(all(os.path.exists(b) for b in baks))
+        r = self.run_ok("--clean-backups")
+        for b in baks:
+            self.assertIn(b, r.stdout)
+            self.assertFalse(os.path.exists(b), b)
         self.assertTrue(os.path.exists(keep))
         self.run_ok("--restore")
-        with open(bak) as f:
-            self.assertEqual(f.read(), "old")
+        for b in baks:
+            with open(b) as f:
+                self.assertEqual(f.read(), "old")
+
+    def test_only_what_install_sh_writes_is_in_scope(self):
+        outside = [self.put(".claude", "projects", "p", "x.md" + self.STAMP),
+                   self.put(".claude", "plugins", "p", "x.md" + self.STAMP),
+                   self.put(".claude", "other.md" + self.STAMP),
+                   self.put("elsewhere", "x.md" + self.STAMP)]
+        r = self.run_ok("--clean-backups")
+        for b in outside:
+            self.assertTrue(os.path.exists(b), b)
+            self.assertNotIn(b, r.stdout)
+
+    def test_a_linked_skill_folder_is_not_walked(self):
+        bak = os.path.join(self.repo, "claude", "skills", "alpha", "SKILL.md" + self.STAMP)
+        write(bak, "inside the repo")
+        self.run_ok("--clean-backups")
+        self.assertTrue(os.path.exists(bak))
 
 
 class Windows(SkillsBase):
+    """Windows is tested with --platform windows and a stand-in `cmd` first on the subprocess PATH."""
+
+    def stand_in(self):
+        bin_dir = os.path.join(self.tmp, "bin")
+        log = os.path.join(self.tmp, "junctions.log")
+        write(os.path.join(bin_dir, "cmd"),
+              '#!/bin/sh\n[ "$1" = /c ] && [ "$2" = mklink ] && [ "$3" = /J ] || exit 9\n'
+              'ln -s "$5" "$4" && echo "$4" >> "%s"\n' % log)
+        os.chmod(os.path.join(bin_dir, "cmd"), 0o755)
+        return bin_dir, log
+
     def run_with(self, env_extra, *args):
         env = {**os.environ, **env_extra}
         return subprocess.run([sys.executable, "-B", SYNC, "--home", self.home, "--state-home", self.state,
                                "--repo", self.repo, *args], capture_output=True, text=True, env=env,
                               cwd=self.tmp)
 
-    def test_junction_fallback_when_symlinks_fail(self):
-        stub = os.path.join(self.tmp, "junction_stub.py")
-        log = os.path.join(self.tmp, "junctions.log")
-        write(stub, "import os, sys\nlink, target = sys.argv[1:3]\n"
-                    "os.symlink(target, link)\nopen(%r, 'a').write(link + '\\n')\n" % log)
-        r = self.run_with({"NOUSFX_NO_SYMLINK": "1", "NOUSFX_JUNCTION_CMD": f"{sys.executable} {stub}"},
+    def test_junction_fallback_runs_the_fixed_mklink_command(self):
+        bin_dir, log = self.stand_in()
+        r = self.run_with({"NOUSFX_NO_SYMLINK": "1", "PATH": bin_dir + os.pathsep + os.environ["PATH"]},
                           "--platform", "windows")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         with open(log) as f:
             self.assertEqual(len(f.read().split()), 6)
         self.assertEqual(self.real(self.agents, "alpha"), self.src("alpha"))
+
+    def test_the_junction_command_cannot_be_replaced_from_the_environment(self):
+        marker = os.path.join(self.tmp, "ran")
+        evil = os.path.join(self.tmp, "evil.sh")
+        write(evil, "#!/bin/sh\ntouch %s\n" % marker)
+        os.chmod(evil, 0o755)
+        bin_dir, _ = self.stand_in()
+        r = self.run_with({"NOUSFX_NO_SYMLINK": "1", "NOUSFX_JUNCTION_CMD": evil,
+                           "PATH": bin_dir + os.pathsep + os.environ["PATH"]}, "--platform", "windows")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(os.path.exists(marker))
 
     def test_posix_without_symlinks_fails_and_changes_no_manifest(self):
         r = self.run_with({"NOUSFX_NO_SYMLINK": "1"})

@@ -68,6 +68,25 @@ class HostileEnvironmentTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
+class NoPwdPlatformTest(unittest.TestCase):
+    """Windows has no pwd module: the home then comes from USERPROFILE and the module must still import."""
+
+    def run_without_pwd(self, profile):
+        code = ("import sys; sys.modules['pwd'] = None; sys.path.insert(0, %r); import via_home; "
+                "print(via_home.home_dir()); print(via_home.anchor())" % HERE)
+        env = {"PATH": os.environ["PATH"], "USERPROFILE": profile}
+        return subprocess.run([sys.executable, "-I", "-B", "-c", code], capture_output=True, text=True, env=env)
+
+    def test_the_module_imports_and_the_home_comes_from_userprofile(self):
+        with tempfile.TemporaryDirectory() as d:
+            profile = os.path.realpath(d)
+            r = self.run_without_pwd(profile)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            home, anchor = r.stdout.split("\n")[:2]
+            self.assertEqual(home, profile)
+            self.assertEqual(anchor, os.path.join(profile, ".config", "nousfx"))
+
+
 class LegacyConfigTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

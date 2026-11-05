@@ -165,7 +165,7 @@ def main():
             print("Stopped: an argument looks like a secret. Nothing was written.", file=sys.stderr)
             return 2
 
-    home = os.path.expanduser("~")
+    home = via_home.home_dir()
     try:
         path = os.path.abspath(args.config) if args.config else via_home.default_config()
         via_home.validate(path, via_home.anchor())

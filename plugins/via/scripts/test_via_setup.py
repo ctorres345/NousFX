@@ -61,6 +61,14 @@ class ViaSetupTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
 
+    def test_detection_uses_the_user_record_home_not_the_home_variable(self):
+        self.fake_gemini()
+        elsewhere = self.tempdir()  # HOME points at an empty folder, the user record at the real one
+        r = self.run_setup(HOME=elsewhere)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rep = json.loads(r.stdout)
+        self.assertEqual(rep["integrations"]["gemini"]["status"], "present")
+
     def test_a_config_outside_the_anchor_is_refused(self):
         elsewhere = os.path.join(self.tempdir(), "via.json")
         r = self.run_setup("--config", elsewhere)

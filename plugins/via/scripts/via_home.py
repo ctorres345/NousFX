@@ -1,6 +1,6 @@
 """via_home: where the personal Via config lives, shared by via_outbound.py and via_setup.py.
 
-The anchor is ~/.config/nousfx. The home directory comes from the system user record, never from $HOME,
+The anchor is ~/.config/nousfx. The home directory comes from the system user record (USERPROFILE on Windows, which has no pwd), never from $HOME,
 and nothing in the environment can move the anchor. A config must be a regular file (not a symlink) inside the
 anchor, and the anchor must not sit inside a git work tree, so a repo cannot allow-list itself. The work-tree check fails closed:
 only a clean "true"/"false" or a clean "not a git repository" answer passes; any other git outcome is refused.
@@ -12,7 +12,6 @@ committed .claude/settings.json `env` block could set) cannot patch pwd and move
 A hostile PATH can swap `python3` or `git` itself, and that is outside what this module can defend.
 """
 import os
-import pwd
 import subprocess
 import tempfile
 
@@ -24,7 +23,11 @@ class Refused(Exception):
 
 
 def home_dir():
-    return os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+    try:
+        import pwd
+        return os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+    except ImportError:  # Windows has no pwd; the profile folder is its user record
+        return os.path.realpath(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
 
 
 def anchor():
