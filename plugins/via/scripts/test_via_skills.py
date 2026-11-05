@@ -330,6 +330,19 @@ class ViaSkillsTest(unittest.TestCase):
             r = self.run_tool("plan")
             self.assertNotEqual(r.returncode, 0, text)
 
+    def test_the_committed_lock_is_valid_and_plans_cleanly(self):
+        """The real lock shipped with the plugin parses, has only https pins, and plans against an empty home."""
+        lock = os.path.join(os.path.dirname(os.path.dirname(SCRIPT)), "skills.lock.json")
+        doc = json.loads(slurp(lock))
+        self.assertEqual(doc["version"], 1)
+        self.assertTrue(doc["skills"])
+        r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "--lock", lock, "--skills-home", self.shared,
+                            "--claude-skills", self.claude, "plan"],
+                           env={"PATH": self.bin, **th.env(self.home)}, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.count("install "), len(doc["skills"]))
+        self.assertFalse(os.path.exists(self.shared))
+
     def test_hostile_git_environment_is_ignored(self):
         c = self.commit(self.BASE)
         self.write_lock(c, self.BASE)
