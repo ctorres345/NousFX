@@ -73,6 +73,20 @@ Project-level `.agents/hooks.json`, tested:
 - My `gemini-orchestrator` plugin defines subagents (`gemini-executor`, `gemini-scout`) as `agents/*.md` with `name` and `description` frontmatter, and `agy agents` lists them. **The plan said agy has no subagents; agy at least has a subagent concept.** I have not called one, so whether delegating works as the plan needs is untested.
 - `agy plugin install` stages Claude Code plugins (`.claude-plugin/plugin.json`) (**docs**, `plugins.md`), and `agy plugin import` appears in `agy --help`. Neither was tried.
 
+## Plugin loading (NFX-42 spike, 2026-11-05)
+
+I built a throwaway plugin `nousfx` (`plugin.json`, `rules/AGENTS.md`, `skills/spikeskill` as a symlink, `mcp_config.json` with a `url` entry) and tried it in a temp git repo and under a temp `HOME`. The real `~/.gemini` was not touched.
+
+| Question | Result | Evidence |
+|---|---|---|
+| Does a plugin's `rules/AGENTS.md` load? | Yes. agy quoted its heading and followed its instruction | **ran** (`agy -p`, plugin under `<repo>/.agents/plugins/nousfx/`) |
+| Is a symlinked skill inside the plugin's `skills/` found? | Yes, under its plain name (`spikeskill`, no `nousfx:` prefix) | **ran** |
+| Is a plugin folder found without a `config.json` entry? | Yes. Under a temp `HOME`, `agy plugin list` showed `nousfx (enabled)` with "1 skill, 1 rule, 1 MCP server" | **ran** (`plugin list` only; no model call, login was needed) |
+| Does the plugin's `mcp_config.json` register a server? | `plugin list` counts it. `agy mcp list` does **not** show it: that command lists the global `mcp_config.json` only. The agent also did not report the server, but the URL was a dead example host, so a live connection is untested | **ran**, inconclusive for tools |
+| Does a global plugin (`~/.gemini/config/plugins/`) load rules in a model call? | Not run: a temp `HOME` has no login | untested; the project-level run is the closest proof |
+
+Effect on NFX-42: the plan (one sync-owned plugin with rules and per-skill links) holds. No `skills.json` fallback is needed. NFX-41 must check the Atlassian entry in a real agy session by hand, because `agy mcp list` cannot show plugin servers.
+
 ## What changes in the plan
 
 | Plan said | Now |

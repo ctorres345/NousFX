@@ -1,13 +1,16 @@
-# Sync: one command writes Claude's global rules
+# Sync: one command writes each tool's global rules
 
-I keep my rules in three layers and let one command assemble Claude Code's global rules file.
+I keep my rules in layers and let one command assemble the global rules for Claude Code and, when I ask for it, for agy (Antigravity CLI).
 
 ```
 harness/AGENTS.md                  neutral rules, models named by role (fast / strong / deep)
 harness/overlays/claude.overlay.md Claude only: Skill tool, goal runs, subagent names
-~/.config/nousfx/local.md          mine alone, never committed (copy harness/local.md.example)
+harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by hand
+~/.config/nousfx/local.md          mine alone, never committed, tool-neutral (copy harness/local.md.example)
+~/.config/nousfx/local.claude.md   mine, Claude only (optional)
+~/.config/nousfx/local.agy.md      mine, agy only (optional)
         |
-        v   python3 -B scripts/nousfx_sync.py
+        v   python3 -B scripts/nousfx_sync.py [--tools claude,agy]
 ~/.claude/CLAUDE.md                generated, header holds a hash of the sources
 ~/.claude/settings.json            review gate registered (other settings kept)
 ~/.claude/hooks/                   review-gate.py and pr_create_parser.py
@@ -23,6 +26,8 @@ harness/overlays/claude.overlay.md Claude only: Skill tool, goal runs, subagent 
 | `--restore` | put back the last backup (files that did not exist are removed) |
 | `--clean-backups` | also move old `install.sh` backups into the backup (otherwise they are only listed) |
 | `--yes-replace NAME` | let my skill NAME replace a folder sync does not own (moved into the backup first) |
+| `--tools claude,agy` | which tools to write. The default is `claude` only, so nothing touches `~/.gemini` until I name `agy` |
+| `--project DIR` | write only the MCP files of one project (see MCP below) |
 | `--home`, `--state-home`, `--repo` | override locations; tests always use these |
 
 ## Rules I keep
@@ -61,7 +66,7 @@ claude/skills/*, plugins/via/skills/via   sources
 
 ## Tests
 
-`python3 -B scripts/test_nousfx_sync.py` and `python3 -B scripts/test_nousfx_skills.py`. They run the CLI as a subprocess against a temp home. The golden test builds `scripts/fixtures/sync/expected_CLAUDE.md` from generic fixtures.
+`python3 -B scripts/test_nousfx_sync.py`, `test_nousfx_sync_tools.py` (agy, MCP and `--project`) and `test_nousfx_skills.py`. They run the CLI as a subprocess against a temp home. `test_nousfx_agy.py` and `test_nousfx_mcp.py` test the two modules directly; run them as `python3 -B -m unittest test_nousfx_mcp` from `scripts/`. The golden test builds `scripts/fixtures/sync/expected_CLAUDE.md` from generic fixtures.
 
 ## Agents by role
 
@@ -81,3 +86,45 @@ harness/models.toml     per tool, each role -> model + effort (claude: haiku / o
 - `--dry-run`, `--check`, `--restore` and the backup cover these files like the rest.
 - Sync never deletes an agent file I removed from the sources.
 - The one intended difference from `claude/agents/*.md` is the generated header. The golden test in `scripts/test_nousfx_agents.py` enforces it, so the old files stay as the reference while `install.sh` still uses them.
+
+## agy
+
+I keep agy in one folder that sync owns, and I leave my own agy files alone.
+
+```
+harness/AGENTS.md + agy.overlay.md + local.md + local.agy.md
+        |
+        v   python3 -B scripts/nousfx_sync.py --tools claude,agy
+~/.gemini/config/plugins/nousfx/plugin.json
+~/.gemini/config/plugins/nousfx/rules/AGENTS.md     generated, same header style as CLAUDE.md
+~/.gemini/config/plugins/nousfx/skills/<name>       link to ~/.agents/skills/<name>
+~/.gemini/config/plugins/nousfx/mcp_config.json     from the MCP list (below)
+```
+
+- My own `~/.gemini/config/rules/AGENTS.md` and the global `mcp_config.json` are never read or written. To turn the plugin off I run `agy plugin disable nousfx`.
+- I checked that agy loads a plugin's rules and a symlinked skill without any `config.json` entry (`docs/agy-capabilities.md`, "Plugin loading").
+- The agy rules have no Claude-only terms. A test checks the generated file, and sync warns when my `local.md` holds one.
+- The rules file must stay under agy's 24,000 byte cap, or the run fails before writing.
+- The skill links use the same manifest, collision rule and `--restore` journal as the other skill links.
+
+## MCP
+
+I add a server once and every tool that should have it gets it.
+
+```
+harness/mcp.toml                shared list (committed)
+~/.config/nousfx/mcp.toml       my own servers (optional, same name wins)
+<project>/.nousfx/mcp.toml      one project's servers (only with --project)
+```
+
+```toml
+[servers.atlassian]
+tools = ["agy"]        # required: claude, agy, or both
+url = "https://mcp.atlassian.com/v1/mcp"
+```
+
+- Claude gets the entry in `~/.claude.json` (only the `mcpServers` key, only names sync added). agy gets it in the plugin's `mcp_config.json`. Atlassian is agy only, because Claude has its own connector.
+- A value is either a URL or an environment variable written as `${NAME}`. A literal token anywhere fails the run before anything is written, and the message names the server, never the value.
+- Sync never overwrites a server it did not add. It stops and tells me.
+- `--project DIR` reads only `DIR/.nousfx/mcp.toml` and writes `DIR/.mcp.json` (Claude) and `DIR/.agents/plugins/nousfx/mcp_config.json` (agy). Global servers never go there. This is the small first step; project mode proper is NFX-46.
+- `agy mcp list` shows only the global file, not plugin servers, so I check a plugin server by running agy and asking for it.
