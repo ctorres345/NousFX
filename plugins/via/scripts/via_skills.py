@@ -4,13 +4,16 @@
 Run as `python3 -I -B via_skills.py [options] <command>`.
 
   plan                     print what install would fetch and change; fetches nothing
-  install --yes            fetch, verify, then install the missing or outdated locked skills (none if any check fails)
+  install --confirm DIGEST fetch, verify, then install the missing or outdated locked skills (none if any check
+                           fails). DIGEST is printed by `plan`: install runs only the plan that was shown.
   verify                   check the installed skills against the lock (exit 1 on any drift)
-  add NAME --repo U --path P --commit SHA [--approve]
-                           show the files and checksum of a new skill; write the lock entry only with --approve
-  update NAME [--commit SHA] [--approve]
+  add NAME --repo U --path P --commit SHA [--approve SHA256]
+                           show the files and checksum of a new skill; write the lock entry only when --approve
+                           carries the checksum that was shown
+  update NAME [--commit SHA] [--approve SHA256]
                            show the diff between the pinned and the new commit (default: the remote HEAD);
-                           rewrite the lock entry only with --approve. It never installs by itself.
+                           rewrite the lock entry only when --commit and --approve carry what was shown.
+                           It never installs by itself.
 
 The lock (plugins/via/skills.lock.json) is committed, so a PR shows every pin change:
   {"version": 1, "skills": {"NAME": {"repo": "https://...", "path": "folder/in/repo",
@@ -79,14 +82,18 @@ def check_commit(commit):
         raise Fail("the pin must be a full 40-character commit sha, got %r" % (commit,))
 
 
+def check_source(repo, path, commit, allow_file):
+    check_repo(repo, allow_file)
+    check_path(path)
+    check_commit(commit)
+
+
 def check_entry(name, e, allow_file):
     if not isinstance(name, str) or not NAME_RE.match(name):
         raise Fail("bad skill name %r" % (name,))
     if not isinstance(e, dict) or not all(isinstance(e.get(k), str) for k in ("repo", "path", "commit", "sha256")):
         raise Fail("lock entry %s needs repo, path, commit and sha256 as strings" % name)
-    check_repo(e["repo"], allow_file)
-    check_path(e["path"])
-    check_commit(e["commit"])
+    check_source(e["repo"], e["path"], e["commit"], allow_file)
     if not SHA256_RE.match(e["sha256"]):
         raise Fail("lock entry %s: sha256 must be 64 hex characters" % name)
 
@@ -105,17 +112,7 @@ def load_lock(path, allow_file):
 
 
 def write_lock(path, doc):
-    folder = os.path.dirname(os.path.abspath(path))
-    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".lock-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(doc, f, indent=2, sort_keys=True)
-            f.write("\n")
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    via_home.write_atomic(os.path.abspath(path), json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
 
 # --- git ----------------------------------------------------------------------------------------------------
@@ -168,8 +165,9 @@ def read_tree(gd, commit, path, scratch, allow_file):
             continue
         meta, _, name = rec.partition(b"\t")
         mode, kind, sha, size = meta.decode().split()
-        rel = name.decode("utf-8", "strict") if _utf8(name) else None
-        if rel is None:
+        try:
+            rel = name.decode("utf-8")
+        except UnicodeDecodeError:
             raise Fail("a file name in %s is not valid UTF-8" % path)
         if mode == "120000":
             raise Fail("the skill holds a symlink (%s); refused" % rel)
@@ -187,48 +185,51 @@ def read_tree(gd, commit, path, scratch, allow_file):
                     data="".join(e[2] + "\n" for e in entries).encode())
     if batch.returncode != 0:
         raise Fail("cannot read the skill files: %s" % text(batch))
-    out, pos, files = batch.stdout, 0, {}
+    out, pos, files = memoryview(batch.stdout), 0, {}
     for rel, exe, sha in entries:
-        end = out.index(b"\n", pos)
-        _sha, kind, size = out[pos:end].decode().split()
+        end = batch.stdout.index(b"\n", pos)
+        _sha, kind, size = bytes(out[pos:end]).decode().split()
         start = end + 1
-        files[rel] = (exe, out[start:start + int(size)])
+        files[rel] = (exe, bytes(out[start:start + int(size)]))
         pos = start + int(size) + 1
     return files
-
-
-def _utf8(b):
-    try:
-        b.decode("utf-8")
-        return True
-    except UnicodeDecodeError:
-        return False
 
 
 def checksum(files):
     h = hashlib.sha256()
     for path in sorted(files):
         data = files[path][1]
-        h.update(path.encode() + b"\0" + str(len(data)).encode() + b"\0" + data)
+        h.update(path.encode() + b"\0" + str(len(data)).encode() + b"\0")
+        h.update(data)
     return h.hexdigest()
 
 
+def stage_many(sources, allow_file):
+    """{key: files} for [(key, repo, path, commit)]. One fetch per (repo, commit), all in temp folders that are removed."""
+    for _key, repo, path, commit in sources:
+        check_source(repo, path, commit, allow_file)
+    out = {}
+    for repo, commit in sorted({(r, c) for _k, r, _p, c in sources}):
+        with tempfile.TemporaryDirectory(prefix="via-skills-") as scratch:
+            gd = fetch(repo, commit, scratch, allow_file)
+            for key, r, path, c in sources:
+                if (r, c) == (repo, commit):
+                    out[key] = read_tree(gd, commit, path, scratch, allow_file)
+    return out
+
+
 def stage(repo, path, commit, allow_file):
-    """Fetch and check one skill. Returns its files. Everything happens in a temp folder that is removed."""
-    check_repo(repo, allow_file)
-    check_path(path)
-    check_commit(commit)
-    with tempfile.TemporaryDirectory(prefix="via-skills-") as scratch:
-        gd = fetch(repo, commit, scratch, allow_file)
-        return read_tree(gd, commit, path, scratch, allow_file)
+    return stage_many([(0, repo, path, commit)], allow_file)[0]
 
 
-def verified(name, e, allow_file):
-    files = stage(e["repo"], e["path"], e["commit"], allow_file)
-    got = checksum(files)
-    if got != e["sha256"]:
-        raise Fail("checksum mismatch for %s: the lock says %s, commit %s gives %s; nothing installed"
-                   % (name, e["sha256"], e["commit"], got))
+def verified_many(entries, allow_file):
+    """{name: files} for {name: lock entry}; fails on the first checksum that differs."""
+    files = stage_many([(n, e["repo"], e["path"], e["commit"]) for n, e in entries.items()], allow_file)
+    for name, e in entries.items():
+        got = checksum(files[name])
+        if got != e["sha256"]:
+            raise Fail("checksum mismatch for %s: the lock says %s, commit %s gives %s; nothing installed"
+                       % (name, e["sha256"], e["commit"], got))
     return files
 
 
@@ -300,25 +301,31 @@ def classify(name, e, owned, shared, claude):
 
 
 # --- commands -----------------------------------------------------------------------------------------------
-def plan_lines(lock, owned, shared, claude):
-    rows, bad = [], False
+def show_plan(lock, owned, shared, claude):
+    """Print the plan. Returns (has_collision, todo, digest); the digest binds an install to exactly this plan."""
+    rows, bad, todo, h = [], False, [], hashlib.sha256()
     for name in sorted(lock["skills"]):
         e = lock["skills"][name]
         action, why = classify(name, e, owned, shared, claude)
         if action == "ok":
             rows.append("ok        %s (already at %s)" % (name, e["commit"]))
-        elif action == "collision":
+            continue
+        if action == "collision":
             bad = True
             rows.append("collision %s: %s" % (name, why))
-        else:
-            rows.append("%-9s %s  fetch %s  path %s  commit %s" % (action, name, e["repo"], e["path"], e["commit"]))
-    return rows, bad
+            continue
+        todo.append(name)
+        h.update(json.dumps([name, action, e["repo"], e["path"], e["commit"], e["sha256"]]).encode())
+        rows.append("%-9s %s  fetch %s  path %s  commit %s" % (action, name, e["repo"], e["path"], e["commit"]))
+    digest = h.hexdigest()
+    print("\n".join(rows) if rows else "the lock is empty")
+    if todo and not bad:
+        print("digest %s" % digest)
+    return bad, todo, digest
 
 
 def cmd_plan(a, lock, owned):
-    rows, bad = plan_lines(lock, owned, a.skills_home, a.claude_skills)
-    print("\n".join(rows) if rows else "the lock is empty")
-    return 1 if bad else 0
+    return 1 if show_plan(lock, owned, a.skills_home, a.claude_skills)[0] else 0
 
 
 def write_skill(stage_dir, files):
@@ -335,22 +342,18 @@ def write_skill(stage_dir, files):
 
 
 def cmd_install(a, lock, owned):
-    rows, bad = plan_lines(lock, owned, a.skills_home, a.claude_skills)
-    print("\n".join(rows) if rows else "the lock is empty")
+    bad, todo, digest = show_plan(lock, owned, a.skills_home, a.claude_skills)
     if bad:
-        raise Fail("a collision stops the install; nothing was changed\n" + "\n".join(r for r in rows if r.startswith("collision")))
-    todo = [n for n in sorted(lock["skills"]) if classify(n, lock["skills"][n], owned, a.skills_home,
-                                                          a.claude_skills)[0] != "ok"]
+        raise Fail("a collision stops the install; nothing was changed")
     if not todo:
         print("nothing to do")
         return 0
-    if not a.yes:
-        raise Fail("this would fetch the skills listed above; run again with --yes to install them")
-    staged = {n: verified(n, lock["skills"][n], a.allow_file_urls) for n in todo}  # every skill verified first
+    if a.confirm != digest:
+        raise Fail("the plan above is not confirmed; show it to the user, then run install --confirm %s" % digest)
+    staged = verified_many({n: lock["skills"][n] for n in todo}, a.allow_file_urls)  # every skill verified first
     os.makedirs(a.skills_home, exist_ok=True)
     os.makedirs(a.claude_skills, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    owned = dict(owned)
     try:
         for name in todo:
             e, folder = lock["skills"][name], os.path.join(a.skills_home, name)
@@ -378,21 +381,23 @@ def cmd_verify(a, lock, owned):
     bad = False
     for name in sorted(lock["skills"]):
         e = lock["skills"][name]
-        folder = os.path.join(a.skills_home, name)
-        files = disk_tree(folder)
-        mine = owned.get(name)
+        action, why = classify(name, e, owned, a.skills_home, a.claude_skills)
+        files = disk_tree(os.path.join(a.skills_home, name))
         if files is None:
             problem = "missing"
-        elif mine is None:
+        elif action == "collision":
+            problem = why
+        elif action == "install" and name not in owned:
             problem = "not mine (not in the ownership record)"
-        elif mine.get("commit") != e["commit"]:
-            problem = "installed at %s, the lock says %s (run install)" % (mine.get("commit"), e["commit"])
+        elif action == "replace":
+            problem = "installed at %s, the lock says %s (run install)" % (owned[name].get("commit"), e["commit"])
         elif checksum(files) != e["sha256"]:
             problem = "files differ from the lock (edited after install)"
+        elif action == "install":
+            problem = "the Claude skills link is missing (run install)"
         else:
             problem = None
-        if problem:
-            bad = True
+        bad = bad or bool(problem)
         print("%-7s %s%s" % ("DRIFT" if problem else "ok", name, ": " + problem if problem else ""))
     return 1 if bad else 0
 
@@ -439,17 +444,19 @@ def remote_head(repo, allow_file):
 def cmd_add(a, lock):
     if not (a.repo and a.path and a.commit):
         raise Fail("add needs --repo, --path and --commit")
+    if not NAME_RE.match(a.name):
+        raise Fail("bad skill name %r" % a.name)
     if a.name in lock["skills"]:
         raise Fail("%s is already locked; use update" % a.name)
-    entry = {"repo": a.repo, "path": a.path, "commit": a.commit, "sha256": ""}
-    check_entry(a.name, dict(entry, sha256="0" * 64), a.allow_file_urls)
     files = stage(a.repo, a.path, a.commit, a.allow_file_urls)
-    entry["sha256"] = checksum(files)
-    print("%s from %s path %s commit %s\n%s\nsha256 %s" % (a.name, a.repo, a.path, a.commit, listing(files), entry["sha256"]))
-    if not a.approve:
-        print("lock unchanged (read the files above, then pass --approve to pin them)")
+    got = checksum(files)
+    print("%s from %s path %s commit %s\n%s\nsha256 %s" % (a.name, a.repo, a.path, a.commit, listing(files), got))
+    if a.approve is None:
+        print("lock unchanged (read the files above, then pass --approve %s to pin them)" % got)
         return 0
-    lock["skills"][a.name] = entry
+    if a.approve != got:
+        raise Fail("--approve does not match the checksum shown above; lock unchanged")
+    lock["skills"][a.name] = {"repo": a.repo, "path": a.path, "commit": a.commit, "sha256": got}
     write_lock(a.lock, lock)
     print("pinned %s in %s" % (a.name, a.lock))
     return 0
@@ -459,18 +466,26 @@ def cmd_update(a, lock):
     e = lock["skills"].get(a.name)
     if e is None:
         raise Fail("%s is not in the lock; use add" % a.name)
+    if a.approve is not None and not a.commit:
+        raise Fail("--approve needs --commit, so the commit you approve is the one you saw")
     target = a.commit or remote_head(e["repo"], a.allow_file_urls)
     check_commit(target)
     if target == e["commit"]:
         print("%s is already pinned at %s" % (a.name, target))
         return 0
-    old = verified(a.name, e, a.allow_file_urls)  # the pinned copy must still match its checksum
-    new = stage(e["repo"], e["path"], target, a.allow_file_urls)
-    print("%s: %s -> %s\n%s\nnew sha256 %s" % (a.name, e["commit"], target, show_diff(old, new), checksum(new)))
-    if not a.approve:
-        print("lock unchanged (read the diff above, then pass --approve to pin the new commit)")
+    both = stage_many([("old", e["repo"], e["path"], e["commit"]), ("new", e["repo"], e["path"], target)],
+                      a.allow_file_urls)
+    old, new = both["old"], both["new"]
+    if checksum(old) != e["sha256"]:
+        raise Fail("the pinned copy of %s no longer matches its checksum; lock unchanged" % a.name)
+    got = checksum(new)
+    print("%s: %s -> %s\n%s\nnew sha256 %s" % (a.name, e["commit"], target, show_diff(old, new), got))
+    if a.approve is None:
+        print("lock unchanged (read the diff above, then pass --commit %s --approve %s to pin it)" % (target, got))
         return 0
-    lock["skills"][a.name] = dict(e, commit=target, sha256=checksum(new))
+    if a.approve != got:
+        raise Fail("--approve does not match the checksum shown above; lock unchanged")
+    lock["skills"][a.name] = dict(e, commit=target, sha256=got)
     write_lock(a.lock, lock)
     print("pinned %s at %s; run install to apply it" % (a.name, target))
     return 0
@@ -488,15 +503,17 @@ def parser():
     sub.add_parser("plan")
     sub.add_parser("verify")
     p = sub.add_parser("install")
-    p.add_argument("--yes", action="store_true")
-    for cmd in ("add", "update"):
-        p = sub.add_parser(cmd)
-        p.add_argument("name")
-        p.add_argument("--commit")
-        p.add_argument("--approve", action="store_true")
-        if cmd == "add":
-            p.add_argument("--repo")
-            p.add_argument("--path")
+    p.add_argument("--confirm", metavar="DIGEST", help="the digest printed by plan, after the user agreed to it")
+    p = sub.add_parser("add")
+    p.add_argument("name")
+    p.add_argument("--repo")
+    p.add_argument("--path")
+    p.add_argument("--commit")
+    p.add_argument("--approve", metavar="SHA256", help="the sha256 printed by the preview")
+    p = sub.add_parser("update")
+    p.add_argument("name")
+    p.add_argument("--commit")
+    p.add_argument("--approve", metavar="SHA256", help="the sha256 printed by the preview (needs --commit)")
     return ap
 
 
