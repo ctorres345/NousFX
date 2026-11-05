@@ -106,8 +106,8 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/agents/reviewer-deep.md` | Fable second-opinion reviewer for large or risky changes, only after asking |
 | `claude/agents/architect.md` | Fable architecture and performance consultant, read-only, only after asking |
 | `claude/skills/review-loop/` | `/review-loop`: review-fix loop, max 5 rounds, never commits |
-| `claude/skills/ui-review/` | `/ui-review`: platform-aware UI/UX review. Includes `scripts/argon-review.sh` (Gemini second opinion with safety stops; the project must be on the outbound allow-list in `~/.config/nousfx/via.json`) and a Flutter screenshot test template |
-| `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/common.sh` holds the safety checks both Gemini scripts share |
+| `claude/skills/ui-review/` | `/ui-review`: platform-aware UI/UX review. Includes `scripts/argon_review.py` (Gemini second opinion with safety stops; the project must be on the outbound allow-list in `~/.config/nousfx/via.json`) and a Flutter screenshot test template |
+| `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/gemini_common.py` holds the safety checks both Gemini scripts share; they run on macOS and Windows |
 | `claude/skills/handoff/` | `/handoff`: session handoff note |
 | `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list. Applies only approved fixes |
 | `claude/skills/project-setup/` | Sets up or audits a repo with the shared workflow |
