@@ -13,6 +13,10 @@ Branch check: the branch must be named cesar/<JIRA-KEY> (for example cesar/MOB-2
 user approves another name for this PR, `review-gate.py --allow-branch "reason"` records an
 exception for the current branch (stored in the git dir, never committed).
 
+Check mode: `review-gate.py check --cwd DIR --command "gh pr create"` asks the same question without
+a hook payload (pre-push hook, CI, other tools). Exit 0 allows, 2 blocks, and bad input blocks.
+The hook above parses its payload and calls the same evaluate() function.
+
 Mark mode: `review-gate.py --mark --findings N` or `--mark --skip "reason"` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
 Open findings above 0 keep the PR blocked unless a --skip reason was recorded.
@@ -212,7 +216,31 @@ def check_repo(cwd):
         return 2
 
 
+def option(argv, name):
+    i = argv.index(name) + 1 if name in argv else len(argv)
+    return argv[i] if i < len(argv) and not argv[i].startswith("--") else None
+
+
+def check(argv):
+    """Plain entry for tools without Claude hooks: `check --cwd DIR --command "..."`.
+
+    Same allow (0) and block (2) codes as the hook. Unlike the hook, bad input blocks: a missing
+    option, a missing folder or a folder that is not a git repo all exit 2.
+    """
+    cwd, command = option(argv, "--cwd"), option(argv, "--command")
+    if not cwd or not command:
+        print('Blocked: usage: review-gate.py check --cwd DIR --command "gh pr create"', file=sys.stderr)
+        return 2
+    try:
+        git(["rev-parse", "--git-dir"], cwd)
+    except (OSError, RuntimeError) as e:
+        print(ERROR_BLOCK.format(error=e, script=SCRIPT), file=sys.stderr)
+        return 2
+    return evaluate("Bash", command, cwd)
+
+
 def gate():
+    """Claude PreToolUse hook: parse the payload, then ask evaluate()."""
     try:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
         tool = str(payload.get("tool_name") or "")
@@ -220,6 +248,11 @@ def gate():
         cwd = payload.get("cwd") or os.getcwd()
     except Exception:
         return 0  # not a call we can read: never break unrelated work
+    return evaluate(tool, command, cwd)
+
+
+def evaluate(tool, command, cwd):
+    """Exit code for one tool call. The single decision path for the hook and for `check`."""
     if MCP_PR_CREATE.search(tool):
         dirs = [cwd]
     elif PARSER_ERROR:
@@ -242,6 +275,8 @@ def gate():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["check"]:
+        sys.exit(check(sys.argv))
     if "--allow-branch" in sys.argv:
         sys.exit(allow_branch(sys.argv))
     sys.exit(mark(sys.argv) if "--mark" in sys.argv else gate())
