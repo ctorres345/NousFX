@@ -15,7 +15,7 @@ Run read-only and fill this table: item | state | action.
 - `CLAUDE.md`, `docs/agents/`, `docs/RUNBOOK.md` or `docs/engineering/RUNBOOK.md`, PR template, CI workflows
 - `.gitignore` rules for `.claude/`, and which `.claude` files are tracked
 - Jira project key, and existing labels
-- Handoff file: read it if present
+- Handoff file: read it if present. Report a gap when `.claude/handoff.md` is missing, when `git check-ignore -q --no-index .claude/handoff.md` fails (no ignore rule), or when `git ls-files --error-unmatch .claude/handoff.md` exits 0 (git tracks it; report this separately, because untracking is Cesar's call)
 
 Done when every row has a state.
 
@@ -34,6 +34,7 @@ Merge into existing files, and keep what is already there.
 | Target | Source |
 |---|---|
 | `.gitignore` | Allowlist: `.claude/*`, `!.claude/settings.json`, `!.claude/agents/`, `!.claude/skills/`, `!.claude/hooks/`, then `.claude/**/*.bak*`, `.claude/**/.env*`, `CLAUDE.local.md`, `graphify-out/`; replaces any blanket `.claude/` ignore |
+| `.claude/handoff.md` | Create it empty if missing. Add the line `.claude/handoff.md` to `.gitignore` unless `git check-ignore -q --no-index .claude/handoff.md` already succeeds (`--no-index` keeps the answer right when the file is tracked), so a rerun adds no duplicate line. Never `git add` it; if `git ls-files --error-unmatch .claude/handoff.md` exits 0, tell Cesar and leave it tracked |
 | `.claude/settings.json` | [`assets/settings.json`](assets/settings.json), merged |
 | `.claude/hooks/review-gate.py`, `.claude/hooks/pr_create_parser.py` | The same two files from `~/.claude/hooks/`, together: the gate imports the parser |
 | `.claude/agents/` | `reviewer.md`, `test-runner.md` from `~/.claude/agents/` |
