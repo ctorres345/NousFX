@@ -120,12 +120,13 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `docs/agents/` | This repo's own tracker setup (Jira project `NFX`) |
 
 ### Skills this framework uses but doesn't store
-`ui-review` skips any missing skill and lists it under "Skipped", so install what you need on each device:
-- User skills:
+`ui-review` skips any missing skill and lists it under "Skipped". Sync installs most of them for me, from a lock file:
+- User skills pinned in [`harness/skills.lock.json`](harness/skills.lock.json), each with a commit and a checksum. `python3 -B scripts/nousfx_sync.py` fetches, verifies and links them on every machine ([how it works](docs/sync.md#outside-skills)):
   - `ui-ux-pro-max`
-  - the Android set (`adaptive`, `edge-to-edge`, `jetpack-compose-performance`, `navigation-3`, `styles`, `testing-setup`), from the `android` CLI
+  - the Android set (`adaptive`, `edge-to-edge`, `jetpack-compose-performance`, `navigation-3`, `testing-setup`)
+  - `material-3` (if you also have the `material-3@material-3-skill` plugin, remove it so there is one copy)
   - Matt Pocock's workflow skills (`grilling`, `to-spec`, `to-tickets`, `tdd`, `prototype` and others)
-- Plugin: `material-3` (`material-3@material-3-skill`).
+- Not pinned yet: `styles`. It only comes with the `android` CLI, because the `android/skills` repo does not have it. Install it by hand.
 - Claude plugins: `design:accessibility-review`, `design:design-critique`, `design:ux-copy` and `anthropic-skills:frontend-design`.
 
 ## The PR review gate
