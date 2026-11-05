@@ -13,6 +13,8 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import nousfx_sync  # noqa: E402  (merge_settings is tested directly)
 ROOT = os.path.dirname(HERE)
 SYNC = os.path.join(HERE, "nousfx_sync.py")
 FIX = os.path.join(HERE, "fixtures", "sync")
@@ -297,6 +299,95 @@ class DroppedSectionGuard(Base):
         r, report = self.regress(today)
         self.assertEqual(r.returncode, 0, report)
         self.assertIn("reworded: 1", report)
+
+
+class DriftHookRegistration(Base):
+    """NFX-57: sync registers a SessionStart hook that warns about drift, and --check --summary feeds it."""
+
+    def drift_entries(self):
+        cfg = json.loads(read(self.settings))
+        return [e for e in cfg["hooks"].get("SessionStart", [])
+                if any("nousfx-drift.py" in h["command"] for h in e["hooks"])]
+
+    def test_session_start_hook_is_registered_with_repo_and_tools(self):
+        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
+        entries = self.drift_entries()
+        self.assertEqual(len(entries), 1)
+        hook = entries[0]["hooks"][0]
+        script = os.path.join(self.home, ".claude", "hooks", "nousfx-drift.py")
+        self.assertTrue(os.path.exists(script))
+        self.assertEqual(hook["command"], f'python3 -I -B "{script}" --repo "{self.repo}" --tools claude')
+        self.assertEqual(hook["timeout"], 5)
+        self.assertEqual(entries[0]["matcher"], "startup")
+
+    def test_tools_list_is_passed_through_in_the_order_given(self):
+        cfg = json.loads(nousfx_sync.merge_settings(None, "/g/review-gate.py", False,
+                                                    ("/h/nousfx-drift.py", "/r", ("claude", "agy"))))
+        cmd = cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        self.assertEqual(cmd, 'python3 -I -B "/h/nousfx-drift.py" --repo "/r" --tools claude,agy')
+
+    def test_without_drift_arguments_only_the_gate_is_registered(self):
+        cfg = json.loads(nousfx_sync.merge_settings(None, "/g/review-gate.py", False))
+        self.assertEqual(list(cfg["hooks"]), ["PreToolUse"])
+
+    def test_second_sync_replaces_the_entry_and_keeps_other_session_hooks(self):
+        write(self.settings, json.dumps({"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command": "mine.sh"}]},
+            {"hooks": [{"type": "command", "command": "python3 old/nousfx-drift.py --repo x"}]}]}}))
+        self.sync()
+        self.sync()
+        cmds = [h["command"] for e in json.loads(read(self.settings))["hooks"]["SessionStart"] for h in e["hooks"]]
+        self.assertEqual(cmds[0], "mine.sh")
+        self.assertEqual(sum("nousfx-drift.py" in c for c in cmds), 1)
+        self.assertIn(self.repo, cmds[-1])
+
+    def test_a_hook_added_after_ours_keeps_its_place_and_check_stays_clean(self):
+        self.sync()
+        cfg = json.loads(read(self.settings))
+        cfg["hooks"]["SessionStart"].append({"hooks": [{"type": "command", "command": "later.sh"}]})
+        write(self.settings, json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
+        self.assertEqual(self.sync("--check").returncode, 0)  # in place: no false drift
+        self.sync()
+        cmds = [h["command"] for e in json.loads(read(self.settings))["hooks"]["SessionStart"] for h in e["hooks"]]
+        self.assertEqual([("nousfx-drift.py" in c, c == "later.sh") for c in cmds], [(True, False), (False, True)])
+
+    def test_windows_command_uses_python_and_powershell(self):
+        self.sync("--platform", "windows")
+        hook = self.drift_entries()[0]["hooks"][0]
+        self.assertTrue(hook["command"].startswith('python -I -B "'), hook["command"])
+        self.assertEqual(hook["shell"], "powershell")
+
+    def test_drift_hook_is_not_copied_for_agy(self):
+        self.sync("--tools", "claude,agy")
+        for base, _, files in os.walk(os.path.join(self.home, ".gemini")):
+            self.assertNotIn("nousfx-drift.py", files, base)
+
+    def test_second_run_changes_nothing_and_check_is_clean(self):
+        self.sync()
+        before = self.snapshot()
+        self.assertEqual(self.sync().returncode, 0)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.sync("--check").returncode, 0)
+
+    def test_summary_is_one_json_line_with_counts(self):
+        self.sync()
+        write(self.rules, "hand edit\n")
+        r = self.sync("--check", "--summary")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        lines = r.stdout.strip().splitlines()
+        self.assertEqual(len(lines), 1, r.stdout)
+        counts = json.loads(lines[0])
+        self.assertEqual(counts["files"], 1)
+        self.assertEqual(set(counts), {"files", "skills", "outside"})
+
+    def test_summary_when_clean_exits_zero_with_zero_counts(self):
+        self.sync()
+        r = self.sync("--check", "--summary")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1]), {"files": 0, "skills": 0, "outside": 0})
+
+    def test_summary_without_check_is_a_usage_error(self):
+        self.assertEqual(self.sync("--summary").returncode, 2)
 
 
 if __name__ == "__main__":
