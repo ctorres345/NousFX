@@ -4,7 +4,7 @@ A second reviewer catches one model's blind spots. Every finding it raises is ch
 
 ## The wrapper and its exit code
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/via_second_opinion.py" --run-dir <run_dir> --shot <png> [--shot <png> ...] --brief "<one line>"
+python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_second_opinion.py" --run-dir <run_dir> --shot <png> [--shot <png> ...] --brief "<one line>"
 ```
 
 | Exit | Meaning | What you do |

@@ -54,7 +54,7 @@ class ViaSetupTest(unittest.TestCase):
 
     def run_setup(self, *args, **extra_env):
         env = {"PATH": self.bin, **th.env(self.home), **extra_env}
-        return subprocess.run([sys.executable, SCRIPT, *args], env=env, capture_output=True, text=True)
+        return subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, *args], env=env, capture_output=True, text=True)
 
     def report(self, *args):
         r = self.run_setup(*args)
@@ -172,7 +172,7 @@ class ViaSetupTest(unittest.TestCase):
         env = {"PATH": self.bin, **th.env(self.home)}
         folder = os.path.join(self.home, ".config", "nousfx")  # a config must live inside the anchor
         os.makedirs(folder)
-        r = subprocess.run([sys.executable, SCRIPT, "--config", "via.json"], env=env, cwd=folder,
+        r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "--config", "via.json"], env=env, cwd=folder,
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(os.path.exists(os.path.join(folder, "via.json")))

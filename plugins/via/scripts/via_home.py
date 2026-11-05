@@ -2,8 +2,14 @@
 
 The anchor is ~/.config/nousfx. The home directory comes from the system user record, never from $HOME,
 and nothing in the environment can move the anchor. A config must be a regular file (not a symlink) inside the
-anchor, and the anchor must not sit inside a git work tree, so a repo cannot allow-list itself.
-The old ~/.claude/via.json is read as a fallback for one release and copied once by `migrate`.
+anchor, and the anchor must not sit inside a git work tree, so a repo cannot allow-list itself. The work-tree check fails closed:
+only a clean "true"/"false" or a clean "not a git repository" answer passes; any other git outcome is refused.
+The old ~/.claude/via.json is read as a fallback for one release and copied once by `migrate`, and it gets the
+same work-tree check (a dotfiles repo pulled from a remote must not be able to allow-list a project).
+
+Callers must run the scripts as `python3 -I -B`, so PYTHONPATH, user site and sitecustomize (which a repo's
+committed .claude/settings.json `env` block could set) cannot patch pwd and move the anchor. Out of scope: PATH.
+A hostile PATH can swap `python3` or `git` itself, and that is outside what this module can defend.
 """
 import os
 import pwd
@@ -45,12 +51,19 @@ def _inside_git_worktree(directory):
             break
         directory = parent
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["LC_ALL"] = "C"  # the "not a git repository" message is matched below
     try:
         r = subprocess.run(["git", "-C", directory, "rev-parse", "--is-inside-work-tree"],
                            capture_output=True, text=True, timeout=10, env=env)
     except (OSError, subprocess.SubprocessError):
         raise Refused("cannot run git to check that %s is outside a work tree" % directory)
-    return r.returncode == 0 and r.stdout.strip() == "true"
+    answer = r.stdout.strip()
+    if r.returncode == 0 and answer in ("true", "false"):
+        return answer == "true"
+    if r.returncode == 128 and "not a git repository" in r.stderr:
+        return False
+    # Anything else (git missing, dubious ownership, a corrupt repo, odd output) is doubt: refuse.
+    raise Refused("git could not say whether %s is inside a work tree" % directory)
 
 
 def validate(path, root, git_check=True):
@@ -74,7 +87,7 @@ def config_path(explicit=None):
     if not explicit and not os.path.lexists(path):
         old = legacy_config()
         if os.path.lexists(old):
-            validate(old, legacy_root(), git_check=False)
+            validate(old, legacy_root())
             return old
     return path
 
@@ -85,7 +98,7 @@ def migrate():
     validate(new, anchor())
     if os.path.lexists(new) or not os.path.lexists(old):
         return "none"
-    validate(old, legacy_root(), git_check=False)
+    validate(old, legacy_root())
     with open(old) as f:
         text = f.read()
     folder = os.path.dirname(new)

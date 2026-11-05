@@ -11,7 +11,7 @@ Look at your loaded tools and skill list. Decide:
 
 ## 2. Run the doctor
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/via_setup.py" --atlassian <present|missing> --figma <authorized|needs-auth|missing> --browser <chrome|builtin|none> [--skills <comma list>]
+python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_setup.py" --atlassian <present|missing> --figma <authorized|needs-auth|missing> --browser <chrome|builtin|none> [--skills <comma list>]
 ```
 Substitute the real plugin path for `${CLAUDE_PLUGIN_ROOT}` in the command, because the variable is not set inside Bash. The script detects Gemini (key source only, never the key), the Obsidian vault, simulators and emulators, then creates or refreshes `~/.config/nousfx/via.json`.
 
