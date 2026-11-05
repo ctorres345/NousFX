@@ -1,0 +1,12 @@
+# Personal rules (local, never committed)
+# Copy to ~/.config/nousfx/local.md and edit. Sync appends this file last.
+
+# How to explain things to me
+- <your preferences for answer style, for example: lead with the answer, then short bullets>
+
+# Tickets and branches
+- Branch prefix: <your-prefix>, so a ticket branch is `<your-prefix>/<TICKET-KEY>`.
+- Tracker: <your tracker and project key>.
+
+# Docs voice
+- <for example: write READMEs in first person>
