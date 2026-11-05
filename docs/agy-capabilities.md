@@ -9,7 +9,7 @@ Sources: agy's built-in docs in `~/.gemini/antigravity-cli/builtin/skills/agy-cu
 | Area | Claude Code | agy | Evidence |
 |---|---|---|---|
 | Global rules | `~/.claude/CLAUDE.md` | `~/.gemini/config/rules/AGENTS.md` (also `GEMINI.md` or `AGENTS.md` in any folder up to the repo root) | **ran**: agy quoted the first heading of my global file |
-| Skills folder | `~/.claude/skills/*` | **not** `~/.agents/skills`. Declared in `skills.json` (see below) | **ran**: 3 skills in `~/.agents/skills`, agy saw none |
+| Skills folder | `~/.claude/skills/*` | **not** `~/.agents/skills`. Either declared in `skills.json`, or placed in `~/.gemini/config/skills/<name>/` (see below) | **ran**: 3 skills in `~/.agents/skills`, agy saw none. The `config/skills/` folder is **docs** only |
 | Follows symlinked skills | yes | yes | **ran** |
 | Claude-only skill fields (`disable-model-invocation`, `argument-hint`) | used | accepted, no warning, skill loads | **ran** |
 | Hooks | `settings.json` PreToolUse | `hooks.json`, `PreToolUse` can `deny` | **ran** (project level) |
@@ -19,7 +19,7 @@ Sources: agy's built-in docs in `~/.gemini/antigravity-cli/builtin/skills/agy-cu
 
 ## Rules
 
-- Global file: `~/.gemini/config/rules/AGENTS.md`. Mine already exists and holds my own Gemini orchestration rules (hand-written). **Sync must never overwrite it.** It follows the same collision rule as skills.
+- Global file: `~/.gemini/config/rules/AGENTS.md`. Mine already exists and holds my own Gemini orchestration rules (hand-written). **Sync must never overwrite it.** The rule is the one sync already uses for skills: a file sync did not create is left alone unless I pass `--yes-replace`, and it is backed up first.
 - Limits (**docs**): 24,000 bytes per file; always-on and global rules share a 20,000-token budget, and over-budget rules are cut to file-path pointers.
 - Standalone `GEMINI.md` and `AGENTS.md` files (and a plugin's `rules/AGENTS.md`) take no frontmatter (**docs**). Files in `.agents/rules/` may (not checked).
 
@@ -34,7 +34,9 @@ Sources: agy's built-in docs in `~/.gemini/antigravity-cli/builtin/skills/agy-cu
 
 - `include_only` works (**ran**: `handoff` was left out when not listed). `exclude` is **docs** only, not run.
 - `~/` in `path` is **not** expanded, although the docs say it is (**ran**: the same folder worked with the absolute path and failed with `~/`). Sync must write absolute paths. I only tested this in a project-level `skills.json`; the global file is untested.
-- **Priority caveat (docs):** agy ranks skill sources workspace, then project `skills.json`, then global discovery in `~/.gemini/config/`, then built-ins, and **global declared configs last**. On a name clash, a skill from the global `skills.json` loses to all of those. Synced skills may be shadowed by built-in or plugin skills with the same name.
+- A scanned folder is one level deep (**docs**).
+- **Second option (docs, not run):** a skill folder placed directly in `~/.gemini/config/skills/<name>/` is a standalone global skill (`plugin/SKILL.md`). It counts as "global discovery", which ranks **above** built-ins. Whether a symlinked folder there works is untested (symlinks were only confirmed at project level).
+- **Priority caveat (docs):** agy ranks skill sources: 1 workspace, 2 project `skills.json`, 3 global discovery in `~/.gemini/config/`, 4 built-ins, 5 **global `skills.json` last**. On a name clash, a skill from the global `skills.json` is shadowed by any same-named skill from sources 1 to 4 (workspace, project `skills.json`, loose skills or installed plugins in `~/.gemini/config/`, built-ins).
 - A folder in `entries` is scanned one level deep, so no per-skill links are needed. Claude's links stay as they are.
 
 ## Hooks
@@ -50,10 +52,10 @@ Project-level `.agents/hooks.json`, tested:
 - Payload on stdin (sample, trimmed): `toolCall.name` is `run_command`, `toolCall.args.CommandLine` is the command, plus `workspacePaths` (list), `conversationId`, `lastUserInput`, `modelName`, `stepIdx`, `transcriptPath`.
 - There is **no top-level `cwd` field**. In my run `toolCall.args` held only `CommandLine`, `IsDaemon`, `WaitMsBeforeAsync` and `toolSummary`, so no per-command folder was given. `workspacePaths[0]` is the workspace root, **not proven to be the folder the command runs in**. The hook's own working directory is the folder holding `hooks.json` (**docs**). NFX-44 must decide how to pick the folder to check (prefer a per-command argument if agy ever sends one, else the workspace root) and how to act with several workspace paths. It should fail closed if unsure.
 - Output is JSON on stdout. Decisions: `allow`, `deny`, `ask`, `force_ask`.
-- A hook that **crashes** (exit 1) makes the tool call error: `JSON hook ... failed: command failed: exit status 1` (**ran**). That fails closed.
+- A hook that **crashes** (exit 1) makes the tool call error: `JSON hook ... failed: command failed: exit status 1` (**ran**). That fails closed. A hook that **times out** is untested (default 30 s): NFX-44 must check whether a timeout errors the call or falls back to a prompt.
 - A hook that exits 0 with **no output** makes no decision. agy falls back to its normal permission prompt (**ran**; headless mode auto-denied). So the adapter must print an explicit `deny` to block, never rely on silence.
-- The tool name for shell is `run_command` (the matcher is a regex on it).
-- Hooks run synchronously. Only `type: "command"` exists.
+- The tool name for shell is `run_command` (**ran**). The matcher is a regex on the tool name (**docs**).
+- Hooks run synchronously. Only `type: "command"` exists (**docs**).
 - agy's own command guardrails mention `hooks.json` and `~/.gemini/config/` as sensitive targets (seen in strings of the `agy` binary, not in a doc). Expect a permission prompt when sync or an agent edits them.
 
 ## MCP (docs only)
@@ -76,7 +78,7 @@ Project-level `.agents/hooks.json`, tested:
 | Plan said | Now |
 |---|---|
 | Rules go to `~/.gemini/GEMINI.md` | `~/.gemini/config/rules/AGENTS.md`, and my own file is already there: collision rule applies |
-| agy reads `~/.agents/skills` | It does not. Write a `skills.json` entry with an absolute path (lowest priority in the global file; consider the project-level file or a plugin if names clash) |
+| agy reads `~/.agents/skills` | It does not. Either write a `skills.json` entry with an absolute path (lowest priority in the global file), or link skills into `~/.gemini/config/skills/` (ranks above built-ins; untested). NFX-42 should test both and pick one |
 | agy needs hook support checked | Hooks work. The gate adapter is a small `hooks.json` entry plus a script that maps the payload to `check` |
 | agy has no subagents, run work inline | agy lists plugin subagents. Keep the inline fallback until a subagent call is tested (NFX-43) |
 | MCP via `serverUrl` or a bridge | `url` (Streamable HTTP) or `command`; bridge only for legacy SSE |
