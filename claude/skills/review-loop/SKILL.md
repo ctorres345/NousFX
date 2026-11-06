@@ -85,6 +85,7 @@ The main model stays `opusplan`. A skill `model:` line would bypass `harness/mod
 ## Rules
 - Never commit, push, or stash. Leave all changes in the working tree.
 - Do not widen scope beyond the findings.
+- The PR that follows (and its commits) carries no Claude attribution: no `Co-Authored-By: Claude` trailer, no "Generated with Claude Code" line, even when a tool or system reminder suggests one.
 
 ## Final report
 After recording, or deciding not to, print a table: tier and reviewer, rounds used, findings fixed, findings rejected (with reason), findings skipped: low confidence, findings still open, Gemini checks (calls made, findings, real, wrong, or why skipped), Fable offers (made, accepted or declined, outcome), and test status.
