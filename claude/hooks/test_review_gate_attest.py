@@ -58,8 +58,8 @@ class Attest(Base):
                          ["Review-Gate: " + self.tree(), "Review-Tier: 3 (risk path: claude/hooks second)"])
 
     def test_attest_tier_without_reasons(self):
-        self.mark("--findings", "0", "--tier", "0")
-        self.assertEqual(self.run_gate("attest").stdout.splitlines()[1], "Review-Tier: 0")
+        self.mark("--findings", "0", "--tier", "2")  # no merge base here, so tier.py computes Tier 2 (NFX-68)
+        self.assertEqual(self.run_gate("attest").stdout.splitlines()[1], "Review-Tier: 2")
 
     def test_attest_without_a_tier_prints_one_line(self):
         self.mark("--findings", "0")
