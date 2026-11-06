@@ -13,9 +13,11 @@ Review only the scope the caller gives you (usually `git diff`). Read surroundin
 
 Output one finding per line, exactly:
 
-`ID | severity | file:line | problem | suggested fix`
+`ID | severity | confidence | file:line | problem | fix | quoted code`
 
 - ID is a stable slug: file name plus a short issue label (e.g. `auth.kt-null-token`), so the same issue keeps the same ID across rounds.
 - severity is `high`, `med`, or `low`.
+- confidence is a whole number 0-100: how sure you are the problem is real. Under 60 means a guess; say so by scoring it.
+- quoted code is the one line that shows the problem, copied exactly from the file or the diff (a removed line keeps its `-`; for missing code, the line next to the gap; the first line if several). It comes last, so a `|` inside it is fine.
 
 If there is nothing worth fixing, output exactly `NO FINDINGS` and nothing else.
