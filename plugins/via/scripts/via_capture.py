@@ -9,12 +9,16 @@ answers with a page (a dev server). Each screen gets four shots in RUN_DIR: NAME
 NAME is lowercase letters, digits and hyphens. RUN_DIR is a folder made by `via_run.py init`.
 Stdout is JSON: {"browser": ..., "screenshots": [...]}, with entries in the run record's shape.
 
-Masking: the browser never loads the page directly. Limit: a form field inside a web component's shadow DOM
-is not reached by the style, so it is not blurred, and neither is a frame that loads an absolute URL straight from the dev server.
+Masking: the browser never loads the page directly.
 A shot is never written over an existing file: reviewed shots stay what they were when they were reviewed. A mask server on 127.0.0.1 serves project files (visible
 ones only) or relays your dev server, and adds a style that blurs inputs, textareas, email and phone links,
-[data-via-redact] and every --redact-selector. On a relayed page it also drops the Content-Security-Policy header, so the
-style can apply. Every shot is marked "redacted": true. The mask is a first layer: Claude still looks at each shot
+[data-via-redact] and every --redact-selector. A script placed first in the head of an HTML page copies that style into
+every shadow root (open, closed or declarative) and cancels a navigation to another origin. On a relayed page, absolute
+URLs to the dev server in HTML, JavaScript and JSON are rewritten to the mask server, and every HTML page is sent with
+a policy that lets it frame and submit forms only to the mask server (so a third-party frame is blocked). The dev
+server's own Content-Security-Policy header is replaced by that policy, so the style can apply. Every shot is marked
+"redacted": true. Limits that remain: a closed shadow root made by markup (shadowrootmode="closed") is out of reach, SVG
+and XHTML pages get the style but not the script, and a browser without the Navigation API does not cancel navigation. The mask is a first layer: Claude still looks at each shot
 and sets its `review` (kept or dropped) before anything leaves the run folder.
 
 Browser: $VIA_CHROME if set (and then only that), else Google Chrome or Chromium on macOS, else
@@ -70,6 +74,27 @@ HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriza
               "transfer-encoding", "upgrade", "content-length", "content-encoding", "content-security-policy",
               "content-security-policy-report-only"}
 PROBE_TIMEOUT = 10
+# What a mask-server page may frame or submit to: only the mask server. It replaces the dev server's own policy.
+FRAMING_POLICY = "frame-src 'self'; form-action 'self'"
+REWRITE_KINDS = ("text/html", "application/xhtml+xml", "text/javascript", "application/javascript",
+                 "application/x-javascript", "application/json")
+# Runs first in the page. It puts the mask rules into every shadow root, open or closed (the page's own style does not
+# reach inside one), and cancels a navigation to another origin, so a script cannot walk around the mask server.
+GUARD_JS = (
+    "(function(){var css=%s;"
+    "function adopt(r){try{var s=new CSSStyleSheet();s.replaceSync(css);r.adoptedStyleSheets=r.adoptedStyleSheets.concat([s]);}"
+    "catch(e){var t=document.createElement('style');t.textContent=css;r.appendChild(t);}}"
+    "var seen=new WeakSet(),attach=Element.prototype.attachShadow;"
+    "Element.prototype.attachShadow=function(i){var r=attach.call(this,i);seen.add(r);adopt(r);return r;};"
+    "function walk(n){if(n.nodeType!==1&&n.nodeType!==11)return;"
+    "if(n.shadowRoot&&!seen.has(n.shadowRoot)){seen.add(n.shadowRoot);adopt(n.shadowRoot);walk(n.shadowRoot);}"
+    "for(var c=n.firstChild;c;c=c.nextSibling)walk(c);}"
+    "new MutationObserver(function(ms){ms.forEach(function(m){m.addedNodes.forEach(walk);});})"
+    ".observe(document,{childList:true,subtree:true});"
+    "document.addEventListener('DOMContentLoaded',function(){walk(document);});"
+    "if(window.navigation){navigation.addEventListener('navigate',function(e){try{"
+    "if(new URL(e.destination.url).origin!==location.origin&&e.cancelable)e.preventDefault();}"
+    "catch(x){if(e.cancelable)e.preventDefault();}});}})();")
 PAGE_SUFFIXES = (".html", ".htm", ".svg")
 
 
@@ -133,6 +158,48 @@ def mask_style(extra):
     return "<style data-via-mask=\"\">%s</style>" % "\n".join(rule % s for s in (", ".join(MASKED),) + tuple(extra))
 
 
+def mask_guard(style):
+    """The guard script for a mask style: the style's rules go into every shadow root. Bytes, ready to insert."""
+    css = re.search(r"<style[^>]*>(.*)</style>", style, re.DOTALL).group(1)
+    # json.dumps gives a JS string; \u003c keeps a "<" in a selector from ever closing the script.
+    return ("<script data-via-guard=\"\">%s</script>" % (GUARD_JS % json.dumps(css).replace("<", "\\u003c"))).encode()
+
+
+def dev_server_pattern(upstream):
+    """Matches an absolute URL to the dev server itself, under any loopback spelling, with plain, protocol-relative
+    or JSON-escaped slashes. A longer port or host name does not match."""
+    u = urllib.parse.urlsplit(upstream)
+    hosts = LOOPBACK if u.hostname in LOOPBACK else {u.hostname}
+    names = "|".join(re.escape(h) if ":" not in h else r"\[%s\]" % re.escape(h) for h in sorted(hosts))
+    port = u.port or (443 if u.scheme == "https" else 80)
+    explicit = r":%d" % port if u.port else ""
+    return re.compile((r"(?:%s:)?(\\?/\\?/)(?:%s)%s(?![\w.@:\-])" % (re.escape(u.scheme), names, explicit)).encode(),
+                      re.IGNORECASE)
+
+
+def through_the_mask(body, content_type, pattern, origin):
+    """Absolute URLs to the dev server in a page, script or JSON point at the mask server instead, so a frame,
+    a link or a script navigation cannot load the dev server around the mask."""
+    if content_type.split(";")[0].strip().lower() not in REWRITE_KINDS:
+        return body
+    escaped = origin.replace("/", "\\/")
+    return pattern.sub(lambda m: (escaped if m.group(1).startswith(b"\\") else origin).encode(), body)
+
+
+def put_guard(body, guard):
+    """The guard first in the head; else before <body; else after the doctype (before it would switch on quirks mode)."""
+    for pattern in (rb"<head(?=[\s>])[^>]*>", None, rb"^\s*<!doctype[^>]*>"):
+        if pattern is None:
+            at = re.search(rb"<body\b", body, re.IGNORECASE)
+            if at:
+                return body[:at.start()] + guard + body[at.start():]
+            continue
+        at = re.search(pattern, body, re.IGNORECASE)
+        if at:
+            return body[:at.end()] + guard + body[at.end():]
+    return guard + body
+
+
 def same_server(location, upstream):
     """True when an absolute Location points at the dev server itself, under any loopback spelling."""
     a, b = urllib.parse.urlsplit(location), urllib.parse.urlsplit(upstream)
@@ -145,7 +212,7 @@ class Unmaskable(Exception):
     pass
 
 
-def with_mask(body, content_type, style):
+def with_mask(body, content_type, style, guard=b""):
     """The page bytes with the mask style added. Other files (scripts, images) pass through unchanged.
     Raises Unmaskable for a page the mask cannot be placed in, so a shot of it is never kept."""
     kind = content_type.split(";")[0].strip().lower() or "text/html"  # with no type, Chrome sniffs HTML
@@ -162,7 +229,8 @@ def with_mask(body, content_type, style):
         body = META_CSP_RE.sub(b"", body)  # a meta CSP could forbid the inline style
         # In the head, where a framework that rebuilds the body leaves it alone.
         found = re.search(rb"</head\s*>", body, re.IGNORECASE) or re.search(rb"<body\b", body, re.IGNORECASE)
-        return body + block if not found else body[:found.start()] + block + body[found.start():]
+        body = body + block if not found else body[:found.start()] + block + body[found.start():]
+        return put_guard(body, guard) if guard else body
     return body
 
 
@@ -176,6 +244,9 @@ class MaskHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         for name, value in headers:
             self.send_header(name, value)
+        if any(n.lower() == "content-type" and v.split(";")[0].strip().lower() in ("text/html", "application/xhtml+xml")
+               for n, v in headers):
+            self.send_header("Content-Security-Policy", FRAMING_POLICY)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -219,7 +290,7 @@ class MaskHandler(http.server.BaseHTTPRequestHandler):
         with open(path, "rb") as f:
             body = f.read()
         try:
-            body = with_mask(body, kind, self.server.style)
+            body = with_mask(body, kind, self.server.style, self.server.guard)
         except Unmaskable as e:
             return self.fail(str(e))
         self.reply(200, [("Content-Type", kind)], body)
@@ -270,7 +341,8 @@ class MaskHandler(http.server.BaseHTTPRequestHandler):
                     return self.fail(str(e))
                 headers.append((name, value))
         try:
-            body = with_mask(body, kind, self.server.style)
+            body = through_the_mask(body, kind, self.server.pattern, self.server.origin)
+            body = with_mask(body, kind, self.server.style, self.server.guard)
         except Unmaskable as e:
             return self.fail(str(e))
         self.reply(status, headers, body)
@@ -286,6 +358,8 @@ def start_mask(style, root=None, upstream=None):
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MaskHandler)
     server.daemon_threads = True
     server.style, server.root, server.upstream, server.errors = style, root, upstream, []
+    server.guard = mask_guard(style)
+    server.pattern = dev_server_pattern(upstream) if upstream else None
     server.origin = "http://127.0.0.1:%d" % server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server

@@ -35,7 +35,7 @@ def get(u, path, host=None):
     c = http.client.HTTPConnection(u.hostname, u.port, timeout=10)
     c.request("GET", path, headers={"Host": host} if host else {})
     r = c.getresponse()
-    return r.status, r.getheader("Location"), r.read().decode("utf-8", "replace")
+    return r.status, r.getheader("Location"), r.read().decode("utf-8", "replace"), r.getheader("Content-Security-Policy")
 
 def note(entry):
     with open(log_path + ".bodies", "a") as f:
@@ -44,13 +44,13 @@ def note(entry):
 u = urllib.parse.urlsplit(args[-1])
 if u.scheme == "http":
     path = (u.path or "/") + ("?" + u.query if u.query else "")
-    status, _, body = get(u, path)
-    note({"url": args[-1], "status": status, "body": body})
+    status, _, body, csp = get(u, path)
+    note({"url": args[-1], "status": status, "body": body, "csp": csp})
     for probe in filter(None, os.environ.get("VIA_FAKE_PROBE", "").split(",")):
-        status, location, body = get(u, probe)
-        note({"probe": probe, "status": status, "location": location, "body": body})
+        status, location, body, csp = get(u, probe)
+        note({"probe": probe, "status": status, "location": location, "body": body, "csp": csp})
 if u.scheme == "http" and os.environ.get("VIA_FAKE_HOST"):
-    status, _, body = get(u, "/index.html", host=os.environ["VIA_FAKE_HOST"])
+    status, _, body, _ = get(u, "/index.html", host=os.environ["VIA_FAKE_HOST"])
     note({"probe": "host", "status": status, "location": None, "body": body})
 if os.environ.get("VIA_FAKE_HANG"):
     child = subprocess.Popen(["sleep", "300"])
@@ -71,6 +71,22 @@ class Page(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         port = self.server.server_address[1]
+        if self.path in ("/abs", "/app.js", "/app.json"):
+            kind, body = {
+                "/abs": ("text/html", "<!doctype html><html><head><title>t</title></head><body>"
+                         "<iframe src=\"http://localhost:%(p)d/inner\"></iframe>"
+                         "<a href='//127.0.0.1:%(p)d/x'>x</a><a href='http://example.com:%(p)d/y'>y</a>"
+                         "<a href='http://localhost:%(p)d0/z'>z</a><a href='http://localhost:%(p)d.evil.test/w'>w</a>"
+                         "</body></html>"),
+                "/app.js": ("text/javascript", "location.href = 'http://localhost:%(p)d/next'; "
+                            "var j = 'http:\\/\\/localhost:%(p)d\\/esc';"),
+                "/app.json": ("application/json", '{"next": "http://[::1]:%(p)d/n"}')}[self.path]
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Security-Policy", "default-src 'none'")  # the dev server's own policy
+            self.end_headers()
+            self.wfile.write((body % {"p": port}).encode())
+            return
         if self.path == "/untyped":
             self.send_response(200)  # no Content-Type: Chrome sniffs HTML
             self.end_headers()
@@ -394,6 +410,69 @@ class ViaCaptureTest(unittest.TestCase):
         self.ok("home=index.html")
         body = self.pages()[0]["body"]
         self.assertLess(body.index("data-via-mask"), body.index("</head>"))
+
+    # --- NFX-31: the three ways around the mask ---
+
+    def test_a_shadow_dom_guard_is_placed_first_in_the_head_so_it_runs_before_the_page_scripts(self):
+        write(os.path.join(self.repo, "index.html"),
+              "<!doctype html><html><head><title>t</title><script>customElements.define('x-a', class {})</script>"
+              "</head><body><x-a></x-a></body></html>")
+        self.ok("home=index.html")
+        body = self.pages()[0]["body"]
+        self.assertTrue(body.startswith("<!doctype html>"), "the doctype must stay first")
+        self.assertIn("attachShadow", body)
+        self.assertIn("adoptedStyleSheets", body)
+        self.assertLess(body.index("attachShadow"), body.index("customElements.define"))
+        self.assertIn("data-via-redact", body[body.index("attachShadow"):])  # the guard carries the same rules
+
+    def test_the_guard_goes_after_the_doctype_when_a_page_has_no_head_or_body(self):
+        self.ok("home=" + self.serve() + "/untyped")
+        body = self.pages()[0]["body"]
+        self.assertTrue(body.startswith("<!doctype html>"), "a script before the doctype would switch on quirks mode")
+        self.assertIn("attachShadow", body)
+
+    def test_the_guard_carries_extra_selectors_into_shadow_roots_and_cannot_close_its_script(self):
+        self.ok("home=index.html", extra_args=["--redact-selector", ".account-email"])
+        body = self.pages()[0]["body"]
+        guard = body[body.index("attachShadow") - 400:body.index("</script>")]
+        self.assertIn(".account-email", guard)
+        self.assertEqual(body.count("</script>"), 1)
+
+    def test_a_script_cannot_navigate_the_page_off_the_mask_origin(self):
+        self.ok("home=index.html")
+        self.assertIn("navigation.addEventListener", self.pages()[0]["body"])
+
+    def test_absolute_urls_to_the_dev_server_are_rewritten_to_the_mask_server(self):
+        upstream = self.serve()
+        port = upstream.rsplit(":", 1)[1]
+        self.ok("home=" + upstream + "/abs")
+        body = self.pages()[0]["body"]
+        mask = self.pages()[0]["url"].rsplit("/abs", 1)[0]
+        self.assertNotIn("localhost:" + port + "/inner", body)
+        self.assertIn('<iframe src="%s/inner">' % mask, body)
+        self.assertIn("<a href='%s/x'>" % mask, body)  # a protocol-relative URL too
+        self.assertIn("http://example.com:%s/y" % port, body)  # another host is left alone
+        self.assertIn("localhost:%s0/z" % port, body)  # so are a longer port and a longer host name
+        self.assertIn("localhost:%s.evil.test/w" % port, body)
+
+    def test_absolute_dev_server_urls_in_scripts_and_json_are_rewritten_too(self):
+        upstream = self.serve()
+        port = upstream.rsplit(":", 1)[1]
+        self.ok("home=" + upstream + "/", extra_env={"VIA_FAKE_PROBE": "/app.js,/app.json"})
+        mask = self.pages()[0]["url"].rstrip("/")
+        js, data = self.probes()["/app.js"]["body"], self.probes()["/app.json"]["body"]
+        self.assertIn("location.href = '%s/next'" % mask, js)
+        self.assertIn(mask.replace("/", "\\/") + "\\/esc", js)  # the JSON-escaped spelling
+        self.assertNotIn("localhost:" + port, js)
+        self.assertIn('"%s/n"' % mask, data)
+
+    def test_a_page_may_not_frame_or_submit_to_another_origin(self):
+        policy = "frame-src 'self'; form-action 'self'"
+        self.ok("home=" + self.serve() + "/abs", extra_env={"VIA_FAKE_PROBE": "/app.js"})
+        self.assertEqual(self.pages()[0]["csp"], policy)  # replaces the dev server's own policy
+        self.assertIsNone(self.probes()["/app.js"]["csp"])  # only a document is framed, so a script gets none
+        self.ok("home=index.html", run_dir=self.via_run("init")["run_dir"])
+        self.assertEqual(self.pages()[-1]["csp"], policy)  # a project file too
 
     def test_a_compressed_dev_server_reply_fails_the_capture_instead_of_shooting_garbage(self):
         r = self.capture("home=" + self.serve() + "/gz")
