@@ -68,6 +68,8 @@ def project_key(project):
     if scheme:
         if scheme.group(1).lower() == "file" or not scheme.group(2):
             return None  # a file URL names no host, so it cannot be the allow-listed project
+        if re.search(r"[\\%\s\x00-\x1f]", scheme.group(2)):
+            return None  # backslash, %-escape or space in the authority: parsers disagree on the host, so fail closed
         host = re.sub(r":\d*$", "", scheme.group(2).rpartition("@")[2])
         path = scheme.group(3)
     elif scp:
@@ -75,8 +77,8 @@ def project_key(project):
     else:
         return None  # a local path names no host
     parts = [p for p in path.split("/") if p]
-    if not host or len(parts) < 2:
-        return None
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host) or len(parts) < 2:
+        return None  # an odd host (backslash, space, %, brackets) could read as another host elsewhere: fail closed
     return ("%s/%s/%s" % (host, parts[-2], parts[-1])).lower()
 
 

@@ -298,6 +298,14 @@ class ViaOutboundTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertNotIn('"allowed": true', r.stdout)
 
+    def test_a_remote_with_an_odd_host_names_no_project(self):
+        self.write_config({"github.com/" + KEY: {"destinations": ["gemini"]}})
+        for url in ("https://evil.com\\@github.com/%s" % KEY, "https://evil.com%%2f@github.com/%s" % KEY,
+                    "https://[::1]/%s" % KEY):
+            with self.subTest(url=url):
+                self.set_remote(url)
+                self.assertEqual(self.check("gemini").returncode, 20)
+
     def test_a_query_or_fragment_on_the_remote_does_not_change_the_key(self):
         self.write_config({KEY: {"destinations": ["gemini"]}})
         self.remote("https://github.com/%s.git?x=1#frag" % KEY)
