@@ -152,7 +152,7 @@ Results (a dash means not run yet; each cell gets a date when it is):
 | Tool and machine | Rules load | Skills visible | MCP works | Gate blocks a PR |
 |---|---|---|---|---|
 | Claude Code, Mac (temp home) | ok 2026-11-06 (4,192 B file, generated header) | ok 2026-11-06 (45 linked) | n/a: Claude uses its own Atlassian connector; `.claude.json` gets only servers listed for it | ok 2026-11-06 (exit 2; `--check` clean) |
-| Claude Code, Mac (live session) | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) |
+| Claude Code, Mac (live session) | ok 2026-11-06 (global rules in the session are the generated file; `--check` exit 0, no drift) | ok 2026-11-06 (18 replaced skills are links into `~/.agents/skills`; skill list shows them; the other skills were not re-counted) | n/a: Claude uses its own Atlassian connector; it answered in the live session 2026-11-06 | ok 2026-11-06 (live hook denied `gh pr create` on an unreviewed `cesar/NFX-1` scratch branch; a `cd` to a variable path is also denied). `/agents` and `review-loop` end to end: pending (NFX-53) |
 | agy, Mac (temp home) | ok 2026-11-06 (plugin `rules` written) | ok 2026-11-06 (45 linked) | file written 2026-11-06 (`mcp_config.json` has atlassian); live answer pending (NFX-53) | ok 2026-11-06 (`agy gate self-test passed`); live deny pending (NFX-53) |
 | agy, Mac (live session) | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) |
 | Claude Code, Windows | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) |

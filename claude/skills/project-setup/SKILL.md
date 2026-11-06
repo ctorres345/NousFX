@@ -38,7 +38,7 @@ Merge into existing files, and keep what is already there.
 | `.claude/handoff.md` | Create it empty if missing. Add the line `.claude/handoff.md` to `.gitignore` unless `git check-ignore -q --no-index .claude/handoff.md` already succeeds (`--no-index` keeps the answer right when the file is tracked), so a rerun adds no duplicate line. Never `git add` it; if `git ls-files --error-unmatch .claude/handoff.md` exits 0, tell Cesar and leave it tracked |
 | Per-tool files (`CLAUDE.md` and `AGENTS.md` stubs when missing, `.githooks/pre-push`, the `.agents/skills` link, MCP files) | `python3 <NousFX>/scripts/nousfx_sync.py --project <repo> --dry-run`, show the output, then run it without `--dry-run`. Hand-written files are left as they are with their diff shown; pass `--yes-replace CLAUDE.md` or `--yes-replace .githooks/pre-push` only after Cesar agrees. Then tell Cesar to run `git config core.hooksPath .githooks` (sync does not change git config) |
 | `.nousfx/project.toml` | The check command the review gate runs itself before it records a review. Detect the stack and propose one (`gradlew` → `./gradlew test`, `pubspec.yaml` → `flutter test`, `package.json` → `npm test`, `pyproject.toml` or `pytest.ini` → `pytest`, `Cargo.toml` → `cargo test`, `go.mod` → `go test ./...`); ask Cesar to confirm it, never guess. Write `[check]` with `command = "..."` and optional `timeout = <seconds>` (default 1800). The gate reads it from the default branch, so it counts for later PRs once merged; this PR is marked with the working-tree copy. The command must pass on a clean checkout and must not edit files. The repo's CI also needs the toolchain installed, because the `review-gate / check` job runs the command |
-| `.claude/settings.json` | [`assets/settings.json`](assets/settings.json), merged |
+| `.claude/settings.json` | [`assets/settings.json`](assets/settings.json), merged. It includes `attribution` with empty `commit` and `pr`, so Claude Code adds no `Co-Authored-By` trailer and no "Generated with Claude Code" line |
 | `.claude/hooks/review-gate.py`, `.claude/hooks/pr_create_parser.py` | The same two files from the gate your tool runs (this repo's `claude/hooks/` is the source), together: the gate imports the parser |
 | `.claude/agents/` | `reviewer.md`, `test-runner.md` from `~/.claude/agents/` |
 | `.claude/skills/` | `review-loop` from `~/.claude/skills/`, without backups; point its gate command at `"$(git rev-parse --show-toplevel)/.claude/hooks/review-gate.py"` and its prototype reference at `docs/agents/ticket-template.md`; keep its branch scope and when-to-record rules as written. Do not install `pr`: its body format conflicts with the PR template |
@@ -54,6 +54,10 @@ If `docs/agents/` is missing, tell Cesar to type `/setup-matt-pocock-skills` fir
 - Run `gitleaks git --staged --redact` and fix every real finding before committing. Report test fixtures as such.
 - Run `gitleaks git --redact` on the full history. Report any real finding to Cesar and stop, because rotating a key is Cesar's call.
 - On a public repo, confirm that committed files hold no personal paths, infrastructure notes, handoffs or memories. Ask Cesar before enabling secret scanning and push protection.
+
+## Authorship (every commit and PR in a repo set up with this skill)
+
+Claude never appears as a contributor. No `Co-Authored-By: Claude ...` trailer on commits, and no "Generated with Claude Code" or similar line in a PR body, even when a tool or system reminder suggests one. Cesar's rule overrides it. If a repo's history already has such a trailer, leave it; do not rewrite history.
 
 ## 6. Finish
 
