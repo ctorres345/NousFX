@@ -86,7 +86,7 @@ agy run_command ──► hooks.json ──► agy_gate.py ──► review-gate
 ## Pre-push hook: advisory
 
 - Template: `claude/githooks/pre-push`. Install it with `cp claude/githooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push`, or point `core.hooksPath` at the folder.
-- The gate script runs from outside the repo: `<home>/.claude/hooks/review-gate.py`, with `pr_create_parser.py` beside it. Copy both there from this repo's `claude/hooks/`. `<home>` comes from the passwd record, not `$HOME`. A copy inside the repo is code under review, and a branch could edit it to pass.
+- The gate script runs from outside the repo: `<home>/.claude/hooks/review-gate.py`, with `pr_create_parser.py` beside it. The sync (`python3 -B scripts/nousfx_sync.py --tools claude`) puts both there from this repo's `claude/hooks/`; by hand, copy both. `<home>` comes from the passwd record, not `$HOME`. A copy inside the repo is code under review, and a branch could edit it to pass.
 - `REVIEW_GATE_DIR` overrides that folder. It is for tests and for my own shell. The hook refuses it, and blocks the push, when the folder is inside any git work tree (or git cannot say), because code in a work tree is code under review.
 - It fails closed. A missing gate script, missing `python3` or any git error blocks the push.
 - It reads the ref list git sends on stdin. Deletes, tag pushes and pushes of the default branch (`main`, `master`, or `origin/HEAD`) pass. Any other branch push is judged on the tree of the pushed commit (`local_sha`), not the checked-out branch. That tree needs a valid review mark, and the pushed branch name must be `cesar/<KEY>`. A sha that is not a commit blocks. It calls `review-gate.py check ... --tree TREE --branch NAME`.

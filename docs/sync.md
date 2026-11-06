@@ -26,7 +26,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
 | `--check` | list drifted files, exit 1 on drift, write nothing |
 | `--check --summary` | the same exit code, but one JSON line of counts (`files`, `skills`, `outside`). The drift warning reads it |
 | `--restore` | put back the last backup (files that did not exist are removed) |
-| `--clean-backups` | also move old `install.sh` backups into the backup (otherwise they are only listed) |
+| `--clean-backups` | also move the `.bak-<stamp>` files the old copy-based `install.sh` left behind into the backup (otherwise they are only listed) |
 | `--yes-replace NAME` | let my skill NAME replace a folder sync does not own (moved into the backup first) |
 | `--tools claude,agy` | which tools to write. The default is `claude` only, so nothing touches `~/.gemini` until I name `agy` |
 | `--project DIR` | set up one repo (see Project mode below) |
@@ -116,7 +116,7 @@ harness/models.toml     per tool, each role -> model + effort (claude: haiku / s
 - An unknown or missing role fails the run with the agent and role named. Nothing is written.
 - `--dry-run`, `--check`, `--restore` and the backup cover these files like the rest.
 - Sync never deletes an agent file I removed from the sources.
-- The one intended difference from `claude/agents/*.md` is the generated header. The golden test in `scripts/test_nousfx_agents.py` enforces it, so the old files stay as the reference while `install.sh` still uses them.
+- The one intended difference from `claude/agents/*.md` is the generated header. The golden test in `scripts/test_nousfx_agents.py` enforces it, so the old files stay as the reference for that test.
 
 ## agy
 

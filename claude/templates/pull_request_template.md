@@ -15,6 +15,9 @@
 |---|---|
 |  |  |
 
+## What I checked myself
+<!-- Two or three sentences in your own words: what you ran or looked at yourself, and what you did not. -->
+
 ## Checklist
 - [ ] Tests and lint pass (commands in the project's CLAUDE.md)
 - [ ] `/review-loop` ran on the final diff

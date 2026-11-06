@@ -1,14 +1,34 @@
 # Runbook
 
-The steps I repeat by hand for NousFX. Each one installs into my own `~/.claude/` only; nothing here goes live for anyone else. If a step changes, update this file in the same PR.
+The steps I repeat by hand for NousFX. Each one changes my own machine only; nothing here goes live for anyone else. If a step changes, update this file in the same PR.
 
 | When | Section |
 |---|---|
 | Setting up a new machine | [Install on a new device](#install-on-a-new-device) |
-| After merging a PR that touches `claude/` or `harness/` | [Re-install after a merge](#re-install-after-a-merge) |
+| After merging a PR that touches `claude/` or `harness/` | [Update after a merge](#update-after-a-merge) |
+| Setting up one repo | [Set up one project](#set-up-one-project) |
+| After any install or sync | [Smoke checks](#smoke-checks) |
 | Installing or updating Via | [Install or update Via](#install-or-update-via) |
-| Something broke after an install | [Roll back an install](#roll-back-an-install) |
+| Something broke after a sync | [Roll back a sync](#roll-back-a-sync) |
 | About once a week | [Check token usage](#check-token-usage) |
+
+## How it fits together
+
+```
+~/Projects/NousFX (this clone)
+   │  python3 -B scripts/nousfx_sync.py        (./install.sh or .\install.ps1 run it for me)
+   ▼
+~/.claude/            rules (CLAUDE.md), agents, skills, hooks, settings.json
+~/.gemini/config/plugins/nousfx/     (agy) rules, skills, gate hook, MCP file
+~/.agents/skills/     one shared skills folder; each tool links to it
+~/.config/nousfx/     state home: my local rules, via.json allow-list, backups, pinned outside skills
+```
+
+- **Sync** is the only thing that writes those files. `install.sh` (Mac) and `install.ps1` (Windows) copy nothing themselves: they run a dry run, ask, then run the sync for real. Arguments pass through, except the modes `--check` and `--restore`, which conflict with the dry run: run those with `scripts/nousfx_sync.py` directly.
+- **Models** are mapped per role in `harness/models.toml` (`fast`, `balanced`, `strong`, `deep`). Change a model there and only the agents with that role change.
+- **State home** is `~/.config/nousfx/`. It holds `local.md`, `local.claude.md` and `local.agy.md` (mine alone, never committed), `via.json` (the outbound allow-list), `mcp-owned.json` and `backups/<stamp>/`.
+- **agy delegation and model choice** belong to my `gemini-orchestrator` plugin, not to sync. Install that plugin on each machine that runs agy.
+- The full switch list and file layout is in [docs/sync.md](sync.md).
 
 ## Install on a new device
 
@@ -18,32 +38,49 @@ The steps I repeat by hand for NousFX. Each one installs into my own `~/.claude/
    claude --version
    ```
 
-2. Clone and install:
+2. Clone:
 
    ```bash
-   git clone https://github.com/ctorres345/NousFX.git && cd NousFX && ./install.sh
+   git clone https://github.com/ctorres345/NousFX.git && cd NousFX
    ```
 
-3. Generate the rules. `install.sh` does not write them, so a new machine has none until this runs. Read the dry run, then run it for real:
+3. Put my personal rules in the state home (copy `harness/local.md.example`, or bring `local.md` from another machine). Skip this on a friend's machine.
 
    ```bash
-   python3 -B scripts/nousfx_sync.py --dry-run --tools claude
-   python3 -B scripts/nousfx_sync.py --tools claude
+   mkdir -p ~/.config/nousfx && cp -n harness/local.md.example ~/.config/nousfx/local.md
    ```
 
-4. Add these two keys to `~/.claude/settings.json` by hand. Do not copy a whole settings file from another machine; mine holds machine-specific `autoMode` and graphify hooks.
+4. Run the installer (it needs Python 3 on PATH as `python3` or `python`). It shows the dry run, then asks before writing. Add `agy` only on a machine that has agy:
+
+   ```bash
+   ./install.sh --tools claude,agy
+   ```
+
+   On Windows, in PowerShell (the same arguments work). If PowerShell refuses to run the script, allow it for this one run:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\install.ps1 --tools claude,agy
+   ```
+
+   Read the dry run first. A skill folder I made by hand shows up as a collision and is skipped; look at it, then re-run with `--yes-replace NAME`.
+
+   Two things the old copy installer did that the sync does not:
+   - The sync refuses to write through a symlink, including a symlinked `~/.claude/settings.json` (a dotfiles-managed one). It stops with "is a symlink" and writes nothing. Replace the link with a regular file first.
+   - `CLAUDE_HOME` is ignored. To aim at another home, pass `--home DIR` (and `--state-home DIR`); the default is the home in the user record.
+
+5. Add these two keys to `~/.claude/settings.json` by hand. Do not copy a whole settings file from another machine; mine holds machine-specific `autoMode` and graphify hooks.
 
    ```json
    "model": "opusplan",
    "autoCompactWindow": 300000
    ```
 
-5. Start a **new** session (hooks and agents load at session start) and run `/agents`. You should see `Explore`, `researcher`, `reviewer-light`, `reviewer`, `reviewer-high`, `reviewer-deep`, `architect` and `test-runner`.
-6. [Verify the gate](#verify-the-gate).
+6. Start a **new** session (hooks and agents load at session start) and run `/agents`. I should see `Explore`, `researcher`, `reviewer-light`, `reviewer`, `reviewer-high`, `reviewer-deep`, `architect` and `test-runner`.
+7. Run the [smoke checks](#smoke-checks).
 
 UI skills that `ui-review` uses are not in this repo. `harness/skills.lock.json` pins most of them and sync installs them (see the README). Missing ones are skipped and reported.
 
-## Re-install after a merge
+## Update after a merge
 
 1. Update `main`:
 
@@ -51,62 +88,108 @@ UI skills that `ui-review` uses are not in this repo. `harness/skills.lock.json`
    git switch main && git pull --ff-only
    ```
 
-2. See what the install would change. Every difference should come from merged PRs. If `~/.claude/` has a newer edit that never made it into the repo, copy it into the repo first, or the install replaces it (it keeps a `.bak-<stamp>` copy).
+2. See what would change. Every difference should come from merged PRs:
 
    ```bash
-   for d in agents skills hooks; do diff -rq "claude/$d" "$HOME/.claude/$d"; done 2>&1 | grep -v -E "^Only in $HOME|\.bak-|__pycache__"
+   python3 -B scripts/nousfx_sync.py --dry-run --tools claude,agy
    ```
 
-   Symlinked skills such as `handoff` can show up as different. That is fine: the install skips them.
-
-3. Update the machine. If the first line of `~/.claude/CLAUDE.md` says `generated by nousfx_sync`, the sync owns it and `install.sh` refuses (it exits 1). Read the dry run, then run the sync:
+3. Apply it (the installer asks first, or run the sync directly):
 
    ```bash
-   python3 -B scripts/nousfx_sync.py --dry-run --tools claude
-   python3 -B scripts/nousfx_sync.py --tools claude
+   ./install.sh --tools claude,agy
    ```
 
-   On a machine that was never synced, run the install instead:
+4. Confirm nothing drifted, then start a new session so hooks reload:
 
    ```bash
-   ./install.sh
+   python3 -B scripts/nousfx_sync.py --check --tools claude,agy
    ```
 
-   - `backed up <file>`: the old copy is saved as `<file>.bak-<stamp>`.
-   - `warning: skipped <file> (... is a symlink)`: expected for skills linked from `~/.agents/skills`, such as `handoff`. Update those at the link target.
-   - A skipped `hooks/pr_create_parser.py` is not fine: the gate then blocks every `gh pr` command. Replace the link with the real file.
+   It prints `no drift` and exits 0. A Claude session also warns me at start when this machine is behind `origin/main` (the drift hook).
 
-4. [Verify the gate](#verify-the-gate), then start a new session so the hooks reload.
+## Set up one project
 
-## Verify the gate
+For a repo other than this one. Project mode writes `AGENTS.md` and `CLAUDE.md` stubs when missing, `.githooks/pre-push`, the `.agents/skills` link and the MCP files from `.nousfx/mcp.toml`. It skips hand-written files and shows a diff.
 
-1. The installed hook files match the repo:
+```bash
+python3 -B scripts/nousfx_sync.py --project ~/Projects/my-app --tools claude,agy --dry-run
+```
+
+```bash
+python3 -B scripts/nousfx_sync.py --project ~/Projects/my-app --tools claude,agy
+```
+
+Then `git config core.hooksPath .githooks` in that repo (sync does not set it). Each repo that uses the gate needs a `[check] command` in `.nousfx/project.toml`; the `project-setup` skill proposes one. Details are in [docs/sync.md](sync.md#project-mode).
+
+## Smoke checks
+
+Run after a first install and after anything that touches the gate, rules or skills. The commands below use a temp home so a real machine is never touched; on a real machine, drop `--home` and `--state-home`.
+
+```bash
+T=$(mktemp -d)
+python3 -B scripts/nousfx_sync.py --home "$T" --state-home "$T/state" --tools claude,agy
+python3 -B scripts/nousfx_sync.py --check --home "$T" --state-home "$T/state" --tools claude,agy
+head -c 90 "$T/.claude/CLAUDE.md"
+ls "$T/.claude/skills" | wc -l
+```
+
+The sync run ends with `hook self-test passed` and `agy gate self-test passed`. `--check` prints `no drift`. The first line of `CLAUDE.md` starts `<!-- generated by nousfx_sync`.
+
+The gate must block a PR with no review and let other commands through. Use a scratch repo on a ticket-named branch (a branch with no commits yet inherits the last merged review marker, so do not test on a fresh branch of a real repo):
+
+```bash
+R=$(mktemp -d) && cd "$R" && git init -q -b cesar/NFX-1 && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+for c in 'gh pr create' 'ls'; do printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$PWD" "$c" | python3 -B "$T/.claude/hooks/review-gate.py" >/dev/null 2>&1; echo "$c -> exit $?"; done
+```
+
+Expected: `gh pr create -> exit 2` and `ls -> exit 0`.
+
+For agy and for a real machine, also check by hand in a live session: rules show up (ask it for its rules), skills are listed, the Atlassian server answers, and `gh pr create` is denied without a review. agy has no Skill tool and no session-start event, so its rules carry the instructions.
+
+Results (a dash means not run yet; each cell gets a date when it is):
+
+| Tool and machine | Rules load | Skills visible | MCP works | Gate blocks a PR |
+|---|---|---|---|---|
+| Claude Code, Mac (temp home) | ok 2026-11-06 (4,192 B file, generated header) | ok 2026-11-06 (45 linked) | n/a: Claude uses its own Atlassian connector; `.claude.json` gets only servers listed for it | ok 2026-11-06 (exit 2; `--check` clean) |
+| Claude Code, Mac (live session) | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) |
+| agy, Mac (temp home) | ok 2026-11-06 (plugin `rules` written) | ok 2026-11-06 (45 linked) | file written 2026-11-06 (`mcp_config.json` has atlassian); live answer pending (NFX-53) | ok 2026-11-06 (`agy gate self-test passed`); live deny pending (NFX-53) |
+| agy, Mac (live session) | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) |
+| Claude Code, Windows | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) |
+| agy, Windows | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) | pending (NFX-53) |
+| OpenCode | not checked ([NFX-50](https://cjthdev.atlassian.net/browse/NFX-50)) | not checked | not checked | not checked |
+
+## Check the review gate
+
+1. The gate files in a synced home match the repo:
 
    ```bash
-   for f in review-gate.py pr_create_parser.py test_review_gate.py; do cmp -s "claude/hooks/$f" "$HOME/.claude/hooks/$f" && echo "match $f" || echo "DIFFERS $f"; done
+   for f in review-gate.py pr_create_parser.py; do cmp -s "claude/hooks/$f" "$HOME/.claude/hooks/$f" && echo "match $f" || echo "DIFFERS $f"; done
    ```
 
-2. The test suite passes from the installed copy (about 30 seconds):
+2. The suites pass (the check the CI job runs, about 2 minutes):
 
    ```bash
-   python3 -I ~/.claude/hooks/test_review_gate.py
+   python3 -B scripts/run_checks.py
    ```
 
-3. A live check: `gh pr create` blocks (exit 2) and other commands pass (exit 0). Run it from this repo on `main`, where the branch-name rule blocks it. On a ticket branch whose code a review already recorded, exit 0 is correct.
-
-   ```bash
-   for c in 'gh pr create' 'ls'; do printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$PWD" "$c" | python3 ~/.claude/hooks/review-gate.py >/dev/null 2>&1; echo "$c -> exit $?"; done
-   ```
-
-4. `settings.json` registers the gate exactly once:
+3. `settings.json` registers the gate exactly once:
 
    ```bash
    grep -c 'review-gate.py' ~/.claude/settings.json
    ```
 
+4. In CI, the `review-gate / check` job requires a `Review-Gate:` line in the PR body (from `review-gate.py attest`), using the gate from the base branch, then runs the project's check command on the PR head. It is the gate for tools that cannot block a PR themselves, so it must be a required check on `main` (GitHub: Settings, Branches, rule for `main`, "Require status checks", add `check`). To confirm:
+
+   ```bash
+   gh api repos/ctorres345/NousFX/branches/main/protection/required_status_checks --jq '.contexts'
+   ```
+
+   The job does not re-check the `Review-Tier:` line; the gate checks the tier when it records the review (`--mark --tier`).
+
 ## Install or update Via
 
-Via comes from the marketplace in this repo, not from `install.sh`.
+Via comes from the marketplace in this repo; sync does not install it.
 
 1. Add the marketplace (first time only). From GitHub:
 
@@ -138,36 +221,29 @@ Via comes from the marketplace in this repo, not from `install.sh`.
 
 3. In a Claude Code session run `/reload-plugins`, then `/via setup`. Check the table lists each integration and ends with the `Via integrations:` line.
 4. Run `/via setup` again. The answer must say the config is `unchanged`.
-5. To remove it: `claude plugin uninstall via`. `~/.config/nousfx/via.json` stays (and so does an old `~/.claude/via.json`, which `/via setup` copied once); delete them by hand if you want them gone. If you once hand-copied `via_outbound.py` into `~/.claude/plugins/cache/nousfx/via/0.4.0/scripts/`, delete that copy: the Argon script now finds the script in the repo and never reads the cache.
+5. To remove it: `claude plugin uninstall via`. `~/.config/nousfx/via.json` stays (and so does an old `~/.claude/via.json`, which `/via setup` copied once); delete them by hand if I want them gone. If I once hand-copied `via_outbound.py` into `~/.claude/plugins/cache/nousfx/via/0.4.0/scripts/`, I delete that copy: the Argon script now finds the script in the repo and never reads the cache.
 
 Before releasing a change, run `python3 plugins/via/scripts/test_via_setup.py`, `python3 plugins/via/scripts/test_via_run.py` and `claude plugin validate . --strict`.
 
-## Roll back an install
+## Roll back a sync
 
-Every replaced file has a `.bak-<stamp>` copy, and all files from one run share the same stamp.
+Every sync backs up what it changes under `~/.config/nousfx/backups/<stamp>/`, and `--restore` puts the last backup back. Files the run created are removed.
 
-1. Find the stamp of the run to undo. Every run backs up `settings.json`, so its backups list every run, newest last. Undo runs newest first, one stamp at a time: an older stamp brings back the state from before that run and drops every later install.
-
-   ```bash
-   ls ~/.claude/settings.json.bak-2* | sed 's/.*\.bak-//' | tail -5
-   ```
-
-2. Restore that run's agents, skills and hooks (replace `<stamp>` in both places, for example `20261103-160825`). `find` does not follow symlinked skills, so linked targets stay untouched:
+1. See what the last run did:
 
    ```bash
-   find ~/.claude/agents ~/.claude/skills ~/.claude/hooks -name '*.bak-<stamp>' | while read -r f; do cp "$f" "${f%.bak-<stamp>}"; done
+   ls ~/.config/nousfx/backups | tail -3
    ```
 
-3. Do not restore `settings.json` blindly. Its backup is from before that run, so restoring it drops every later edit, such as the `model` keys or hooks other tools added. Diff first, then copy back only what the install changed:
+2. Undo it:
 
    ```bash
-   diff ~/.claude/settings.json.bak-<stamp> ~/.claude/settings.json
+   python3 -B scripts/nousfx_sync.py --restore --tools claude,agy
    ```
 
+3. Start a new session. Run `--restore` again to go one run further back.
 
-   If there is no `settings.json` backup, it was a first install: remove the `review-gate.py` entry under `hooks.PreToolUse` in `settings.json` by hand.
-
-4. Start a new session. Files the install added for the first time are not removed; delete them by hand if they cause trouble.
+Old `.bak-<stamp>` files from the retired copy-based installer are only listed. `--clean-backups` moves them into the run's backup.
 
 ## Check token usage
 

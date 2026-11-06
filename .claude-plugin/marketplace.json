@@ -1,7 +1,7 @@
 {
   "name": "nousfx",
   "owner": { "name": "Cesar Torres" },
-  "description": "NousFX plugin marketplace. Via, the designer skill, is first. The name mandy is reserved for the next cat-named plugin.",
+  "description": "NousFX plugin marketplace. Via, the designer skill, is first.",
   "plugins": [
     {
       "name": "via",
