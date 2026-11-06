@@ -172,7 +172,7 @@ Never commit `settings.local.json`, handoffs, memory, session history or anythin
 ## Optional: Fable
 `reviewer-deep` and `architect` need Fable access, which is included on Max up to 50% of the weekly limit (terms may change). Without it, remove:
 - `claude/agents/reviewer-deep.md` and `claude/agents/architect.md`
-- the "Optional deep pass" section of the review-loop skill
+- the "Fable offers" section of the review-loop skill
 - their lines in `harness/overlays/claude.overlay.md`
 
 ## Usage report
