@@ -90,15 +90,20 @@ GUARD_JS = (
     # A library (Lit) assigns adoptedStyleSheets after attachShadow; the setter puts the mask sheet back every time.
     # A root in another document cannot adopt this document's sheet: the page's own assignment then goes through alone.
     "if(sheet&&d&&d.set){Object.defineProperty(ShadowRoot.prototype,'adoptedStyleSheets',{configurable:true,"
-    "enumerable:d.enumerable,get:d.get,set:function(v){var a=Array.prototype.filter.call(v,function(x){return x!==sheet;});"
+    "enumerable:d.enumerable,get:d.get,set:function(v){var a=Array.from(v).filter(function(x){return x!==sheet;});"
     "try{d.set.call(this,a.concat([sheet]));}catch(e){d.set.call(this,a);}}});}"
-    "function style(r){var t=document.createElement('style');t.textContent=css;r.appendChild(t);}"
-    "function adopt(r){try{if(sheet&&d&&d.set){r.adoptedStyleSheets=r.adoptedStyleSheets;}else{style(r);}}"
+    # has(): the mask is on this root, as the shared sheet or as a style child (a page's innerHTML wipes the child).
+    "function has(r){return (sheet&&Array.prototype.indexOf.call(r.adoptedStyleSheets,sheet)>=0)"
+    "||!!r.querySelector('style[data-via-mask]');}"
+    "function style(r){var t=document.createElement('style');t.setAttribute('data-via-mask','');"
+    "t.textContent=css;r.appendChild(t);}"
+    "function adopt(r){try{if(sheet&&d&&d.set){r.adoptedStyleSheets=r.adoptedStyleSheets;}if(!has(r)){style(r);}}"
     "catch(e){try{style(r);}catch(x){}}}"
-    "var seen=new WeakSet(),attach=Element.prototype.attachShadow;"
-    "Element.prototype.attachShadow=function(i){var r=attach.call(this,i);seen.add(r);try{adopt(r);}catch(e){}return r;};"
+    "var attach=Element.prototype.attachShadow;"
+    "Element.prototype.attachShadow=function(i){var r=attach.call(this,i);try{adopt(r);}catch(e){}return r;};"
+    # Walk what is added to the page and put the mask on any root that lost it, e.g. a root made in another document.
     "function walk(n){if(n.nodeType!==1&&n.nodeType!==11)return;"
-    "if(n.shadowRoot&&!seen.has(n.shadowRoot)){seen.add(n.shadowRoot);adopt(n.shadowRoot);walk(n.shadowRoot);}"
+    "if(n.shadowRoot){try{if(!has(n.shadowRoot)){adopt(n.shadowRoot);}}catch(e){}walk(n.shadowRoot);}"
     "for(var c=n.firstChild;c;c=c.nextSibling)walk(c);}"
     "new MutationObserver(function(ms){ms.forEach(function(m){m.addedNodes.forEach(walk);});})"
     ".observe(document,{childList:true,subtree:true});"
