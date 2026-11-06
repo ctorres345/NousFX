@@ -255,6 +255,49 @@ class ViaOutboundTest(unittest.TestCase):
                 self.remote(url)
                 self.assertEqual(self.check("gemini").returncode, 20)
 
+    def set_remote(self, url):
+        if self.has_remote():
+            self.git("remote", "remove", "origin")
+        self.remote(url)
+
+    def test_the_same_owner_and_repo_on_two_hosts_is_allowed_only_for_the_listed_host(self):
+        self.write_config({"github.com/" + KEY: {"destinations": ["gemini"]}})
+        self.set_remote("git@github.com:%s.git" % KEY)
+        self.assertEqual(self.check("gemini").returncode, 0)
+        for url in ("git@gitlab.corp:%s.git" % KEY, "https://gitlab.corp/%s.git" % KEY):
+            with self.subTest(url=url):
+                self.set_remote(url)
+                r = self.check("gemini")
+                self.assertEqual(r.returncode, 20, r.stderr)
+                self.assertEqual(json.loads(r.stdout)["project"], "gitlab.corp/" + KEY)
+
+    def test_every_remote_form_gives_the_same_host_owner_repo_key(self):
+        self.write_config({"github.com/" + KEY: {"destinations": ["gemini"]}})
+        for url in ("git@github.com:%s.git" % KEY, "https://github.com/%s.git" % KEY,
+                    "ssh://git@github.com/%s.git" % KEY, "ssh://git@github.com:2222/%s.git" % KEY,
+                    "https://user@github.com:8443/%s" % KEY, "https://GitHub.com/Acme/App.git",
+                    "github.com:%s" % KEY):
+            with self.subTest(url=url):
+                self.set_remote(url)
+                r = self.check("gemini")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(json.loads(r.stdout)["project"], "github.com/" + KEY)
+
+    def test_an_old_two_part_key_means_github_com(self):
+        self.write_config({KEY: {"destinations": ["gemini"]}})
+        self.set_remote("git@github.com:%s.git" % KEY)
+        self.assertEqual(self.check("gemini").returncode, 0)
+        self.set_remote("git@gitlab.corp:%s.git" % KEY)
+        self.assertEqual(self.check("gemini").returncode, 20)
+
+    def test_an_old_key_and_its_new_form_together_fail_closed(self):
+        self.set_remote("git@github.com:%s.git" % KEY)
+        self.write_config({KEY: {"destinations": ["gemini"]},
+                           "GitHub.com/" + KEY: {"destinations": ["jira"]}})
+        r = self.check("gemini")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertNotIn('"allowed": true', r.stdout)
+
     def test_a_query_or_fragment_on_the_remote_does_not_change_the_key(self):
         self.write_config({KEY: {"destinations": ["gemini"]}})
         self.remote("https://github.com/%s.git?x=1#frag" % KEY)
