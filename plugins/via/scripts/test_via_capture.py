@@ -15,6 +15,8 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
 import xml.dom.minidom
 
 sys.dont_write_bytecode = True
@@ -35,7 +37,7 @@ def get(u, path, host=None):
     c = http.client.HTTPConnection(u.hostname, u.port, timeout=10)
     c.request("GET", path, headers={"Host": host} if host else {})
     r = c.getresponse()
-    return r.status, r.getheader("Location"), r.read().decode("utf-8", "replace")
+    return r.status, r.getheader("Location"), r.read().decode("utf-8", "replace"), r.getheader("Content-Security-Policy")
 
 def note(entry):
     with open(log_path + ".bodies", "a") as f:
@@ -44,13 +46,13 @@ def note(entry):
 u = urllib.parse.urlsplit(args[-1])
 if u.scheme == "http":
     path = (u.path or "/") + ("?" + u.query if u.query else "")
-    status, _, body = get(u, path)
-    note({"url": args[-1], "status": status, "body": body})
+    status, _, body, csp = get(u, path)
+    note({"url": args[-1], "status": status, "body": body, "csp": csp})
     for probe in filter(None, os.environ.get("VIA_FAKE_PROBE", "").split(",")):
-        status, location, body = get(u, probe)
-        note({"probe": probe, "status": status, "location": location, "body": body})
+        status, location, body, csp = get(u, probe)
+        note({"probe": probe, "status": status, "location": location, "body": body, "csp": csp})
 if u.scheme == "http" and os.environ.get("VIA_FAKE_HOST"):
-    status, _, body = get(u, "/index.html", host=os.environ["VIA_FAKE_HOST"])
+    status, _, body, _ = get(u, "/index.html", host=os.environ["VIA_FAKE_HOST"])
     note({"probe": "host", "status": status, "location": None, "body": body})
 if os.environ.get("VIA_FAKE_HANG"):
     child = subprocess.Popen(["sleep", "300"])
@@ -71,6 +73,40 @@ class Page(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         port = self.server.server_address[1]
+        if self.path in ("/abs", "/app.js", "/app.json"):
+            kind, body = {
+                "/abs": ("text/html", "<!doctype html><html><head><title>t</title></head><body>"
+                         "<iframe src=\"http://localhost:%(p)d/inner\"></iframe>"
+                         "<a href='//127.0.0.1:%(p)d/x'>x</a><a href='http://example.com:%(p)d/y'>y</a>"
+                         "<a href='ws://localhost:%(p)d/hmr'>h</a><a href='http://localhost:%(p)d0/z'>z</a><a href='http://localhost:%(p)d.evil.test/w'>w</a>"
+                         "</body></html>"),
+                "/app.js": ("text/javascript", "location.href = 'http://localhost:%(p)d/next'; "
+                            "var j = 'http:\\/\\/localhost:%(p)d\\/esc';"),
+                "/app.json": ("application/json", '{"next": "http://[::1]:%(p)d/n"}')}[self.path]
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Security-Policy", "default-src 'none'")  # the dev server's own policy
+            self.end_headers()
+            self.wfile.write((body % {"p": port}).encode())
+            return
+        if self.path == "/xml":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/xml")
+            self.end_headers()
+            self.wfile.write(b"<html xmlns='http://www.w3.org/1999/xhtml'><input/></html>")
+            return
+        if self.path == "/two-types":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<!doctype html><input>")
+            return
+        if self.path == "/untyped-abs":  # no Content-Type: Chrome sniffs HTML
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(("<!doctype html><iframe src=http://localhost:%d/form></iframe>" % port).encode())
+            return
         if self.path == "/untyped":
             self.send_response(200)  # no Content-Type: Chrome sniffs HTML
             self.end_headers()
@@ -384,6 +420,38 @@ class ViaCaptureTest(unittest.TestCase):
               '<!doctype html><head><meta http-equiv="refresh" content="30"></head><p>live</p>')
         self.ok("live=live.html")
 
+    def test_a_meta_refresh_fails_the_capture_whatever_the_attribute_order(self):
+        write(os.path.join(self.repo, "go.html"),
+              '<!doctype html><head><meta content="0;url=/other.html" http-equiv="refresh"></head>')
+        r = self.capture("go=go.html")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertEqual(self.pngs(), [])
+
+    def test_a_service_worker_script_request_is_refused_and_fails_the_capture(self):
+        sys.path.insert(0, HERE)
+        import via_capture
+        write(os.path.join(self.repo, "sw.js"), "self.onfetch=()=>{}")
+        server = via_capture.start_mask(via_capture.mask_style([]), root=self.repo)
+        try:
+            req = urllib.request.Request(server.origin + "/sw.js", headers={"Service-Worker": "script"})
+            with self.assertRaises(urllib.error.HTTPError) as got:
+                urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req)
+            self.assertEqual(got.exception.code, 502)
+            self.assertTrue(server.errors)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_each_shot_gets_a_profile_of_its_own_so_a_service_worker_cannot_carry_over(self):
+        self.ok("home=index.html")
+        profiles = [a for args in self.calls() for a in args if a.startswith("--user-data-dir=")]
+        self.assertEqual(len(profiles), len(set(profiles)))
+
+    def test_the_guard_puts_the_mask_into_the_document_itself(self):
+        self.ok("home=index.html")
+        body = self.pages()[0]["body"]
+        self.assertIn("adopt(document)", body)
+
     def test_a_page_with_no_content_type_is_masked_too(self):
         self.ok("home=" + self.serve() + "/untyped")
         self.assertIn("data-via-mask", self.pages()[0]["body"])
@@ -394,6 +462,121 @@ class ViaCaptureTest(unittest.TestCase):
         self.ok("home=index.html")
         body = self.pages()[0]["body"]
         self.assertLess(body.index("data-via-mask"), body.index("</head>"))
+
+    # --- NFX-31: the three ways around the mask ---
+
+    def test_a_shadow_dom_guard_is_placed_first_in_the_head_so_it_runs_before_the_page_scripts(self):
+        write(os.path.join(self.repo, "index.html"),
+              "<!doctype html><html><head><title>t</title><script>customElements.define('x-a', class {})</script>"
+              "</head><body><x-a></x-a></body></html>")
+        self.ok("home=index.html")
+        body = self.pages()[0]["body"]
+        self.assertTrue(body.startswith("<!doctype html>"), "the doctype must stay first")
+        self.assertIn("attachShadow", body)
+        self.assertIn("adoptedStyleSheets", body)
+        self.assertLess(body.index("attachShadow"), body.index("customElements.define"))
+        self.assertIn("data-via-redact", body[body.index("attachShadow"):])  # the guard carries the same rules
+
+    def test_the_guard_goes_after_the_doctype_when_a_page_has_no_head_or_body(self):
+        self.ok("home=" + self.serve() + "/untyped")
+        body = self.pages()[0]["body"]
+        self.assertTrue(body.startswith("<!doctype html>"), "a script before the doctype would switch on quirks mode")
+        self.assertIn("attachShadow", body)
+
+    def test_the_guard_carries_extra_selectors_into_shadow_roots_and_cannot_close_its_script(self):
+        self.ok("home=index.html", extra_args=["--redact-selector", ".account-email"])
+        body = self.pages()[0]["body"]
+        guard = body[body.index("data-via-guard"):body.index("</script>")]
+        self.assertIn(".account-email", guard)
+        self.assertEqual(body.count("</script>"), 1)
+
+    def test_a_script_cannot_navigate_the_page_off_the_mask_origin(self):
+        self.ok("home=index.html")
+        self.assertIn("navigation.addEventListener", self.pages()[0]["body"])
+
+    def test_absolute_urls_to_the_dev_server_are_rewritten_to_the_mask_server(self):
+        upstream = self.serve()
+        port = upstream.rsplit(":", 1)[1]
+        self.ok("home=" + upstream + "/abs")
+        body = self.pages()[0]["body"]
+        mask = self.pages()[0]["url"].rsplit("/abs", 1)[0]
+        self.assertNotIn("localhost:" + port + "/inner", body)
+        self.assertIn('<iframe src="%s/inner">' % mask, body)
+        self.assertIn("<a href='%s/x'>" % mask, body)  # a protocol-relative URL too
+        self.assertIn("http://example.com:%s/y" % port, body)  # another host is left alone
+        self.assertIn("localhost:%s0/z" % port, body)  # so are a longer port and a longer host name
+        self.assertIn("localhost:%s.evil.test/w" % port, body)
+
+    def test_absolute_dev_server_urls_in_scripts_and_json_are_rewritten_too(self):
+        upstream = self.serve()
+        port = upstream.rsplit(":", 1)[1]
+        self.ok("home=" + upstream + "/", extra_env={"VIA_FAKE_PROBE": "/app.js,/app.json"})
+        mask = self.pages()[0]["url"].rstrip("/")
+        js, data = self.probes()["/app.js"]["body"], self.probes()["/app.json"]["body"]
+        self.assertIn("location.href = '%s/next'" % mask, js)
+        self.assertIn(mask.replace("/", "\\/") + "\\/esc", js)  # the JSON-escaped spelling
+        self.assertNotIn("localhost:" + port, js)
+        self.assertIn('"%s/n"' % mask, data)
+
+    def test_a_page_with_no_content_type_is_rewritten_and_framed_like_html(self):
+        upstream = self.serve()
+        self.ok("home=" + upstream + "/untyped-abs")
+        page = self.pages()[0]
+        self.assertNotIn("localhost:", page["body"])
+        self.assertEqual(page["csp"], "frame-src 'self'; object-src 'self'; form-action 'self'")
+
+    def test_a_url_with_another_scheme_is_never_half_rewritten(self):
+        upstream = self.serve()
+        port = upstream.rsplit(":", 1)[1]
+        self.ok("home=" + upstream + "/abs")
+        self.assertIn("<a href='ws://localhost:%s/hmr'>" % port, self.pages()[0]["body"])
+
+    def test_a_head_tag_inside_a_script_string_does_not_take_the_guard(self):
+        write(os.path.join(self.repo, "index.html"), "<!doctype html><script>var a='<head>';</script><input>")
+        self.ok("home=index.html")
+        body = self.pages()[0]["body"]
+        self.assertIn("var a='<head>';</script>", body)  # the page's script is untouched
+        self.assertTrue(body.startswith("<!doctype html><script data-via-guard"), body[:80])
+
+    def test_an_svg_page_is_framed_and_rewritten_like_html(self):
+        write(os.path.join(self.repo, "pic.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>")
+        self.ok("pic=pic.svg")
+        self.assertEqual(self.pages()[0]["csp"], "frame-src 'self'; object-src 'self'; form-action 'self'")
+
+    def test_the_guard_never_goes_before_the_doctype_or_a_byte_order_mark(self):
+        for name, head in (("comment", b"<!-- saved from url=x -->\n<!DOCTYPE html>"),
+                           ("bom", b"\xef\xbb\xbf<!doctype html>")):
+            with self.subTest(name):
+                with open(os.path.join(self.repo, "index.html"), "wb") as f:
+                    f.write(head + b"<html><head><title>t</title></head><body><input></body></html>")
+                self.ok("home=index.html", run_dir=self.via_run("init")["run_dir"])
+                body = self.pages()[-1]["body"].encode()
+                self.assertTrue(body.startswith(head), (name, body[:60]))
+
+    def test_the_guard_goes_after_the_charset_meta_so_the_encoding_is_still_found_early(self):
+        write(os.path.join(self.repo, "index.html"),
+              "<!doctype html><html><head><meta charset=\"utf-8\"><title>t</title></head><body>caf\u00e9</body></html>")
+        self.ok("home=index.html")
+        body = self.pages()[0]["body"]
+        self.assertLess(body.index("charset"), body.index("data-via-guard"))
+        self.assertLess(body.index("data-via-guard"), body.index("<title>"))
+
+    def test_two_content_type_headers_fail_the_capture_because_the_browser_may_pick_the_other(self):
+        r = self.capture("home=" + self.serve() + "/two-types")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertEqual(self.pngs(), [])
+
+    def test_an_xml_page_gets_the_framing_policy_too(self):
+        self.ok("home=" + self.serve() + "/", extra_env={"VIA_FAKE_PROBE": "/xml"})
+        self.assertEqual(self.probes()["/xml"]["csp"], "frame-src 'self'; object-src 'self'; form-action 'self'")
+
+    def test_a_page_may_not_frame_or_submit_to_another_origin(self):
+        policy = "frame-src 'self'; object-src 'self'; form-action 'self'"
+        self.ok("home=" + self.serve() + "/abs", extra_env={"VIA_FAKE_PROBE": "/app.js"})
+        self.assertEqual(self.pages()[0]["csp"], policy)  # replaces the dev server's own policy
+        self.assertIsNone(self.probes()["/app.js"]["csp"])  # only a document is framed, so a script gets none
+        self.ok("home=index.html", run_dir=self.via_run("init")["run_dir"])
+        self.assertEqual(self.pages()[-1]["csp"], policy)  # a project file too
 
     def test_a_compressed_dev_server_reply_fails_the_capture_instead_of_shooting_garbage(self):
         r = self.capture("home=" + self.serve() + "/gz")
