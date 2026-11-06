@@ -87,6 +87,19 @@ class Page(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write((body % {"p": port}).encode())
             return
+        if self.path == "/xml":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/xml")
+            self.end_headers()
+            self.wfile.write(b"<html xmlns='http://www.w3.org/1999/xhtml'><input/></html>")
+            return
+        if self.path == "/two-types":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<!doctype html><input>")
+            return
         if self.path == "/untyped-abs":  # no Content-Type: Chrome sniffs HTML
             self.send_response(200)
             self.end_headers()
@@ -439,7 +452,7 @@ class ViaCaptureTest(unittest.TestCase):
     def test_the_guard_carries_extra_selectors_into_shadow_roots_and_cannot_close_its_script(self):
         self.ok("home=index.html", extra_args=["--redact-selector", ".account-email"])
         body = self.pages()[0]["body"]
-        guard = body[body.index("attachShadow") - 400:body.index("</script>")]
+        guard = body[body.index("data-via-guard"):body.index("</script>")]
         self.assertIn(".account-email", guard)
         self.assertEqual(body.count("</script>"), 1)
 
@@ -476,7 +489,7 @@ class ViaCaptureTest(unittest.TestCase):
         self.ok("home=" + upstream + "/untyped-abs")
         page = self.pages()[0]
         self.assertNotIn("localhost:", page["body"])
-        self.assertEqual(page["csp"], "frame-src 'self'; form-action 'self'")
+        self.assertEqual(page["csp"], "frame-src 'self'; object-src 'self'; form-action 'self'")
 
     def test_a_url_with_another_scheme_is_never_half_rewritten(self):
         upstream = self.serve()
@@ -494,10 +507,37 @@ class ViaCaptureTest(unittest.TestCase):
     def test_an_svg_page_is_framed_and_rewritten_like_html(self):
         write(os.path.join(self.repo, "pic.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>")
         self.ok("pic=pic.svg")
-        self.assertEqual(self.pages()[0]["csp"], "frame-src 'self'; form-action 'self'")
+        self.assertEqual(self.pages()[0]["csp"], "frame-src 'self'; object-src 'self'; form-action 'self'")
+
+    def test_the_guard_never_goes_before_the_doctype_or_a_byte_order_mark(self):
+        for name, head in (("comment", b"<!-- saved from url=x -->\n<!DOCTYPE html>"),
+                           ("bom", b"\xef\xbb\xbf<!doctype html>")):
+            with self.subTest(name):
+                with open(os.path.join(self.repo, "index.html"), "wb") as f:
+                    f.write(head + b"<html><head><title>t</title></head><body><input></body></html>")
+                self.ok("home=index.html", run_dir=self.via_run("init")["run_dir"])
+                body = self.pages()[-1]["body"].encode()
+                self.assertTrue(body.startswith(head), (name, body[:60]))
+
+    def test_the_guard_goes_after_the_charset_meta_so_the_encoding_is_still_found_early(self):
+        write(os.path.join(self.repo, "index.html"),
+              "<!doctype html><html><head><meta charset=\"utf-8\"><title>t</title></head><body>caf\u00e9</body></html>")
+        self.ok("home=index.html")
+        body = self.pages()[0]["body"]
+        self.assertLess(body.index("charset"), body.index("data-via-guard"))
+        self.assertLess(body.index("data-via-guard"), body.index("<title>"))
+
+    def test_two_content_type_headers_fail_the_capture_because_the_browser_may_pick_the_other(self):
+        r = self.capture("home=" + self.serve() + "/two-types")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertEqual(self.pngs(), [])
+
+    def test_an_xml_page_gets_the_framing_policy_too(self):
+        self.ok("home=" + self.serve() + "/", extra_env={"VIA_FAKE_PROBE": "/xml"})
+        self.assertEqual(self.probes()["/xml"]["csp"], "frame-src 'self'; object-src 'self'; form-action 'self'")
 
     def test_a_page_may_not_frame_or_submit_to_another_origin(self):
-        policy = "frame-src 'self'; form-action 'self'"
+        policy = "frame-src 'self'; object-src 'self'; form-action 'self'"
         self.ok("home=" + self.serve() + "/abs", extra_env={"VIA_FAKE_PROBE": "/app.js"})
         self.assertEqual(self.pages()[0]["csp"], policy)  # replaces the dev server's own policy
         self.assertIsNone(self.probes()["/app.js"]["csp"])  # only a document is framed, so a script gets none

@@ -18,7 +18,8 @@ URLs to the dev server in HTML, SVG, JavaScript and JSON are rewritten to the ma
 SVG page is sent with a policy that lets it frame and submit forms only to the mask server (so a third-party frame is blocked). The dev
 server's own Content-Security-Policy header is replaced by that policy, so the style can apply. Every shot is marked
 "redacted": true. Limits that remain: a closed shadow root made by markup (shadowrootmode="closed") is out of reach, SVG
-and XHTML pages get the style but not the script, and a browser without the Navigation API does not cancel navigation. The mask is a first layer: Claude still looks at each shot
+and XHTML pages get the style but not the script, other XML pages get the policy only, a same-origin frame made
+from srcdoc, about:blank or a blob: URL is not masked, and a browser without the Navigation API does not cancel navigation. The mask is a first layer: Claude still looks at each shot
 and sets its `review` (kept or dropped) before anything leaves the run folder.
 
 Browser: $VIA_CHROME if set (and then only that), else Google Chrome or Chromium on macOS, else
@@ -75,17 +76,23 @@ HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriza
               "content-security-policy-report-only"}
 PROBE_TIMEOUT = 10
 # What a mask-server page may frame or submit to: only the mask server. It replaces the dev server's own policy.
-FRAMING_POLICY = "frame-src 'self'; form-action 'self'"
+FRAMING_POLICY = "frame-src 'self'; object-src 'self'; form-action 'self'"
 # Documents a browser can frame or navigate, and everything whose absolute dev-server URLs get rewritten.
-FRAMED_KINDS = ("text/html", "application/xhtml+xml", "image/svg+xml")
+FRAMED_KINDS = ("text/html", "application/xhtml+xml", "image/svg+xml", "application/xml", "text/xml")
 REWRITE_KINDS = FRAMED_KINDS + ("text/javascript", "application/javascript", "application/x-javascript",
                                 "application/json")
 # Runs first in the page. It puts the mask rules into every shadow root, open or closed (the page's own style does not
 # reach inside one), and cancels a navigation to another origin, so a script cannot walk around the mask server.
 GUARD_JS = (
-    "(function(){var css=%s;"
-    "function adopt(r){try{var s=new CSSStyleSheet();s.replaceSync(css);r.adoptedStyleSheets=r.adoptedStyleSheets.concat([s]);}"
-    "catch(e){var t=document.createElement('style');t.textContent=css;r.appendChild(t);}}"
+    "(function(){var css=%s,sheet=null;"
+    "try{sheet=new CSSStyleSheet();sheet.replaceSync(css);}catch(e){}"
+    "var d=Object.getOwnPropertyDescriptor(ShadowRoot.prototype,'adoptedStyleSheets');"
+    # A library (Lit) assigns adoptedStyleSheets after attachShadow; the setter puts the mask sheet back every time.
+    "if(sheet&&d&&d.set){Object.defineProperty(ShadowRoot.prototype,'adoptedStyleSheets',{configurable:true,"
+    "enumerable:d.enumerable,get:d.get,set:function(v){d.set.call(this,"
+    "Array.prototype.filter.call(v,function(x){return x!==sheet;}).concat([sheet]));}});}"
+    "function adopt(r){if(sheet&&d&&d.set){r.adoptedStyleSheets=r.adoptedStyleSheets;}"
+    "else{var t=document.createElement('style');t.textContent=css;r.appendChild(t);}}"
     "var seen=new WeakSet(),attach=Element.prototype.attachShadow;"
     "Element.prototype.attachShadow=function(i){var r=attach.call(this,i);seen.add(r);adopt(r);return r;};"
     "function walk(n){if(n.nodeType!==1&&n.nodeType!==11)return;"
@@ -195,17 +202,20 @@ def through_the_mask(body, content_type, pattern, origin):
 
 
 def put_guard(body, guard):
-    """The guard first in the head; else before <body; else after the doctype (before it would switch on quirks mode).
-    Only the text before the first script, comment, style or textarea is searched: a "<head>" inside one of those is
-    not a tag, and a guard put there would close the page's own script."""
-    cut = re.search(rb"<(?:script|style|textarea|!--)", body, re.IGNORECASE)
-    start = body[:cut.start()] if cut else body
-    for pattern, after in ((rb"<head(?=[\s>])[^>]*>", True), (rb"<body\b", False), (rb"^\s*<!doctype[^>]*>", True)):
-        at = re.search(pattern, start, re.IGNORECASE)
-        if at:
-            i = at.end() if after else at.start()
-            return body[:i] + guard + body[i:]
-    return guard + body
+    """Where the guard goes: first in the page, but never before a byte order mark, a leading comment or the doctype
+    (that would switch on quirks mode), and after a <head> tag and any charset <meta> (the browser reads the encoding
+    from the first 1024 bytes, and the guard is longer than that). Only the text before the first script, style,
+    textarea or comment is searched for those: a "<head>" inside one of them is not a tag."""
+    at = re.match(rb"(?:\xef\xbb\xbf)?(?:\s|<!--.*?-->)*", body, re.DOTALL).end()
+    doctype = re.compile(rb"<!doctype[^>]*>", re.IGNORECASE).match(body, at)
+    at = doctype.end() if doctype else at
+    cut = re.search(rb"<(?:script|style|textarea|!--)", body[at:], re.IGNORECASE)
+    window = body[at:at + cut.start()] if cut else body[at:]
+    head = re.search(rb"<head(?=[\s>])[^>]*>", window, re.IGNORECASE)
+    pos = head.end() if head else 0
+    for meta in re.finditer(rb"<meta\b[^>]*charset[^>]*>", window, re.IGNORECASE):
+        pos = max(pos, meta.end())
+    return body[:at + pos] + guard + body[at + pos:]
 
 
 def same_server(location, upstream):
@@ -332,6 +342,8 @@ class MaskHandler(http.server.BaseHTTPRequestHandler):
         with resp:
             if resp.headers.get("Content-Encoding", "identity").lower() != "identity":
                 return self.fail("the dev server sent a compressed body")
+            if len(resp.headers.get_all("Content-Type") or []) > 1:  # the browser may take the other one
+                return self.fail("the dev server sent more than one Content-Type header")
             body = resp.read()
             status, kind = resp.status, resp.headers.get("Content-Type", "")
             headers = []
