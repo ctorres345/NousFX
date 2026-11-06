@@ -22,7 +22,7 @@ Run each one that is in your skill list. Skip, with a reason, any that is not.
 | `design:accessibility-review` | Always. |
 | `design:design-critique` | Always. |
 
-When a page is both, run both and say so. Pinned third-party skills (Impeccable, Vercel guidelines) arrive in a later release.
+When a page is both, run both and say so. Pinned third-party skills (Impeccable) arrive in a later release. Vercel's web-design-guidelines skill is not pinned, because it fetches its rules from a branch at runtime (see `docs/sync.md`).
 
 ### Capture
 `scripts/via_capture.py` takes four shots per screen with headless Chrome or Chromium: light and dark, at phone (390x844) and desktop (1280x800). It needs no install. Set `VIA_CHROME` to a browser path if it is not found.
