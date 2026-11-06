@@ -6,8 +6,9 @@ Usage:
   via_outbound.py paths --dest gemini [--project DIR] [--config FILE]
 
 DEST is one of gemini, jira, figma, artifacts, obsidian.
-The project key is owner/repo, taken from the `origin` remote of the git repo at --project (default: the
-current folder). A remote with no host (a local path or file:// URL) gives no key. The config is --config, else
+The project key is host/owner/repo (lowercase), taken from the `origin` remote of the git repo at --project
+(default: the current folder). An old two-part owner/repo config key is read as github.com/owner/repo. A remote with
+no host (a local path or file:// URL) gives no key. The config is --config, else
 ~/.config/nousfx/via.json (home taken from the system user record; no environment variable moves it). It must be
 a real file inside ~/.config/nousfx, and that folder must not be in a git work tree: a config kept in a project
 is refused, so a repo cannot allow-list itself. While the new file is absent, the old ~/.claude/via.json is read
@@ -50,7 +51,8 @@ class Bad(Exception):
 
 
 def project_key(project):
-    """owner/repo from the origin remote, lowercased, or None when there is no usable remote."""
+    """host/owner/repo from the origin remote, lowercased, or None when there is no usable remote.
+    ssh, scp-style and https forms of one remote give the same key; user, port, .git and ?query are dropped."""
     try:
         r = subprocess.run(["git", "-C", project, "remote", "get-url", "origin"],
                            capture_output=True, text=True, timeout=10)
@@ -61,14 +63,23 @@ def project_key(project):
     url = r.stdout.strip().rstrip("/")
     url = re.sub(r"[?#].*$", "", url)
     url = re.sub(r"\.git$", "", url)
-    scheme = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*)://([^/]*)", url)
-    scp = re.match(r"^[^/@:]+@[^/:]+:", url) or re.match(r"^[^/@:]+:(?!//)", url)
-    if scheme and (scheme.group(1).lower() == "file" or not scheme.group(2)) or not (scheme or scp):
-        return None  # a local path or file URL names no host, so it cannot be the allow-listed project
-    parts = [p for p in re.split(r"[/:]", url.split("://", 1)[-1]) if p]
-    if len(parts) < 2:
-        return None
-    return ("%s/%s" % (parts[-2], parts[-1])).lower()
+    scheme = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*)://([^/]*)(.*)$", url)
+    scp = re.match(r"^(?:[^/@:]+@)?([^/@:]+):(?!//)(.*)$", url)
+    if scheme:
+        if scheme.group(1).lower() == "file" or not scheme.group(2):
+            return None  # a file URL names no host, so it cannot be the allow-listed project
+        if re.search(r"[\\%\s\x00-\x1f]", scheme.group(2)):
+            return None  # backslash, %-escape or space in the authority: parsers disagree on the host, so fail closed
+        host = re.sub(r":\d*$", "", scheme.group(2).rpartition("@")[2])
+        path = scheme.group(3)
+    elif scp:
+        host, path = scp.group(1), scp.group(2)
+    else:
+        return None  # a local path names no host
+    parts = [p for p in path.split("/") if p]
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host) or len(parts) < 2:
+        return None  # an odd host (backslash, space, %, brackets) could read as another host elsewhere: fail closed
+    return ("%s/%s/%s" % (host, parts[-2], parts[-1])).lower()
 
 
 def config_path(arg):
@@ -78,6 +89,12 @@ def config_path(arg):
         return via_home.config_path(arg)
     except via_home.Refused as e:
         raise Bad(str(e))
+
+
+def normalize_key(key):
+    """Lowercase key. An old two-part owner/repo key means github.com/owner/repo; host/owner/repo is kept as is."""
+    key = key.strip().lower()
+    return "github.com/" + key if key.count("/") == 1 else key
 
 
 def load_allowlist(path):
@@ -107,7 +124,10 @@ def load_allowlist(path):
         paths = entry.get("gemini_code_paths", [])
         if not isinstance(paths, list) or not all(isinstance(p, str) and p for p in paths):
             raise Bad("outbound_allowlist entry \"%s\": gemini_code_paths must be a list of paths" % key)
-        clean[key.lower()] = {"destinations": entry["destinations"], "gemini_code_paths": paths}
+        norm = normalize_key(key)
+        if norm in clean:
+            raise Bad("outbound_allowlist lists \"%s\" twice (an old owner/repo key counts as github.com/owner/repo)" % norm)
+        clean[norm] = {"destinations": entry["destinations"], "gemini_code_paths": paths}
     integrations = cfg.get("integrations")
     return clean, (integrations.get("gemini") if isinstance(integrations, dict) else None)
 

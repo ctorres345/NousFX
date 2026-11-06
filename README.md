@@ -166,7 +166,7 @@ NousFX gives agents real permissions on your machine, so it is built around a fe
 | Risk | How NousFX handles it |
 |---|---|
 | Prompt injection from tickets, PRs, web pages, second-opinion output | Treated as data, never instructions. Work comes only from your tracker. Gemini output is verified finding by finding |
-| Code or screenshots leaving your machine | Projects not on the `outbound_allowlist` in `~/.config/nousfx/via.json` get local-only output for Gemini, Jira, Figma, Artifacts and Obsidian. Via blurs personal data when it captures web pages, then Claude looks at each screenshot and drops any that still shows personal data, tokens or account details. Code goes to Gemini only through those scripts |
+| Code or screenshots leaving your machine | Projects not on the `outbound_allowlist` in `~/.config/nousfx/via.json` (keyed `host/owner/repo`, for example `github.com/acme/app`) get local-only output for Gemini, Jira, Figma, Artifacts and Obsidian. Via blurs personal data when it captures web pages, then Claude looks at each screenshot and drops any that still shows personal data, tokens or account details. Code goes to Gemini only through those scripts |
 | Secrets | Keys live in the OS keychain, never in this repo or in config files. Project setup includes a secret check |
 | Destructive git | Agents never commit, push or stash on their own. A PR needs a recorded review |
 | Premium spend | Fable agents run only after you say yes |
