@@ -164,6 +164,40 @@ def check_token_cost(cost):
     return None
 
 
+ANCHOR_RE = re.compile(r"f[1-9][0-9]*")
+VARIANT_RE = re.compile(r"f[1-9][0-9]*-v[1-9][0-9]*")
+
+
+def check_prototype(proto):
+    """The top-level `prototype` link (written by via_prototype.py). Returns a message, or None when valid."""
+    if not isinstance(proto, dict):
+        return "prototype must be an object."
+    path = proto.get("path")
+    if not (is_text(path) and path.endswith(".html") and posixpath.normpath(path) == path
+            and not path.startswith(("/", "..")) and "\\" not in path):
+        return "prototype.path must be a relative .html path inside the run folder."
+    if not isinstance(proto.get("published"), bool):
+        return "prototype.published must be true or false."
+    url = proto.get("url")
+    if url is not None and not (is_text(url) and url.startswith("https://") and not re.search(r"\s", url)):
+        return "prototype.url must be an https link or null."
+    if proto.get("published") and url is None:
+        return "prototype.published is true but prototype.url is empty."
+    if "reason" in proto and not is_text(proto["reason"]):
+        return "prototype.reason must be text."
+    return None
+
+
+def check_finding_prototype(link):
+    if not (isinstance(link, dict) and isinstance(link.get("anchor"), str) and ANCHOR_RE.fullmatch(link["anchor"])):
+        return "prototype.anchor must look like f1."
+    variants = link.get("variants")
+    if not (isinstance(variants, list) and 2 <= len(variants) <= 3
+            and all(isinstance(v, str) and VARIANT_RE.fullmatch(v) and v.startswith(link["anchor"] + "-") for v in variants)):
+        return "prototype.variants must list 2 or 3 anchors like f1-v1."
+    return None
+
+
 def check_record(rec):
     """Return a message naming the first problem, or None when the record is valid."""
     if not isinstance(rec, dict):
@@ -203,6 +237,10 @@ def check_record(rec):
             return "%s.route must be one of %s or null." % (where, ", ".join(sorted(ROUTES)))
         if f.get("ticket") is not None and not is_text(f["ticket"]):
             return "%s.ticket must be text." % where
+        if f.get("prototype") is not None:
+            problem = check_finding_prototype(f["prototype"])
+            if problem:
+                return "%s.%s" % (where, problem)
     for i, s in enumerate(rec.get("screenshots", [])):
         if not (isinstance(s, dict) and all(is_text(s.get(k)) for k in ("path", "screen", "theme", "size"))
                 and isinstance(s.get("redacted"), bool)):
@@ -216,6 +254,10 @@ def check_record(rec):
     for key in ("skills", "integrations"):
         if key in rec and not isinstance(rec[key], dict):
             return "%s must be an object." % key
+    if rec.get("prototype") is not None:
+        problem = check_prototype(rec["prototype"])
+        if problem:
+            return problem
     if "token_cost" in rec:
         return check_token_cost(rec["token_cost"])
     return None
@@ -308,6 +350,9 @@ def merge_findings(ledger, findings, scope, run_name, held=()):
         elif entry["status"] == "rejected":
             f["status"] = "rejected"  # stays rejected; line and text still follow the finding below
             counts["rejected"] += 1
+        elif entry.get("run") == run_name and entry["status"] in ("new", "open"):
+            f["status"] = entry["status"]  # this run was merged already (the prototype step merges again): nothing changed
+            counts[entry["status"]] += 1
         else:
             if entry["status"] == "fixed":
                 counts["regressed"] += 1
@@ -318,6 +363,10 @@ def merge_findings(ledger, findings, scope, run_name, held=()):
                       "issue": f["issue"], "last_seen": now, "run": run_name})
         if f.get("ticket"):
             entry["ticket"] = f["ticket"]
+        if f.get("prototype"):
+            entry["prototype"] = f["prototype"]  # anchors only; the page link stays in the untracked run record
+        else:
+            entry.pop("prototype", None)
     for fid, entry in ledger.items():
         if fid not in seen and entry["status"] in ("new", "open") and covers(scope, entry.get("screen", "")):
             entry["status"] = "fixed"

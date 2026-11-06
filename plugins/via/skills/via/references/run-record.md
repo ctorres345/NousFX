@@ -6,6 +6,7 @@ Claude makes the design calls. `scripts/via_run.py` (stdlib Python) does the boo
 1. `python3 "<plugin>/scripts/via_run.py" init` makes `.via/runs/<stamp>/` and adds `.via/` to the project's `.gitignore` first. It prints `run_dir`.
 2. Put screenshots and the prototype in `run_dir`. On web, `via_capture.py` prints the `screenshots` entries for the record (see `platforms.md`). Write `run_dir/findings.json` (never write `id`, `status` or `merged_at`).
 3. `via_run.py merge <run_dir>` validates the record, gives each finding its ID, updates the ledger in `docs/design/via.md`, and writes the IDs and statuses back into `findings.json`. It prints counts of new, open, fixed, rejected and regressed.
+   After `merge`, `via_prototype.py build <run_dir>` makes `prototype.html` and adds `prototype` links to the record (see `prototype.md`). Run `merge` once more so the ledger gets the anchors.
 4. When the user rejects a finding: `via_run.py reject <id> --reason "<why>"`. It never returns as new.
 5. After the code is final: `via_run.py pass <run_dir>`. It records the pass for the current code state in the git dir (`via-check-ok`). Editing code afterwards makes the record stale.
 

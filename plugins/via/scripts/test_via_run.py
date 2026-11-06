@@ -438,6 +438,14 @@ class ViaRunTest(unittest.TestCase):
         self.assertTrue(data.startswith(before.encode()))
         self.assertEqual(data.count(b"\n"), data.count(b"\r\n"), "the ledger block has bare LF lines")
 
+    def test_merging_the_same_run_again_changes_no_status_or_count(self):
+        run_dir, first, merged = self.merge(record([finding(line=10), finding(line=50)]))
+        self.assertEqual((first["new"], first["open"]), (2, 0))
+        again = self.ok("merge", run_dir)
+        self.assertEqual((again["new"], again["open"], again["regressed"]), (2, 0, 0))
+        after = json.loads(read(os.path.join(run_dir, "findings.json")))
+        self.assertEqual(self.statuses(after), self.statuses(merged))
+
     def test_a_finding_rejected_after_the_merge_does_not_count_as_open_in_the_pass(self):
         run_dir, _, merged = self.merge(record([finding(severity="high")]))
         self.ok("reject", merged["findings"][0]["id"], "--reason", "intended")
@@ -623,6 +631,43 @@ class ViaRunTest(unittest.TestCase):
                     {"second_opinion": {"who": "argon", "input_tokens": 1.5, "output_tokens": 1}}):
             with self.subTest(bad=bad):
                 self.rejected(record([], token_cost=bad), "token_cost")
+
+    # --- prototype links (written by via_prototype.py) ---
+
+    def test_prototype_links_are_kept_and_the_ledger_gets_the_anchors_only(self):
+        link = {"anchor": "f1", "variants": ["f1-v1", "f1-v2"]}
+        top = {"path": "prototype.html", "published": True, "url": "https://claude.ai/artifact/private-token", "reason": "ok"}
+        _, _, merged = self.merge(record([finding(prototype=link)], prototype=top))
+        self.assertEqual(merged["prototype"], top)
+        self.assertEqual(merged["findings"][0]["prototype"], link)
+        ledger = read(os.path.join(self.repo, LEDGER))
+        self.assertIn('"anchor": "f1"', ledger)
+        self.assertNotIn("private-token", ledger)  # the ledger is tracked; an Artifact link must not land in it
+
+    def test_a_later_run_without_a_prototype_clears_the_ledger_anchors(self):
+        link = {"anchor": "f1", "variants": ["f1-v1", "f1-v2"]}
+        self.merge(record([finding(prototype=link)]))
+        self.merge(record([finding()]))
+        self.assertNotIn('"anchor"', read(os.path.join(self.repo, LEDGER)))
+
+    def test_prototype_links_must_be_well_formed(self):
+        good = {"anchor": "f1", "variants": ["f1-v1", "f1-v2"]}
+        top = {"path": "prototype.html", "published": False, "url": None}
+        for bad in ("x", {"path": "../p.html", "published": False, "url": None},
+                    {"path": "/abs/p.html", "published": False, "url": None},
+                    {"path": "p.txt", "published": False, "url": None},
+                    {"path": "a\\p.html", "published": False, "url": None},
+                    {"path": "p.html", "published": "no", "url": None},
+                    {"path": "p.html", "published": False, "url": "http://x"},
+                    {"path": "p.html", "published": True, "url": None},
+                    {"path": "p.html", "published": False, "url": "https://a b"}):
+            with self.subTest(top=bad):
+                self.rejected(record([finding()], prototype=bad), "prototype")
+        for bad in ("x", {"anchor": "home", "variants": ["f1-v1", "f1-v2"]}, {"anchor": "f1", "variants": ["f1-v1"]},
+                    {"anchor": "f1", "variants": ["f2-v1", "f2-v2"]}, {"anchor": "f1", "variants": ["f1-v1"] * 4}):
+            with self.subTest(finding=bad):
+                self.rejected(record([finding(prototype=bad)], prototype=top), "prototype")
+        self.merge(record([finding(prototype=good)], prototype=top))
 
     def outbound(self, rec, files):
         run_dir = self.new_run(rec)
