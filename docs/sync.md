@@ -158,7 +158,7 @@ harness/AGENTS.md + agy.overlay.md + local.md + local.agy.md
 - `--check` exits 1 for a missing or hand-edited generated file, a missing skills link, or a hook without the executable bit. `--dry-run` prints diffs and writes nothing. `--restore` removes what a run created and puts back what it changed.
 - The review gate is not copied into the repo: a copy there is code under review, and a branch could edit it to pass. The pre-push hook reads the gate from `~/.claude/hooks`, and agy uses the gate in the global plugin.
 - `--restore` does not undo a mode change on a hook whose text was already right (sync only made it executable).
-- Sync does not change git config. To turn the hook on I run `git config core.hooksPath .githooks` once per clone.
+- Sync does not change git config. To turn the hook on I check `ls .git/hooks | grep -v sample` once per clone. If other hooks are there (graphify's, for example), I link it: `common=$(git rev-parse --path-format=absolute --git-common-dir); ln -s "$common/../.githooks/pre-push" "$common/hooks/pre-push"`. `git config core.hooksPath .githooks` switches those other hooks off, so I use it only when `.git/hooks` holds nothing else.
 - `project-setup` runs `--dry-run` and then the real run when it sets a repo up, and `--check` in its audit.
 
 ## MCP
