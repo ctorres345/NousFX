@@ -15,6 +15,8 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
 import xml.dom.minidom
 
 sys.dont_write_bytecode = True
@@ -417,6 +419,38 @@ class ViaCaptureTest(unittest.TestCase):
         write(os.path.join(self.repo, "live.html"),
               '<!doctype html><head><meta http-equiv="refresh" content="30"></head><p>live</p>')
         self.ok("live=live.html")
+
+    def test_a_meta_refresh_fails_the_capture_whatever_the_attribute_order(self):
+        write(os.path.join(self.repo, "go.html"),
+              '<!doctype html><head><meta content="0;url=/other.html" http-equiv="refresh"></head>')
+        r = self.capture("go=go.html")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertEqual(self.pngs(), [])
+
+    def test_a_service_worker_script_request_is_refused_and_fails_the_capture(self):
+        sys.path.insert(0, HERE)
+        import via_capture
+        write(os.path.join(self.repo, "sw.js"), "self.onfetch=()=>{}")
+        server = via_capture.start_mask(via_capture.mask_style([]), root=self.repo)
+        try:
+            req = urllib.request.Request(server.origin + "/sw.js", headers={"Service-Worker": "script"})
+            with self.assertRaises(urllib.error.HTTPError) as got:
+                urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req)
+            self.assertEqual(got.exception.code, 502)
+            self.assertTrue(server.errors)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_each_shot_gets_a_profile_of_its_own_so_a_service_worker_cannot_carry_over(self):
+        self.ok("home=index.html")
+        profiles = [a for args in self.calls() for a in args if a.startswith("--user-data-dir=")]
+        self.assertEqual(len(profiles), len(set(profiles)))
+
+    def test_the_guard_puts_the_mask_into_the_document_itself(self):
+        self.ok("home=index.html")
+        body = self.pages()[0]["body"]
+        self.assertIn("adopt(document)", body)
 
     def test_a_page_with_no_content_type_is_masked_too(self):
         self.ok("home=" + self.serve() + "/untyped")

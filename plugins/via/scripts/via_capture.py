@@ -67,7 +67,7 @@ MASKED = ("input:not([type=checkbox]):not([type=radio]):not([type=button]):not([
 # A selector may not hold anything that could close the style or start a new rule.
 # No slash either, so a selector cannot open a CSS comment.
 SELECTOR_RE = re.compile(r"^[A-Za-z0-9_\-\s.#\[\]=\"'*>+~,():^$|@%!]+$")
-META_REFRESH_URL_RE = re.compile(rb"<meta\b[^>]*http-equiv\s*=\s*[\"']?refresh[^>]*url\s*=", re.IGNORECASE)
+META_REFRESH_URL_RE = re.compile(rb"<meta\b(?=[^>]*http-equiv\s*=\s*[\"']?refresh)(?=[^>]*\burl\s*=)[^>]*>", re.IGNORECASE)
 REFRESH_URL_RE = re.compile(r"^(.*?;\s*url\s*=\s*)(.*)$", re.IGNORECASE | re.DOTALL)
 META_CSP_RE = re.compile(rb"<meta\b[^>]*http-equiv\s*=\s*[\"']?content-security-policy[^>]*>", re.IGNORECASE)
 LOOPBACK = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
@@ -96,9 +96,11 @@ GUARD_JS = (
     "function has(r){return (sheet&&Array.prototype.indexOf.call(r.adoptedStyleSheets,sheet)>=0)"
     "||!!r.querySelector('style[data-via-mask]');}"
     "function style(r){var t=document.createElement('style');t.setAttribute('data-via-mask','');"
-    "t.textContent=css;r.appendChild(t);}"
+    "t.textContent=css;(r.nodeType===9?(r.head||r.documentElement):r).appendChild(t);}"
     "var obs=null,roots=new WeakMap();"
-    "function adopt(r){try{if(sheet&&d&&d.set){r.adoptedStyleSheets=r.adoptedStyleSheets;}if(!has(r)){style(r);}}"
+    # The page itself keeps its mask too: a sheet adopted into the document survives head.innerHTML and document.write.
+    "function adopt(r){try{if(sheet&&r.nodeType===9){r.adoptedStyleSheets=Array.from(r.adoptedStyleSheets).concat([sheet]);}"
+    "else if(sheet&&d&&d.set){r.adoptedStyleSheets=r.adoptedStyleSheets;}if(!has(r)){style(r);}}"
     "catch(e){try{style(r);}catch(x){}}"
     # Watch the root itself: a document observer does not see inside shadow trees, and a page's innerHTML wipes the style child.
     "try{if(obs)obs.observe(r,{childList:true,subtree:true});}catch(e){}}"
@@ -109,8 +111,8 @@ GUARD_JS = (
     "if(r){if(!has(r)){adopt(r);}walk(r);}"
     "for(var c=n.firstChild;c;c=c.nextSibling)walk(c);}"
     "obs=new MutationObserver(function(ms){ms.forEach(function(m){try{var g=m.target.getRootNode();"
-    "if(g.nodeType===11&&g.host&&!has(g))adopt(g);m.addedNodes.forEach(walk);}catch(e){}});});"
-    "obs.observe(document,{childList:true,subtree:true});"
+    "if((g.nodeType===9||(g.nodeType===11&&g.host))&&!has(g))adopt(g);m.addedNodes.forEach(walk);}catch(e){}});});"
+    "obs.observe(document,{childList:true,subtree:true});adopt(document);"
     "document.addEventListener('DOMContentLoaded',function(){walk(document);});"
     "if(window.navigation){navigation.addEventListener('navigate',function(e){try{"
     "if(new URL(e.destination.url).origin!==location.origin&&e.cancelable)e.preventDefault();}"
@@ -295,6 +297,8 @@ class MaskHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.headers.get("Host") != "127.0.0.1:%d" % self.server.server_address[1]:
             return self.text(421, "wrong host")  # blocks DNS rebinding
+        if self.headers.get("Service-Worker"):  # a worker would answer later loads without the mask
+            return self.fail("the page tried to register a service worker, which could bypass the mask")
         try:
             if self.server.upstream:
                 self.relay()
@@ -513,7 +517,7 @@ def main():
     servers, urls = masked_urls(screens, project, mask_style(args.redact_selector))
     try:
         for shot in shots:
-            take(browser, os.path.join(work, "profile"), stage, {**shot, "url": urls[shot["url"]]})
+            take(browser, os.path.join(work, "profile-" + shot["path"]), stage, {**shot, "url": urls[shot["url"]]})
             for server in servers:
                 if server.errors:
                     die("%s (while shooting %s). No screenshots were kept." % (server.errors[0], shot["path"]), 4)
