@@ -64,8 +64,26 @@ class Mapping(AgentBase):
         self.assertEqual(r.returncode, 0, r.stderr)
         after = {n: self.agent(n[:-3]) for n in self.listing()}
         changed = [n for n in before if before[n] != after[n]]
-        self.assertEqual(changed, ["reviewer.md"])
+        self.assertEqual(changed, ["reviewer-high.md", "reviewer.md"])  # both have role: strong
         self.assertIn("model: opus-next\n", after["reviewer.md"])
+
+    def test_review_tier_agents_get_their_model_and_effort(self):
+        """NFX-63: Tier 0 and 1 use reviewer-light, Tier 2 reviewer, Tier 3 reviewer-high."""
+        self.sync()
+        for name, model, effort in (("reviewer-light", "sonnet", "medium"), ("reviewer", "opus", "medium"),
+                                    ("reviewer-high", "opus", "high")):
+            text = self.agent(name)
+            self.assertIn(f"\nmodel: {model}\n", text, name)
+            self.assertEqual(len(re.findall(r"^effort:", text, re.M)), 1, name)
+            self.assertIn(f"\neffort: {effort}\n", text, name)
+
+    def test_the_balanced_role_is_its_own_entry(self):
+        self.sync()
+        models = os.path.join(self.repo, "harness", "models.toml")
+        write(models, read(models).replace('model = "sonnet"', 'model = "sonnet-next"'))
+        self.sync()
+        self.assertIn("model: sonnet-next\n", self.agent("reviewer-light"))
+        self.assertIn("model: opus\n", self.agent("reviewer"))
 
     def test_unknown_role_fails_and_writes_nothing(self):
         path = os.path.join(self.repo, "harness", "agents", "reviewer.md")
@@ -111,7 +129,7 @@ class AgentDrift(AgentBase):
         write(models, read(models).replace('model = "opus"', 'model = "opus-next"'))
         self.sync()
         after = {n[:-3]: self.header(n[:-3]) for n in self.listing()}
-        self.assertEqual([n for n in before if before[n] != after[n]], ["reviewer"])
+        self.assertEqual(sorted(n for n in before if before[n] != after[n]), ["reviewer", "reviewer-high"])
         path = os.path.join(self.repo, "harness", "agents", "reviewer.md")
         write(path, read(path) + "\nExtra line.\n")
         self.assertEqual(self.sync("--check").returncode, 1)

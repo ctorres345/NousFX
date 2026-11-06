@@ -113,14 +113,16 @@ CI: git rev-parse HEAD^{tree} == hash in the line? ◄────────�
 ```
 
 1. Finish the code and run the review loop. It records the mark.
-2. Run `python3 -B claude/hooks/review-gate.py attest`. It prints one line and exits 0 only when a clean mark (or a recorded skip) covers the current code. Otherwise it exits 2 and prints nothing.
-3. Paste the line into the PR body, as its own line. A commit trailer on the last commit works too.
+2. Run `python3 -B claude/hooks/review-gate.py attest`. It prints the `Review-Gate:` line (plus a `Review-Tier:` line when the mark has a tier) and exits 0 only when a clean mark (or a recorded skip) covers the current code. Otherwise it exits 2 and prints nothing.
+3. Paste the lines into the PR body, each on its own line. A commit trailer on the last commit works too.
 4. Any later change to the tree (a new commit, an amended file) changes the hash. Run the review again, run `attest` again, edit the body.
 
 Line formats:
 
 - `Review-Gate: <40 or 64 hex chars>`
 - `Review-Gate: <hash> skipped: <reason>` for a recorded skip. The reason is one line.
+
+- `Review-Tier: <0-3> (<reasons>)` on its own line after it, from `--mark --tier N --reasons "..."`. The review loop passes the tier that `tier.py` picked. It tells a reader how deep the review was. CI and the gate never read it, and `verify-attestation` ignores it.
 
 `verify-attestation --tree HASH --text-file FILE [--text-file FILE]` is what CI runs. The line must start its own line. A mention inside a sentence does not count.
 

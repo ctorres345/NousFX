@@ -3,7 +3,7 @@
 I keep my rules in layers and let one command assemble the global rules for Claude Code and, when I ask for it, for agy (Antigravity CLI).
 
 ```
-harness/AGENTS.md                  neutral rules, models named by role (fast / strong / deep)
+harness/AGENTS.md                  neutral rules, models named by role (fast / balanced / strong / deep)
 harness/overlays/claude.overlay.md Claude only: Skill tool, goal runs, subagent names
 harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by hand
 ~/.config/nousfx/local.md          mine alone, never committed, tool-neutral (copy harness/local.md.example)
@@ -104,8 +104,8 @@ Skills I use but do not write (Matt Pocock's workflow set, `ui-ux-pro-max`, the 
 My agents name a role, not a model. Sync turns that into Claude's agent files.
 
 ```
-harness/agents/*.md     frontmatter says role: fast | strong | deep (no model line)
-harness/models.toml     per tool, each role -> model + effort (claude: haiku / opus / fable)
+harness/agents/*.md     frontmatter says role: fast | balanced | strong | deep (no model line)
+harness/models.toml     per tool, each role -> model + effort (claude: haiku / sonnet / opus / fable)
         |
         v
 ~/.claude/agents/*.md   model and effort filled in, generated header after the frontmatter
