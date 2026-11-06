@@ -74,15 +74,15 @@ BLOCK = """\
 Blocked: no review recorded for this code. Before opening a PR:
 - Run the review now by invoking the `review-loop` skill (Skill tool); do not ask the user to type
   it. In unattended or /goal runs, do the same steps by hand: /simplify, then the reviewer agent and round cap
-  that `review-loop` names for the tier, fixing real high/med findings and showing test results.
+  that `review-loop` names for the tier, fixing real high findings and real med findings at confidence 60 or more and showing test results.
 - If the change touches auth, migrations, concurrency, or a public API, offer the
   `reviewer-deep` agent (ask first).
-- When done, record it: python3 "{script}" --mark --findings <open high/med count> --tier <0-3> --reasons "<tier reasons>"
+- When done, record it: python3 "{script}" --mark --findings <open high count + open med at 60 or more> --tier <0-3> --reasons "<tier reasons>"
 - If the user explicitly approves skipping the review: python3 "{script}" --mark --skip "<reason>"
 Editing code after the review invalidates the marker; re-run on the final diff."""
 
 FINDINGS_BLOCK = """\
-Blocked: the recorded review has {count} open high/med finding(s).
+Blocked: the recorded review has {count} open high or med (confidence 60+) finding(s).
 - Fix them and run the `review-loop` skill again. When none are open, it records: python3 "{script}" --mark --findings 0
 - If the user explicitly approves opening the PR anyway: python3 "{script}" --mark --skip "<reason>"
 """
@@ -324,7 +324,7 @@ def mark(argv):
     except (IndexError, ValueError):
         findings, skip = None, None
     if findings is None and skip is None:
-        print('Nothing recorded. Use --mark --findings <open high/med count> or --mark --skip "<reason>".',
+        print('Nothing recorded. Use --mark --findings <open high count + open med at 60 or more> or --mark --skip "<reason>".',
               file=sys.stderr)
         return 2
     cwd = os.getcwd()
