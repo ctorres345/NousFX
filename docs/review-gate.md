@@ -122,7 +122,12 @@ Line formats:
 - `Review-Gate: <40 or 64 hex chars>`
 - `Review-Gate: <hash> skipped: <reason>` for a recorded skip. The reason is one line.
 
-- `Review-Tier: <0-3> (<reasons>)` on its own line after it, from `--mark --tier N --reasons "..."`. The review loop passes the tier that `tier.py` picked. It tells a reader how deep the review was. CI and the gate never read it, and `verify-attestation` ignores it.
+- `Review-Tier: <0-3> (<reasons>)` on its own line after it, from `--mark --tier N --reasons "..."`. The review loop passes the tier that `tier.py` picked. It tells a reader how deep the review was. CI never reads it, and `verify-attestation` ignores it.
+- `Review-Tier: <0-3> (<reasons>) override: computed <N>, <reason>` when the tier is below what `tier.py` computes and `--tier-override "<reason>"` was given.
+
+`--mark --tier N` runs `tier.py` (from `skills/review-loop/scripts/`, next to the hook's folder, so the same path works in the repo, in `~/.claude` and in a project `.claude`) on the diff and refuses a `N` below the computed tier, naming it. The computed tier uses the diff only; Jira labels can only raise a tier in the review loop, so the gate's number can be lower than the loop's. A `--tier` at or above it passes. `--tier-override "<reason>"` records a lower tier on purpose; use it only when the user approves, as with `--skip`. A missing, failing or slow `tier.py` counts as Tier 2, with a note on stderr, so only Tier 0 or 1 needs an override then. A skip has no tier and runs nothing. A mark without `--tier` records no tier and runs nothing, so its PR body has no `Review-Tier:` line; that gap is visible to a reader but the gate does not refuse it, because older callers of `--mark` pass no tier. Old marks without a tier still attest.
+
+This is a guardrail against a mistaken or lazy agent, not against someone editing the marker file: the override reason is self-asserted, like a skip reason. CI does not recompute the tier yet.
 
 `verify-attestation --tree HASH --text-file FILE [--text-file FILE]` is what CI runs. The line must start its own line. A mention inside a sentence does not count.
 

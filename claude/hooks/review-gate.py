@@ -24,7 +24,9 @@ when a valid mark covers the current code, else exits 2. `verify-attestation --t
 Mark mode: `review-gate.py --mark --findings N` or `--mark --skip "reason"` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
 `--tier 0-3 [--reasons "..."]` (from the review loop's tier.py) is stored too; `attest` then prints a separate
-`Review-Tier: N (reasons)` line after the `Review-Gate:` line. The gate never reads the tier to decide.
+`Review-Tier: N (reasons)` line after the `Review-Gate:` line. `--mark` runs tier.py (next to this hook's
+skills folder) and refuses a --tier below the computed one unless `--tier-override "<reason>"` is given, which
+`attest` then prints. A missing or failing tier.py counts as Tier 2. Only `--mark` reads the tier, never `check`.
 Open findings above 0 keep the PR blocked unless a --skip reason was recorded.
 `--mark --findings` also runs the project's check command (`[check] command` in .nousfx/project.toml, read
 from the default branch, so a branch cannot weaken it) and refuses the mark when it fails, times out,
@@ -70,6 +72,11 @@ BRANCH_OK = re.compile(r"^cesar/[A-Z][A-Z0-9]+-\d+$")
 MCP_PR_CREATE = re.compile(r"create_pull_request", re.I)
 GIT_REPO_VARS = re.compile(r"\bGIT_(?:DIR|WORK_TREE)\b", re.I)
 
+TIER_TOO_LOW = """\
+Nothing recorded: --tier {tier} is below the computed Tier {computed} ({why}).
+Record the computed tier or a higher one. If the user explicitly approves the lower tier, add
+--tier-override "<reason>" to the same command: python3 "{script}" --mark ... --tier {tier} --tier-override "<reason>\""""
+
 BLOCK = """\
 Blocked: no review recorded for this code. Before opening a PR:
 - Run the review now by invoking the `review-loop` skill (Skill tool); do not ask the user to type
@@ -78,6 +85,7 @@ Blocked: no review recorded for this code. Before opening a PR:
 - If the change touches auth, migrations, concurrency, or a public API, offer the
   `reviewer-deep` agent (ask first).
 - When done, record it: python3 "{script}" --mark --findings <open high count + open med at 60 or more> --tier <0-3> --reasons "<tier reasons>"
+  The mark refuses a --tier below what tier.py computes. Add --tier-override "<reason>" only with the user's explicit approval.
 - If the user explicitly approves skipping the review: python3 "{script}" --mark --skip "<reason>"
 Editing code after the review invalidates the marker; re-run on the final diff."""
 
@@ -289,9 +297,9 @@ def log_tail(path, lines=40):
 
 
 def tier_args(argv):
-    """(tier, reasons) from `--tier 0-3 [--reasons TEXT]`; (None, None) without --tier. ValueError on bad input:
-    a tier outside 0-3, a missing value, or --reasons without --tier."""
-    tier = reasons = None
+    """(tier, reasons, override) from `--tier 0-3 [--reasons TEXT] [--tier-override TEXT]`; Nones without --tier.
+    ValueError on bad input: a tier outside 0-3, a missing value, or --reasons / --tier-override without --tier."""
+    tier = reasons = override = None
     if "--tier" in argv:
         tier = argv[argv.index("--tier") + 1]
         if tier not in ("0", "1", "2", "3"):
@@ -302,14 +310,45 @@ def tier_args(argv):
         if tier is None or reasons.startswith("--"):
             raise ValueError
         reasons = " ".join(reasons.split()) or None
-    return tier, reasons
+    if "--tier-override" in argv:
+        override = argv[argv.index("--tier-override") + 1]
+        override = " ".join(override.split())
+        if tier is None or not override or override.startswith("--"):
+            raise ValueError
+    return tier, reasons, override
+
+
+TIER_PY = os.path.join("..", "skills", "review-loop", "scripts", "tier.py")  # relative to this file's folder
+TIER_TIMEOUT = 60
+
+
+def computed_tier(cwd):
+    """(tier, why, note) from tier.py in the folder next to this hook's own. The tier is Tier 2 when tier.py is
+    missing, fails, times out or prints something odd: the same floor tier.py and the review loop use."""
+    path = os.path.normpath(os.path.join(os.path.dirname(SCRIPT), TIER_PY))
+    if not os.path.isfile(path):
+        return 2, "", f"tier.py not found at {path}; counted as Tier 2 (re-run the sync or install.sh)"
+    try:
+        r = subprocess.run([sys.executable, "-B", path, "--cwd", cwd], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=TIER_TIMEOUT)
+        data = json.loads(r.stdout)
+        tier = data["tier"]
+        if r.returncode != 0 or isinstance(tier, bool) or tier not in (0, 1, 2, 3):
+            raise ValueError(f"exit {r.returncode}" if r.returncode else "unexpected output")
+        why = data.get("reasons")
+        return tier, " ".join(str(x) for x in why) if isinstance(why, list) else "", ""
+    except Exception as e:
+        return 2, "", f"tier.py failed ({type(e).__name__}: {e}); counted as Tier 2"
 
 
 def mark(argv):
     try:
-        tier, reasons = tier_args(argv)
+        tier, reasons, override = tier_args(argv)
+        if override and "--skip" in argv:
+            raise ValueError
     except (IndexError, ValueError):
-        print("Nothing recorded. --tier takes 0, 1, 2 or 3; --reasons \"...\" needs --tier.", file=sys.stderr)
+        print("Nothing recorded. --tier takes 0, 1, 2 or 3; --reasons \"...\" and --tier-override \"...\" need --tier "
+              "and no --skip.", file=sys.stderr)
         return 2
     findings, skip = None, None
     try:
@@ -335,7 +374,16 @@ def mark(argv):
     marker = {"tree": tree, "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
               "findings_open": findings, "skipped": skip}
     if tier is not None and not skip:  # a skip ran no review, so it has no tier
+        computed, why, note = computed_tier(cwd)
+        if note:
+            print(f"Note: {note}", file=sys.stderr)
         marker["tier"], marker["tier_reasons"] = tier, reasons
+        if tier < computed:
+            if not override:
+                print(TIER_TOO_LOW.format(tier=tier, computed=computed, why=why or "no reasons",
+                                          script=SCRIPT), file=sys.stderr)
+                return 2
+            marker["tier_computed"], marker["tier_override"] = computed, override
     if not skip:
         try:
             ref = default_ref(cwd)
@@ -517,7 +565,12 @@ def attest(cwd):
     tier = marker.get("tier")
     if isinstance(tier, int) and not isinstance(tier, bool) and 0 <= tier <= 3:
         reasons = " ".join(str(marker.get("tier_reasons") or "").split())
-        print(f"Review-Tier: {tier}" + (f" ({reasons})" if reasons else ""))
+        line = f"Review-Tier: {tier}" + (f" ({reasons})" if reasons else "")
+        override = " ".join(str(marker.get("tier_override") or "").split())
+        computed = marker.get("tier_computed")
+        if override and isinstance(computed, int) and not isinstance(computed, bool) and computed > tier:
+            line += f" override: computed {computed}, {override}"
+        print(line)
     return 0
 
 
