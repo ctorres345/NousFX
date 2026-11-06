@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -95,6 +96,30 @@ class SizeBands(unittest.TestCase):
         self.assertEqual(result["stats"]["files"], 1)
         self.assertEqual(result["tier"], 0)  # 10 lines in 1 file
 
+    def test_a_handwritten_build_folder_is_code_but_build_output_is_not(self):
+        self.assertEqual(tier.classify([code(300, "src/build/Deploy.kt")])["stats"]["lines"], 300)
+        for path in ("build/classes/A.class.kt", "app/build/generated/Foo.kt", "app/build/outputs/x.kt",
+                     "app/build/intermediates/y.kt"):
+            self.assertEqual(tier.classify([code(300, path)])["stats"]["lines"], 0, path)
+
+    def test_code_in_a_snapshots_or_screenshots_folder_is_code(self):
+        for path in ("src/snapshots/SnapshotService.kt", "src/screenshots/Capture.kt"):
+            self.assertEqual(tier.classify([code(30, path)])["stats"]["lines"], 30, path)
+        self.assertEqual(tier.classify([code(30, "src/snapshots/a.snap")])["stats"]["lines"], 0)
+        self.assertEqual(tier.classify([code(30, "src/screenshots/a.png")])["stats"]["lines"], 0)
+
+    def test_code_under_docs_is_code(self):
+        r = tier.classify([f("docs/tool.py", text=["password = 1"] * 30)])
+        self.assertEqual(r["stats"]["lines"], 30)
+        self.assertEqual(r["tier"], 3)
+        self.assertEqual(tier.classify([f("docs/guide.md", added=300)])["tier"], 0)
+        self.assertEqual(tier.classify([f("docs/notes", added=300)])["tier"], 0)
+
+    def test_only_ignored_files_get_an_honest_reason(self):
+        r = tier.classify([f("app/build/generated/Foo.kt", added=50)])
+        self.assertEqual(r["tier"], 0)
+        self.assertNotIn("docs or text only", r["reasons"][0])
+
     def test_lock_file_lines_are_not_counted_but_the_file_is_a_risk_path(self):
         result = tier.classify([code(10), f("yarn.lock", added=900), f("poetry.lock", added=900)])
         self.assertEqual(result["stats"]["lines"], 10)
@@ -169,6 +194,26 @@ class Risk(unittest.TestCase):
         self.assertIn("Tier 3: touches app/billing_v2/x.py", r["reasons"])
         self.assertEqual(self.one("app/other/x.py", project_paths=["app/billing_v2/*"])["tier"], 0)
 
+    def test_project_folder_names_match_everything_below_them(self):
+        for entry in ("core", "core/", "app/core"):
+            r = self.one("app/core/engine.py" if entry == "app/core" else "core/engine.py", project_paths=[entry])
+            self.assertEqual(r["tier"], 3, entry)
+        self.assertEqual(self.one("corex/engine.py", project_paths=["core"])["tier"], 0)
+
+    def test_globstar_entry_also_matches_at_the_repo_root(self):
+        for path in ("secrets.py", "a/secrets.py", "a/b/secrets.py"):
+            self.assertEqual(self.one(path, project_paths=["**/secrets.py"])["tier"], 3, path)
+        self.assertEqual(self.one("a/other.py", project_paths=["**/secrets.py"])["tier"], 0)
+
+    def test_build_files_written_as_text_are_risk_paths(self):
+        for path in ("CMakeLists.txt", "native/CMakeLists.txt", "cmake/Find.cmake", "Makefile", "pom.xml"):
+            self.assertEqual(self.one(path)["tier"], 3, path)
+
+    def test_plural_and_past_tense_forms(self):
+        for line in ("refreshTokens = []", "hashPasswords(x)", "encrypted = True", "decrypted = x",
+                     "authenticated = True", "authorized = True"):
+            self.assertEqual(self.one("src/x.py", [line])["tier"], 3, line)
+
     def test_project_risk_path_can_mark_a_doc_risky(self):
         self.assertEqual(self.one("docs/policy.md", project_paths=["docs/policy.md"])["tier"], 3)
 
@@ -220,7 +265,6 @@ class Ui(unittest.TestCase):
         self.assertEqual(tier.classify([code(200, "web/src/App.tsx")])["tier"], 2)
 
 
-GIT_VARS = [k for k in os.environ if k.startswith("GIT_")]
 TIER = os.path.join(HERE, "tier.py")
 HINT_PARTS = ("git remote set-head origin -a", "git fetch --unshallow")
 
@@ -229,8 +273,10 @@ class GitCase(unittest.TestCase):
     """A throwaway repo on branch main whose 'origin' refs are made by hand (no network, no real remote)."""
 
     def setUp(self):
-        for name in GIT_VARS:
-            self.addCleanup(os.environ.__setitem__, name, os.environ[name])
+        patcher = mock.patch.dict(os.environ)  # restores the environment after the test
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in [k for k in os.environ if k.startswith("GIT_")]:
             del os.environ[name]
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="tier-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
@@ -260,9 +306,9 @@ class GitCase(unittest.TestCase):
         """Make refs/remotes/origin/<branch> point at `ref` (default HEAD)."""
         self.git("update-ref", "refs/remotes/origin/" + branch, ref or "HEAD")
 
-    def run_tier(self, *args):
+    def run_tier(self, *args, cwd=None):
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-        return subprocess.run([sys.executable, "-B", TIER, "--cwd", self.repo, *args], capture_output=True,
+        return subprocess.run([sys.executable, "-B", TIER, "--cwd", cwd or self.repo, *args], capture_output=True,
                               text=True, env=env)
 
     def result(self, *args):
@@ -429,10 +475,41 @@ class Cli(GitCase):
     def test_not_a_git_repo_is_tier_2_not_a_stop(self):
         plain = os.path.join(self.tmp, "plain")
         os.makedirs(plain)
-        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-        r = subprocess.run([sys.executable, "-B", TIER, "--cwd", plain], capture_output=True, text=True, env=env)
+        r = self.run_tier(cwd=plain)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["tier"], 2)
+
+    def test_error_results_have_the_same_keys_as_normal_results(self):
+        normal = self.result("--base", "HEAD")
+        error = self.result("--base", "not-a-commit")
+        self.assertEqual(sorted(error), sorted(normal))
+        self.assertEqual(sorted(error["stats"]), sorted(normal["stats"]))
+
+    def test_untracked_lock_file_is_a_risk_path_but_is_not_read(self):
+        self.set_origin("main")
+        self.write("yarn.lock", "x\n" * 900)
+        out = self.result()
+        self.assertEqual(out["tier"], 3)
+        self.assertEqual(out["stats"]["lines"], 0)
+
+    def test_gitattributes_cannot_hide_the_lines(self):
+        self.set_origin("main")
+        self.git("checkout", "-qb", "cesar/X-1")
+        self.write(".gitattributes", "* -diff\n")
+        self.write("src/app.py", "password = token\n" * 30)
+        self.commit("hide")
+        out = self.result()
+        self.assertEqual(out["stats"]["lines"], 31)  # 30 source lines plus the .gitattributes line
+        self.assertIn('Tier 3: keyword "token" in src/app.py', out["reasons"])
+
+    def test_diff_noprefix_config_cannot_mangle_paths(self):
+        self.git("config", "diff.noprefix", "true")
+        self.branch_with(".github/workflows/ci.yml", "on: push\n")
+        self.assertIn("Tier 3: touches .github/workflows/ci.yml", self.result()["reasons"])
+
+    def test_gitattributes_file_is_a_risk_path(self):
+        self.branch_with(".gitattributes", "*.png binary\n")
+        self.assertIn("Tier 3: touches .gitattributes", self.result()["reasons"])
 
     def test_error_never_lowers_a_tier_that_labels_raise(self):
         out = self.result("--base", "not-a-commit", "--labels", "fable-review")
@@ -453,12 +530,68 @@ class Cli(GitCase):
         self.assertEqual(self.result()["tier"], 3)
 
 
+class GitFailures(GitCase):
+    def test_default_ref_does_not_hide_a_timeout_as_no_default_branch(self):
+        with mock.patch.object(tier, "git", side_effect=tier.GitUnavailable("timed out")):
+            with self.assertRaises(tier.GitUnavailable):
+                tier.default_ref(self.repo)
+
+    def test_an_unexpected_error_in_classify_is_tier_2_not_a_traceback(self):
+        self.set_origin("main")
+        self.git("checkout", "-qb", "cesar/X-1")
+        self.write("src/app.py", "x = 1\n")
+        with mock.patch.object(tier, "classify", side_effect=ValueError("boom")):
+            out = tier.run(self.repo, None, [])
+        self.assertEqual(out["tier"], 2)
+        self.assertIn("boom", out["reasons"][0])
+
+    @unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt", "needs symlinks")
+    def test_untracked_symlink_still_goes_to_the_risk_check(self):
+        self.set_origin("main")
+        os.makedirs(os.path.join(self.repo, ".github"))
+        os.symlink(os.path.join(self.repo, "README.md"), os.path.join(self.repo, ".github", "wf.yml"))
+        self.assertIn("Tier 3: touches .github/wf.yml", tier.run(self.repo, None, [])["reasons"])
+
+    def test_timeout_and_missing_program_become_git_unavailable(self):
+        for err in (subprocess.TimeoutExpired("git", 1), FileNotFoundError("git")):
+            with mock.patch.object(tier.subprocess, "run", side_effect=err):
+                with self.assertRaises(tier.GitUnavailable):
+                    tier.git(["status"], self.repo)
+
+    def test_merge_base_does_not_hide_a_timeout_as_no_merge_base(self):
+        with mock.patch.object(tier, "git", side_effect=tier.GitUnavailable("timed out")):
+            with self.assertRaises(tier.GitUnavailable):
+                tier.merge_base(self.repo)
+
+    def test_run_answers_tier_2_when_git_is_unavailable_for_the_merge_base(self):
+        with mock.patch.object(tier, "merge_base", side_effect=tier.GitUnavailable("timed out")):
+            out = tier.run(self.repo, None, ["fable-review"])
+        self.assertEqual(out["tier"], 3)
+        self.assertTrue(out["reasons"][0].startswith("Tier 2:"), out["reasons"])
+        with self.assertRaises(tier.NoMergeBase):  # no origin refs: a plain 'no merge base' still stops
+            tier.run(self.repo, None, [])
+
+
 class FindGit(unittest.TestCase):
     def test_only_absolute_path_entries_are_searched(self):
         real = shutil.which("git")
         self.assertTrue(real)
         found = tier.find_git(path=os.pathsep.join([".", "relative/bin", os.path.dirname(real)]))
         self.assertTrue(os.path.isabs(found))
+
+    def test_the_current_folder_is_skipped_even_when_absolute(self):
+        with tempfile.TemporaryDirectory() as folder:
+            name = "git.exe" if os.name == "nt" else "git"
+            fake = os.path.join(folder, name)
+            with open(fake, "w") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(fake, 0o755)
+            old = os.getcwd()
+            os.chdir(folder)
+            try:
+                self.assertIsNone(tier.find_git(path=os.path.realpath(folder)))
+            finally:
+                os.chdir(old)
 
     def test_relative_entries_alone_find_nothing(self):
         self.assertIsNone(tier.find_git(path=os.pathsep.join([".", "relative/bin"])))
