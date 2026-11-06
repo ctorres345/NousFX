@@ -85,7 +85,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 
 | Step | What happens |
 |---|---|
-| `ui-review` | Runs automatically for UI changes. It detects the platform (Compose, Flutter, SwiftUI, web), runs the matching design skills, takes light and dark screenshots, and asks Argon for a second opinion when configured |
+| `ui-review` | Runs automatically for UI changes. It detects the platform (Compose, Flutter, SwiftUI, web), runs the matching design skills, and takes light and dark screenshots. `review-loop` then asks Argon for a second opinion on UI changes when the project is allow-listed (schedule: "Gemini checks" in its `SKILL.md`) |
 | `review-loop` | `/simplify`, then rounds of a reviewer chosen by the diff's risk tier (`tier.py`): Sonnet `reviewer-light` for tiers 0 and 1 (1 and 3 rounds), Opus `reviewer` for tier 2, `reviewer-high` for tier 3 (5 rounds). It fixes the real high findings and the real med findings at confidence 60 or more (lists meds under 60 as skipped) and records the result and tier for the gate |
 | PR gate | `gh pr create` is blocked until a review with 0 open high or med (confidence 60+) findings matches the current code and the branch name has a Jira key |
 | PR body | Uses `claude/templates/pull_request_template.md` (ticket, what and why, how to test, screenshots) |
@@ -108,7 +108,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/agents/reviewer-deep.md` | Fable second-opinion reviewer for large or risky changes, only after asking |
 | `claude/agents/architect.md` | Fable architecture and performance consultant, read-only, only after asking |
 | `claude/skills/review-loop/` | `/review-loop`: review-fix loop, rounds set by the risk tier (max 5), never commits |
-| `claude/skills/ui-review/` | `/ui-review`: platform-aware UI/UX review. Includes `scripts/argon_review.py` (Gemini second opinion with safety stops; the project must be on the outbound allow-list in `~/.config/nousfx/via.json`) and a Flutter screenshot test template |
+| `claude/skills/ui-review/` | `/ui-review`: platform-aware UI/UX review. Includes `scripts/argon_review.py` (Gemini second opinion with safety stops, called by `review-loop`; the project must be on the outbound allow-list in `~/.config/nousfx/via.json`) and a Flutter screenshot test template |
 | `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/gemini_common.py` holds the safety checks both Gemini scripts share; they run on macOS and Windows |
 | `claude/skills/handoff/` | `/handoff`: session handoff note |
 | `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list. Applies only approved fixes |

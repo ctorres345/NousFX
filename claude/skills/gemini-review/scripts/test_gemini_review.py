@@ -4,6 +4,7 @@
 Each test runs the script as a subprocess in a throwaway git repo, with a throwaway home and a stub gemini-api
 (and a stub gh). The Windows class runs the same cases with --platform windows and a stub named gemini-api.exe.
 """
+import json
 import os
 import stat
 import subprocess
@@ -191,6 +192,103 @@ class ReviewCases:
         self.stub_setting("stub.fail", "1")
         r = self.run_script()
         self.assertEqual(r.returncode, 9, r.stderr)
+
+    # --allow-list: the review-loop mode (NFX-64). The via.json entry decides, and only its code paths are sent.
+    def config(self, allowlist):
+        os.makedirs(os.path.join(self.home, ".config", "nousfx"), exist_ok=True)
+        with open(os.path.join(self.home, ".config", "nousfx", "via.json"), "w") as f:
+            json.dump({"version": 1, "outbound_allowlist": allowlist}, f)
+
+    def two_folders(self):
+        self.edit("a.txt", "first\nsecond\n")
+        for name in ("src/In.kt", "other/Out.kt"):
+            os.makedirs(os.path.join(self.repo, os.path.dirname(name)), exist_ok=True)
+            self.edit(name, "// new file %s\n" % name)
+
+    def test_allow_list_sends_only_the_code_paths_the_entry_names(self):
+        self.two_folders()
+        self.config({"acme/app": {"destinations": ["gemini"], "gemini_code_paths": ["src/"]}})
+        r = self.run_script("--allow-list", "HEAD")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        sent = self.logged("diff.log")
+        self.assertIn("src/In.kt", sent)  # an untracked file inside the paths is sent
+        self.assertNotIn("other/Out.kt", sent)
+        self.assertNotIn("+second", sent)  # a.txt is outside the paths
+
+    def test_allow_list_stops_with_exit_4_when_the_project_is_not_listed(self):
+        self.two_folders()
+        self.config({})
+        r = self.run_script("--allow-list", "HEAD")
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertIn("not allow-listed", r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_allow_list_has_no_exemption_for_a_public_repo(self):
+        self.two_folders()  # the gh stub says PUBLIC
+        r = self.run_script("--allow-list", "HEAD")  # no via.json at all
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_allow_list_stops_with_exit_4_when_gemini_is_not_a_listed_destination(self):
+        self.two_folders()
+        self.config({"acme/app": {"destinations": ["jira"], "gemini_code_paths": ["src/"]}})
+        r = self.run_script("--allow-list", "HEAD")
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_allow_list_lets_a_private_repo_through_when_listed(self):
+        self.two_folders()
+        self.stub_setting("stub.vis", "PRIVATE")
+        self.config({"acme/app": {"destinations": ["gemini"], "gemini_code_paths": ["src/"]}})
+        r = self.run_script("--allow-list", "HEAD")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_allow_list_with_a_change_only_outside_the_paths_stops_with_exit_5(self):
+        self.edit("a.txt", "first\nsecond\n")
+        self.config({"acme/app": {"destinations": ["gemini"], "gemini_code_paths": ["src/"]}})
+        r = self.run_script("--allow-list", "HEAD")
+        self.assertEqual(r.returncode, 5, r.stderr)
+        self.assertIn("gemini_code_paths", r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_allow_list_with_no_code_paths_stops_with_exit_4(self):
+        self.two_folders()
+        self.config({"acme/app": {"destinations": ["gemini"]}})
+        r = self.run_script("--allow-list", "HEAD")
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_allow_list_and_private_ok_together_stop_with_exit_3(self):
+        self.two_folders()
+        self.config({"acme/app": {"destinations": ["gemini"], "gemini_code_paths": ["src/"]}})
+        for args in (("--allow-list", "--private-ok", "HEAD"), ("--private-ok", "--allow-list", "HEAD")):
+            r = self.run_script(*args)
+            self.assertEqual(r.returncode, 3, r.stderr)
+            self.assertIsNone(self.logged("args.log"))
+
+    def test_allow_list_stops_on_a_huge_tracked_diff_before_reading_untracked_files(self):
+        self.two_folders()
+        self.edit("src/Big.kt", "x\n")
+        subprocess.run(["git", "-C", self.repo, "add", "src/Big.kt"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", self.repo, "-c", "user.email=t@example.com", "-c", "user.name=T",
+                        "commit", "-q", "-m", "big"], check=True, capture_output=True)
+        self.edit("src/Big.kt", "abcdefgh\n" * 30000)  # tracked diff alone is over the limit
+        self.config({"acme/app": {"destinations": ["gemini"], "gemini_code_paths": ["src/"]}})
+        r = self.run_script("--allow-list", "HEAD")
+        self.assertEqual(r.returncode, 6, r.stderr)
+        self.assertIn("the diff is over", r.stderr)  # printed by the budget guard, before any untracked file is read
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_allow_list_keeps_the_secret_and_size_stops(self):
+        self.two_folders()
+        self.edit("src/In.kt", "token = " + "AKIA" + "A" * 16 + "\n")
+        self.config({"acme/app": {"destinations": ["gemini"], "gemini_code_paths": ["src/"]}})
+        r = self.run_script("--allow-list", "HEAD")
+        self.assertEqual(r.returncode, 7, r.stderr)
+        self.edit("src/In.kt", "abcdefgh\n" * 25000)
+        r = self.run_script("--allow-list", "HEAD")
+        self.assertEqual(r.returncode, 6, r.stderr)
+        self.assertIsNone(self.logged("args.log"))
 
     def test_not_in_a_git_repo_stops_with_exit_3(self):
         r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, *self.PLATFORM_ARGS], cwd=self.tmp,
