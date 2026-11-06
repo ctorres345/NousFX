@@ -120,7 +120,7 @@ python3 -B scripts/nousfx_sync.py --project ~/Projects/my-app --tools claude,agy
 python3 -B scripts/nousfx_sync.py --project ~/Projects/my-app --tools claude,agy
 ```
 
-Then `git config core.hooksPath .githooks` in that repo (sync does not set it). Each repo that uses the gate needs a `[check] command` in `.nousfx/project.toml`; the `project-setup` skill proposes one. Details are in [docs/sync.md](sync.md#project-mode).
+Then turn the pre-push hook on in that repo (sync does not do it). Run `ls .git/hooks | grep -v sample` first. If other hooks are there (graphify's, for example), link it with `common=$(git rev-parse --path-format=absolute --git-common-dir); ln -s "$common/../.githooks/pre-push" "$common/hooks/pre-push"`, because `git config core.hooksPath .githooks` would switch those hooks off. Use `core.hooksPath` only when `.git/hooks` holds nothing else. Each repo that uses the gate needs a `[check] command` in `.nousfx/project.toml`; the `project-setup` skill proposes one. Details are in [docs/sync.md](sync.md#project-mode).
 
 ## Smoke checks
 
