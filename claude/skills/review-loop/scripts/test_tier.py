@@ -21,10 +21,11 @@ sys.dont_write_bytecode = True
 import tier  # noqa: E402
 
 
-def f(path, added=0, removed=0, hunks=1, text=None):
-    """A changed file. `text` overrides the added lines (a list of strings)."""
+def f(path, added=0, removed=0, hunks=1, text=None, removed_text=None):
+    """A changed file. `text` overrides the added lines, `removed_text` gives the removed lines (lists of strings)."""
     lines = text if text is not None else ["x = 1"] * added
-    return {"path": path, "added": lines, "removed": removed, "hunks": hunks}
+    gone = removed_text if removed_text is not None else ["x = 0"] * removed
+    return {"path": path, "added": lines, "removed": len(gone), "removed_lines": gone, "hunks": hunks}
 
 
 def code(n, path="src/app.py", hunks=1):
@@ -182,10 +183,14 @@ class Risk(unittest.TestCase):
                      "AUTH_URL = 1", "use Mutex", "synchronized (lock) {"):
             self.assertEqual(self.one("src/x.py", [line])["tier"], 3, line)
 
-    def test_keyword_in_removed_or_doc_lines_does_not_count(self):
-        removed = tier.classify([f("src/x.py", text=["x = 1"], removed=3)])
-        self.assertEqual(removed["tier"], 0)
-        doc = tier.classify([f("docs/auth.md", text=["How the token works"])])
+    def test_keyword_on_a_removed_code_line_is_tier_3_and_says_removed(self):
+        r = tier.classify([f("src/x.py", text=["x = 1"], removed_text=["    require_auth(request)"])])
+        self.assertEqual(r["tier"], 3)
+        self.assertIn('Tier 3: keyword "auth" removed in src/x.py', r["reasons"])
+        self.assertEqual(tier.classify([f("src/x.py", removed_text=["author = 1"])])["tier"], 0)
+
+    def test_keyword_in_doc_lines_does_not_count(self):
+        doc = tier.classify([f("docs/auth.md", text=["How the token works"], removed_text=["the token"])])
         self.assertEqual(doc["tier"], 0)
 
     def test_project_risk_paths(self):
@@ -406,6 +411,17 @@ class Cli(GitCase):
         self.assertEqual(out["stats"]["files"], 1)
         self.assertEqual(out["stats"]["base"], self.git("rev-parse", "main"))
         self.assertFalse(out["ui"])
+
+    def test_removed_security_line_is_found_through_git(self):
+        self.write("src/app.py", "x = 1\nrequire_auth(request)\n")
+        self.commit("with check")
+        self.set_origin("main")
+        self.git("checkout", "-qb", "cesar/X-1")
+        self.write("src/app.py", "x = 1\n")
+        self.commit("drop check")
+        out = self.result()
+        self.assertEqual(out["tier"], 3)
+        self.assertIn('Tier 3: keyword "auth" removed in src/app.py', out["reasons"])
 
     def test_origin_head_is_tried_before_origin_main(self):
         self.set_origin("trunk")

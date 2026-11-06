@@ -45,7 +45,7 @@ RISK_NAMES = (".gitattributes", "review-gate.py", "pr_create_parser.py", "*.grad
               "poetry.lock", "uv.lock", "requirements*.txt", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum",
               "Gemfile", "Gemfile.lock", "CMakeLists.txt", "*.cmake", "Makefile", "pom.xml", "AndroidManifest.xml", "*.sql",
               "schema.*")
-# Whole-word keywords, matched on path parts (code files) and on added lines of code files.
+# Whole-word keywords, matched on path parts, added lines and removed lines of code files.
 RISK_KEYWORDS = frozenset("""auth oauth authorization authorize authentication authenticate login logout password
 passwd credential credentials token jwt crypto cryptography encrypt encryption decrypt keystore keychain secret
 secrets tokens passwords encrypted decrypted authenticated authorized authz authn payment payments billing migration migrations schema mutex semaphore atomic synchronized""".split())
@@ -165,6 +165,8 @@ def classify(files, labels=(), project_paths=()):
             keyword_reasons.append('Tier 3: keyword "%s" in the path %s' % (hit, x["path"]))
         for w in line_keywords(x["added"]):
             keyword_reasons.append('Tier 3: keyword "%s" in %s' % (w, x["path"]))
+        for w in line_keywords(x.get("removed_lines", [])):  # deleting a security check is as risky as adding one
+            keyword_reasons.append('Tier 3: keyword "%s" removed in %s' % (w, x["path"]))
     if len(keyword_reasons) > MAX_KEYWORD_REASONS:
         extra = len(keyword_reasons) - MAX_KEYWORD_REASONS
         keyword_reasons = keyword_reasons[:MAX_KEYWORD_REASONS] + ["Tier 3: and %d more keyword hit(s)" % extra]
@@ -332,7 +334,7 @@ def parse_diff(text):
         if line.startswith("diff --git "):
             rest = line[len("diff --git a/"):]
             path = rest[:(len(rest) - 3) // 2] if len(rest) % 2 == 1 else rest.split(" b/")[0]
-            current = {"path": path.strip('"'), "added": [], "removed": 0, "hunks": 0}
+            current = {"path": path.strip('"'), "added": [], "removed": 0, "removed_lines": [], "hunks": 0}
             files.append(current)
             in_hunk = False
         elif current is None:
@@ -344,6 +346,7 @@ def parse_diff(text):
             current["added"].append(line[1:])
         elif in_hunk and line.startswith("-"):
             current["removed"] += 1
+            current["removed_lines"].append(line[1:])
     return files
 
 
