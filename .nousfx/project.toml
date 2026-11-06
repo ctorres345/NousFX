@@ -3,3 +3,7 @@
 [check]
 command = "python3 -B scripts/run_checks.py"
 timeout = 1800
+
+# Files that control the review itself. Read from the default branch like [check] (review-loop tier script, NFX-62).
+[review]
+risk_paths = ["claude/hooks", "claude/githooks", "claude/skills/review-loop", "harness"]
