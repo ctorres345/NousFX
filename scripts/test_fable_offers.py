@@ -63,6 +63,13 @@ class FableOffers(unittest.TestCase):
         self.assertIn("`/goal`", line)
         self.assertIn("Never offer or run", line)
 
+    def test_plan_check_waits_for_a_round_that_remains(self):
+        self.assertIn("before the next round, if a round remains", section(SKILL, "Step 1"))
+        self.assertIn("if a round remains (round 1 if Step 1 picked Tier 3)", section(SKILL, "Fable offers"))
+
+    def test_final_report_has_a_row_for_fable_offers(self):
+        self.assertIn("Fable offers (made, accepted or declined, outcome)", section(SKILL, "Final report"))
+
 
 if __name__ == "__main__":
     unittest.main()

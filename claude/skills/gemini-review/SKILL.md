@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 Get Gemini's review of: $ARGUMENTS
 
-Gemini is an extra opinion. It sits outside `review-loop` and the review gate, and it never edits code.
+Gemini is an extra opinion. This skill sits outside the review gate, and it never edits code. `review-loop` calls `review.py` itself, under its own rules (see its "Gemini checks"); this skill stays user-only.
 
 ## Steps
 

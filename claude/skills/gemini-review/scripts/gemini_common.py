@@ -16,8 +16,10 @@ import subprocess
 import sys
 import tempfile
 
+HERE = os.path.dirname(os.path.realpath(__file__))
 CLI_VERSION = "0.4.5"
 MODEL = "gemini-4-argon"
+MAX_BYTES = 200000  # the most diff text one call may send
 STRIP_ENV = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 CLI_TIMEOUT = 600
 
@@ -195,6 +197,71 @@ def git_diff(rng, paths):
     if r.returncode != 0:
         stop(3, "Stopped: git diff failed for %s. Nothing was sent." % rng)
     return r.stdout
+
+
+def allowed_paths():
+    """The code paths the outbound allow-list lets Gemini see. Any doubt stops the run.
+
+    via_outbound.py is found next to this repo, never in the plugin cache: a cache copy can be stale or hand-edited.
+    """
+    outbound = os.path.join(HERE, "..", "..", "..", "..", "plugins", "via", "scripts", "via_outbound.py")
+    if not os.path.isfile(outbound):
+        stop(3, "Stopped: via_outbound.py not found (run this from a NousFX checkout). Nothing was sent.")
+    if any(_inside(sys.executable, d) for d in (os.getcwd(), _repo_top()) if d):
+        stop(3, "Stopped: the Python interpreter is inside the repo being reviewed. Nothing was sent.")
+    base = [sys.executable, "-I", "-B", outbound]
+    where = ["--dest", "gemini", "--project", os.getcwd()]
+    # Started from an empty folder: on Windows its bare `git` calls would otherwise look in the repo first.
+    with tempfile.TemporaryDirectory(prefix="argon-") as empty:
+        def run(mode):
+            try:
+                return subprocess.run([*base, mode, *where], stdin=subprocess.DEVNULL, capture_output=True, timeout=30, cwd=empty)
+            except (OSError, subprocess.SubprocessError):
+                return None
+        check = run("check")
+        code = check.returncode if check else -1
+        if code == 20:
+            stop(4, "Stopped: this project is not allow-listed for gemini in ~/.config/nousfx/via.json. Nothing was sent.")
+        if code != 0:
+            stop(3, "Stopped: could not read the outbound allow-list (via_outbound.py exit %d). Nothing was sent." % code)
+        listed = run("paths")
+    paths = [os.fsdecode(p) for p in listed.stdout.split(b"\0") if p] if listed and listed.returncode == 0 else []
+    if not paths:
+        stop(4, "Stopped: the allow-list entry names no gemini_code_paths. Nothing was sent.")
+    return paths
+
+
+def new_files(paths, budget):
+    """Untracked text files inside the allowed paths, as diff-like text. Regular files only: a symlink could point outside them."""
+    if budget < 0:  # the tracked diff alone is over the limit: stop before any untracked file is read
+        stop(6, "Stopped: the diff is over the %d limit. Nothing was sent." % MAX_BYTES)
+    r = git("ls-files", "-z", "--others", "--exclude-standard", "--", *paths, *EXCLUDES)
+    if r.returncode != 0:
+        stop(3, "Stopped: git ls-files failed. Nothing was sent.")
+    out = b""
+    for raw in r.stdout.split(b"\0"):
+        if not raw:
+            continue
+        name = os.fsdecode(raw)
+        if not os.path.isfile(name) or os.path.islink(name):
+            continue
+        try:
+            with open(name, "rb") as f:
+                content = f.read(budget + 1)
+        except OSError:
+            stop(3, "Stopped: cannot read %s. Nothing was sent." % name)
+        if b"\0" in content:
+            continue
+        out += b"\n--- new file: " + raw + b"\n" + content
+        if len(out) > budget:
+            stop(6, "Stopped: the new files are over the %d limit. Nothing was sent." % MAX_BYTES)
+    return out
+
+
+def allowed_diff(rng, paths):
+    """The diff inside the allowed paths, plus untracked files there, as bytes."""
+    diff = git_diff(rng, paths)
+    return diff + new_files(paths, MAX_BYTES - len(diff))
 
 
 def stop_on_secret(data):
