@@ -18,7 +18,7 @@ URLs to the dev server in HTML, SVG, JavaScript and JSON are rewritten to the ma
 SVG page is sent with a policy that lets it frame and submit forms only to the mask server (so a third-party frame is blocked). The dev
 server's own Content-Security-Policy header is replaced by that policy, so the style can apply. Every shot is marked
 "redacted": true. Limits that remain: a closed shadow root made by markup (shadowrootmode="closed") is out of reach, SVG
-and XHTML pages get the style but not the script, other XML pages get the policy only, a same-origin frame made
+and XHTML pages get the style but not the script, other XML pages get the policy only, a script that empties a root's adoptedStyleSheets in place (splice, length = 0) removes the mask there, a same-origin frame made
 from srcdoc, about:blank or a blob: URL is not masked, and a browser without the Navigation API does not cancel navigation. The mask is a first layer: Claude still looks at each shot
 and sets its `review` (kept or dropped) before anything leaves the run folder.
 
@@ -88,13 +88,15 @@ GUARD_JS = (
     "try{sheet=new CSSStyleSheet();sheet.replaceSync(css);}catch(e){}"
     "var d=Object.getOwnPropertyDescriptor(ShadowRoot.prototype,'adoptedStyleSheets');"
     # A library (Lit) assigns adoptedStyleSheets after attachShadow; the setter puts the mask sheet back every time.
+    # A root in another document cannot adopt this document's sheet: the page's own assignment then goes through alone.
     "if(sheet&&d&&d.set){Object.defineProperty(ShadowRoot.prototype,'adoptedStyleSheets',{configurable:true,"
-    "enumerable:d.enumerable,get:d.get,set:function(v){d.set.call(this,"
-    "Array.prototype.filter.call(v,function(x){return x!==sheet;}).concat([sheet]));}});}"
-    "function adopt(r){if(sheet&&d&&d.set){r.adoptedStyleSheets=r.adoptedStyleSheets;}"
-    "else{var t=document.createElement('style');t.textContent=css;r.appendChild(t);}}"
+    "enumerable:d.enumerable,get:d.get,set:function(v){var a=Array.prototype.filter.call(v,function(x){return x!==sheet;});"
+    "try{d.set.call(this,a.concat([sheet]));}catch(e){d.set.call(this,a);}}});}"
+    "function style(r){var t=document.createElement('style');t.textContent=css;r.appendChild(t);}"
+    "function adopt(r){try{if(sheet&&d&&d.set){r.adoptedStyleSheets=r.adoptedStyleSheets;}else{style(r);}}"
+    "catch(e){try{style(r);}catch(x){}}}"
     "var seen=new WeakSet(),attach=Element.prototype.attachShadow;"
-    "Element.prototype.attachShadow=function(i){var r=attach.call(this,i);seen.add(r);adopt(r);return r;};"
+    "Element.prototype.attachShadow=function(i){var r=attach.call(this,i);seen.add(r);try{adopt(r);}catch(e){}return r;};"
     "function walk(n){if(n.nodeType!==1&&n.nodeType!==11)return;"
     "if(n.shadowRoot&&!seen.has(n.shadowRoot)){seen.add(n.shadowRoot);adopt(n.shadowRoot);walk(n.shadowRoot);}"
     "for(var c=n.firstChild;c;c=c.nextSibling)walk(c);}"
