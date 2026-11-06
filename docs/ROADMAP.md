@@ -27,9 +27,9 @@
 Check: 32 = 6 epics/specs + 11 + 3 + 1 + 11 children. Group membership of 69 to 71 (NFX-34) comes from the earlier fix notes, not re-read this run.
 
 ```
-Done (14 d): 41 tickets
-M1 Via core [██████████░░░░░░░░░░░░░░░░░░░░]  8 done / 11 open
-M4 harness  [██████████████████████░░░░░░░░]  22+ done / 11 open
+Done (14 d): about 41 tickets (earlier count plus the three merged today; not re-queried)
+M1 Via core [█████████████░░░░░░░░░░░░░░░░░]  8 done / 11 open
+M4 harness  [████████████████████░░░░░░░░░░]  22+ done / 11 open
 M3 share    [██████████████████████░░░░░░░░]  3 done / 1 open
 M2 gate     [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  0 done / 3 open
 ```
@@ -132,8 +132,8 @@ Free: NFX-10, 12, 59                   NFX-71 before NFX-70 (handoff order, no J
 
 | Wave | Tickets |
 |---|---|
-| Now | NFX-12, 10 |
-| Next | NFX-13, 16, 59 |
+| Now | NFX-12, 10, 59 |
+| Next | NFX-13, 16 |
 | Later | NFX-17, then 14, 18, 19 |
 | Yours | NFX-53 |
 | After v1 | 11, 15, 20, 21, 22, 25, 43, 45, 49, 50, 60, 61, 67, 69, 70, 71 |
