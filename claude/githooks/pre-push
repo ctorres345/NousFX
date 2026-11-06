@@ -15,7 +15,8 @@
 #
 # It is advisory: `git push --no-verify` skips it. CI is the real gate (see docs/review-gate.md).
 #
-# Install: copy the gate files from this repo's claude/hooks/ to <home>/.claude/hooks/, then
+# Install: run the sync (python3 -B scripts/nousfx_sync.py --tools claude), which puts the gate files from
+# this repo's claude/hooks/ in <home>/.claude/hooks/ (or copy them there by hand), then
 #   cp claude/githooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
 # or: git config core.hooksPath <dir holding this file>
 fail() { echo "pre-push: blocked: $1" >&2; exit 2; }

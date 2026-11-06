@@ -29,13 +29,15 @@ git clone https://github.com/ctorres345/NousFX.git
 cd NousFX && ./install.sh
 ```
 
+On Windows, in PowerShell, run `.\install.ps1` instead. Both scripts only run `scripts/nousfx_sync.py`: they show its dry run, ask, then run it for real. Arguments pass through, so `./install.sh --tools claude,agy` also sets up agy (Antigravity CLI). The modes `--check` and `--restore` go to `scripts/nousfx_sync.py` directly.
+
 Then start a **new** Claude Code session (hooks and agents load at session start) and run `/agents`. You should see `Explore`, `researcher`, `reviewer-light`, `reviewer`, `reviewer-high`, `reviewer-deep`, `architect` and `test-runner`.
 
-`install.sh` copies the files into `~/.claude/` (override with `CLAUDE_HOME`) and backs up anything it replaces as `*.bak-<stamp>`. It no longer writes rules: `scripts/nousfx_sync.py` generates `~/.claude/CLAUDE.md` (see [docs/sync.md](docs/sync.md)). It registers the review gate in `~/.claude/settings.json`, after backing that up too.
+The sync writes `~/.claude/CLAUDE.md` (the rules, generated), the agents, skills and hooks, and registers the review gate in `~/.claude/settings.json`. It backs up every file it changes under `~/.config/nousfx/backups/`, never writes through a symlink it does not own, and skips a skill folder you made by hand (a collision, with a diff) until you pass `--yes-replace NAME`. What it writes and every switch is in [docs/sync.md](docs/sync.md).
 
-`install.sh` does not write agents, skills or hooks through a symlink. If one in `~/.claude/` is a link (for example a skill linked from `~/.agents/skills`), it warns, skips that file and leaves the target alone. `settings.json` is still written through a link on purpose, so a dotfiles-managed copy keeps getting updates.
+If `~/.claude/settings.json` is a symlink (a dotfiles setup), replace it with a regular file first: the sync refuses to write through it. `CLAUDE_HOME` no longer does anything; pass `--home DIR` to aim at another home.
 
-Re-installing after a merge, checking the gate and rolling back an install are in [docs/RUNBOOK.md](docs/RUNBOOK.md).
+Setting up a new machine, updating after a merge, setting up one project, the smoke checks and rolling back are in [docs/RUNBOOK.md](docs/RUNBOOK.md). If you use agy, my `gemini-orchestrator` plugin decides its delegation and model choice, so install it too.
 
 ### Install Via (early preview)
 
@@ -86,9 +88,9 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | Step | What happens |
 |---|---|
 | `ui-review` | Runs automatically for UI changes. It detects the platform (Compose, Flutter, SwiftUI, web), runs the matching design skills, and takes light and dark screenshots. `review-loop` then asks Argon for a second opinion on UI changes when the project is allow-listed (schedule: "Gemini checks" in its `SKILL.md`) |
-| `review-loop` | `/simplify`, then rounds of a reviewer chosen by the diff's risk tier (`tier.py`): Sonnet `reviewer-light` for tiers 0 and 1 (1 and 3 rounds), Opus `reviewer` for tier 2, `reviewer-high` for tier 3 (5 rounds). It fixes the real high findings and the real med findings at confidence 60 or more (lists meds under 60 as skipped) and records the result and tier for the gate |
+| `review-loop` | `/simplify`, then rounds of a reviewer chosen by the diff's risk tier (`tier.py`): Sonnet `reviewer-light` for tiers 0 and 1 (1 and 3 rounds), Opus `reviewer` for tier 2, `reviewer-high` for tier 3 (5 rounds). It fixes the real high findings and the real med findings at confidence 60 or more (lists meds under 60 as skipped) and records the result and tier for the gate. The gate runs `tier.py` itself and refuses a lower tier than the diff computes unless I give a reason (`--tier-override`). On Tier 3 and on UI changes it can also ask Gemini for a second opinion (`review.py --allow-list`), only for projects on my allow-list in `~/.config/nousfx/via.json` (the `gemini_code_paths` entry says which folders may be sent) |
 | PR gate | `gh pr create` is blocked until a review with 0 open high or med (confidence 60+) findings matches the current code and the branch name has a Jira key |
-| PR body | Uses `claude/templates/pull_request_template.md` (ticket, what and why, how to test, screenshots) |
+| PR body | Uses `claude/templates/pull_request_template.md` (ticket, what and why, how to test, screenshots, what I checked myself, and the `Review-Gate:` and `Review-Tier:` lines from `review-gate.py attest`) |
 
 ### 5. Keep sessions cheap
 - `/handoff` writes `.claude/handoff.md` (it asks once to create and gitignore the file if the project has none), so the next session starts from a short note instead of a huge context.
@@ -118,6 +120,9 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/hooks/pr_create_parser.py` | Shell parser the gate uses to find `gh pr create` and the directory it runs in. Keep it next to the gate: without it the gate blocks any command that mentions `gh` and `pr` |
 | `claude/hooks/test_review_gate.py` | Gate test suite: `python3 claude/hooks/test_review_gate.py` |
 | `claude/templates/pull_request_template.md` | Standard PR body. Copy it to `.github/` per repo |
+| `install.sh`, `install.ps1` | Mac and Windows wrappers: dry run of `scripts/nousfx_sync.py`, ask, then the real run |
+| `scripts/nousfx_sync.py` | The sync: writes each tool's rules, agents, skills, hooks and MCP servers ([docs/sync.md](docs/sync.md)) |
+| `CHANGELOG.md` | What each release changed |
 | `scripts/usage-report.py` | Read-only token and cost report |
 | `docs/agents/` | This repo's own tracker setup (Jira project `NFX`) |
 
@@ -213,13 +218,12 @@ Tracked in Jira project **NFX**.
   | `/via audit` | Audits the app at any time |
 
   For each problem it shows before/after prototypes. You approve once which fixes happen now and which become Jira tickets; tickets carry inline screenshots and a spec table. It exports to Obsidian and Figma. It learns from every project, but only saves a lesson after you approve it. Every integration is optional, so it works with only Claude Code installed.
-- **Plugin marketplace.** Install with `/plugin marketplace add ctorres345/NousFX`. Third-party skills will be pinned by commit and checksum. This replaces the copy-based `install.sh`.
+- **Plugin marketplace.** Install Via with `/plugin marketplace add ctorres345/NousFX`. The rest of the harness comes from the sync; third-party skills are already pinned by commit and checksum.
 - **Contributing guide** with a skill-writing checklist.
-- **Plugins named after my cats.** Only the first two are planned; the rest are ideas for later.
+- **Plugins named after my cats.** Only Via is planned; the rest are ideas for later.
 
   | Plugin | Role | Would hold |
   |---|---|---|
-  | **Mandy** (`mandy`, mdy) | Core development | Agents, `review-loop`, the PR review gate |
   | **Via** (Octavia) | Designer | `/via` setup, spec, check, audit and export |
   | Cassie (Cassiopeia) | Planner and navigator | Grilling, spec to tickets, wayfinder, roadmap, `jira-sync` |
   | Rosalia | Guardian | Secret checks, git guardrails, skill checksums, outbound rules |

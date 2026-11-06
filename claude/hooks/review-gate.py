@@ -138,7 +138,7 @@ Fix the problem and try again. If the user explicitly approves skipping the revi
 PARSER_BLOCK = """\
 Blocked: the review gate cannot load pr_create_parser.py next to {script}: {error}
 Until it loads, every command mentioning `gh` and `pr` is blocked, and --mark --skip does not help.
-Reinstall the gate and its parser together (re-run install.sh, or copy both files).
+Reinstall the gate and its parser together (re-run the sync: ./install.sh, or scripts/nousfx_sync.py).
 """
 
 BRANCH_BLOCK = """\
@@ -327,7 +327,7 @@ def computed_tier(cwd):
     missing, fails, times out or prints something odd: the same floor tier.py and the review loop use."""
     path = os.path.normpath(os.path.join(os.path.dirname(SCRIPT), TIER_PY))
     if not os.path.isfile(path):
-        return 2, "", f"tier.py not found at {path}; counted as Tier 2 (re-run the sync or install.sh)"
+        return 2, "", f"tier.py not found at {path}; counted as Tier 2 (re-run the sync)"
     try:
         r = subprocess.run([sys.executable, "-B", path, "--cwd", cwd], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, timeout=TIER_TIMEOUT)
