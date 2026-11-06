@@ -188,15 +188,11 @@ def through_the_mask(body, content_type, pattern, origin):
 
 def put_guard(body, guard):
     """The guard first in the head; else before <body; else after the doctype (before it would switch on quirks mode)."""
-    for pattern in (rb"<head(?=[\s>])[^>]*>", None, rb"^\s*<!doctype[^>]*>"):
-        if pattern is None:
-            at = re.search(rb"<body\b", body, re.IGNORECASE)
-            if at:
-                return body[:at.start()] + guard + body[at.start():]
-            continue
+    for pattern, after in ((rb"<head(?=[\s>])[^>]*>", True), (rb"<body\b", False), (rb"^\s*<!doctype[^>]*>", True)):
         at = re.search(pattern, body, re.IGNORECASE)
         if at:
-            return body[:at.end()] + guard + body[at.end():]
+            i = at.end() if after else at.start()
+            return body[:i] + guard + body[i:]
     return guard + body
 
 
