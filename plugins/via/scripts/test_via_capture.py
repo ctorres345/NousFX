@@ -76,7 +76,7 @@ class Page(http.server.BaseHTTPRequestHandler):
                 "/abs": ("text/html", "<!doctype html><html><head><title>t</title></head><body>"
                          "<iframe src=\"http://localhost:%(p)d/inner\"></iframe>"
                          "<a href='//127.0.0.1:%(p)d/x'>x</a><a href='http://example.com:%(p)d/y'>y</a>"
-                         "<a href='http://localhost:%(p)d0/z'>z</a><a href='http://localhost:%(p)d.evil.test/w'>w</a>"
+                         "<a href='ws://localhost:%(p)d/hmr'>h</a><a href='http://localhost:%(p)d0/z'>z</a><a href='http://localhost:%(p)d.evil.test/w'>w</a>"
                          "</body></html>"),
                 "/app.js": ("text/javascript", "location.href = 'http://localhost:%(p)d/next'; "
                             "var j = 'http:\\/\\/localhost:%(p)d\\/esc';"),
@@ -86,6 +86,11 @@ class Page(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Security-Policy", "default-src 'none'")  # the dev server's own policy
             self.end_headers()
             self.wfile.write((body % {"p": port}).encode())
+            return
+        if self.path == "/untyped-abs":  # no Content-Type: Chrome sniffs HTML
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(("<!doctype html><iframe src=http://localhost:%d/form></iframe>" % port).encode())
             return
         if self.path == "/untyped":
             self.send_response(200)  # no Content-Type: Chrome sniffs HTML
@@ -465,6 +470,31 @@ class ViaCaptureTest(unittest.TestCase):
         self.assertIn(mask.replace("/", "\\/") + "\\/esc", js)  # the JSON-escaped spelling
         self.assertNotIn("localhost:" + port, js)
         self.assertIn('"%s/n"' % mask, data)
+
+    def test_a_page_with_no_content_type_is_rewritten_and_framed_like_html(self):
+        upstream = self.serve()
+        self.ok("home=" + upstream + "/untyped-abs")
+        page = self.pages()[0]
+        self.assertNotIn("localhost:", page["body"])
+        self.assertEqual(page["csp"], "frame-src 'self'; form-action 'self'")
+
+    def test_a_url_with_another_scheme_is_never_half_rewritten(self):
+        upstream = self.serve()
+        port = upstream.rsplit(":", 1)[1]
+        self.ok("home=" + upstream + "/abs")
+        self.assertIn("<a href='ws://localhost:%s/hmr'>" % port, self.pages()[0]["body"])
+
+    def test_a_head_tag_inside_a_script_string_does_not_take_the_guard(self):
+        write(os.path.join(self.repo, "index.html"), "<!doctype html><script>var a='<head>';</script><input>")
+        self.ok("home=index.html")
+        body = self.pages()[0]["body"]
+        self.assertIn("var a='<head>';</script>", body)  # the page's script is untouched
+        self.assertTrue(body.startswith("<!doctype html><script data-via-guard"), body[:80])
+
+    def test_an_svg_page_is_framed_and_rewritten_like_html(self):
+        write(os.path.join(self.repo, "pic.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>")
+        self.ok("pic=pic.svg")
+        self.assertEqual(self.pages()[0]["csp"], "frame-src 'self'; form-action 'self'")
 
     def test_a_page_may_not_frame_or_submit_to_another_origin(self):
         policy = "frame-src 'self'; form-action 'self'"

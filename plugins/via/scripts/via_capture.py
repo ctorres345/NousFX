@@ -14,8 +14,8 @@ A shot is never written over an existing file: reviewed shots stay what they wer
 ones only) or relays your dev server, and adds a style that blurs inputs, textareas, email and phone links,
 [data-via-redact] and every --redact-selector. A script placed first in the head of an HTML page copies that style into
 every shadow root (open, closed or declarative) and cancels a navigation to another origin. On a relayed page, absolute
-URLs to the dev server in HTML, JavaScript and JSON are rewritten to the mask server, and every HTML page is sent with
-a policy that lets it frame and submit forms only to the mask server (so a third-party frame is blocked). The dev
+URLs to the dev server in HTML, SVG, JavaScript and JSON are rewritten to the mask server, and every HTML, XHTML and
+SVG page is sent with a policy that lets it frame and submit forms only to the mask server (so a third-party frame is blocked). The dev
 server's own Content-Security-Policy header is replaced by that policy, so the style can apply. Every shot is marked
 "redacted": true. Limits that remain: a closed shadow root made by markup (shadowrootmode="closed") is out of reach, SVG
 and XHTML pages get the style but not the script, and a browser without the Navigation API does not cancel navigation. The mask is a first layer: Claude still looks at each shot
@@ -76,8 +76,10 @@ HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriza
 PROBE_TIMEOUT = 10
 # What a mask-server page may frame or submit to: only the mask server. It replaces the dev server's own policy.
 FRAMING_POLICY = "frame-src 'self'; form-action 'self'"
-REWRITE_KINDS = ("text/html", "application/xhtml+xml", "text/javascript", "application/javascript",
-                 "application/x-javascript", "application/json")
+# Documents a browser can frame or navigate, and everything whose absolute dev-server URLs get rewritten.
+FRAMED_KINDS = ("text/html", "application/xhtml+xml", "image/svg+xml")
+REWRITE_KINDS = FRAMED_KINDS + ("text/javascript", "application/javascript", "application/x-javascript",
+                                "application/json")
 # Runs first in the page. It puts the mask rules into every shadow root, open or closed (the page's own style does not
 # reach inside one), and cancels a navigation to another origin, so a script cannot walk around the mask server.
 GUARD_JS = (
@@ -158,6 +160,11 @@ def mask_style(extra):
     return "<style data-via-mask=\"\">%s</style>" % "\n".join(rule % s for s in (", ".join(MASKED),) + tuple(extra))
 
 
+def kind_of(content_type):
+    """The media type alone, lowercase. With no type Chrome sniffs HTML, so that is what none means."""
+    return content_type.split(";")[0].strip().lower() or "text/html"
+
+
 def mask_guard(style):
     """The guard script for a mask style: the style's rules go into every shadow root. Bytes, ready to insert."""
     css = re.search(r"<style[^>]*>(.*)</style>", style, re.DOTALL).group(1)
@@ -171,25 +178,30 @@ def dev_server_pattern(upstream):
     u = urllib.parse.urlsplit(upstream)
     hosts = LOOPBACK if u.hostname in LOOPBACK else {u.hostname}
     names = "|".join(re.escape(h) if ":" not in h else r"\[%s\]" % re.escape(h) for h in sorted(hosts))
-    port = u.port or (443 if u.scheme == "https" else 80)
-    explicit = r":%d" % port if u.port else ""
-    return re.compile((r"(?:%s:)?(\\?/\\?/)(?:%s)%s(?![\w.@:\-])" % (re.escape(u.scheme), names, explicit)).encode(),
-                      re.IGNORECASE)
+    default = 443 if u.scheme == "https" else 80
+    port = r"(?::%d)?" % default if (u.port or default) == default else r":%d" % u.port
+    # No scheme letter, "+", ".", "-" or ":" before it, so "//host:port" after ws: or https: is left whole.
+    return re.compile((r"(?<![\w+.\-:])(?:%s:)?(\\?/\\?/)(?:%s)\.?%s(?![\w.@:\-])"
+                       % (re.escape(u.scheme), names, port)).encode(), re.IGNORECASE)
 
 
 def through_the_mask(body, content_type, pattern, origin):
     """Absolute URLs to the dev server in a page, script or JSON point at the mask server instead, so a frame,
     a link or a script navigation cannot load the dev server around the mask."""
-    if content_type.split(";")[0].strip().lower() not in REWRITE_KINDS:
+    if kind_of(content_type) not in REWRITE_KINDS:
         return body
     escaped = origin.replace("/", "\\/")
     return pattern.sub(lambda m: (escaped if m.group(1).startswith(b"\\") else origin).encode(), body)
 
 
 def put_guard(body, guard):
-    """The guard first in the head; else before <body; else after the doctype (before it would switch on quirks mode)."""
+    """The guard first in the head; else before <body; else after the doctype (before it would switch on quirks mode).
+    Only the text before the first script, comment, style or textarea is searched: a "<head>" inside one of those is
+    not a tag, and a guard put there would close the page's own script."""
+    cut = re.search(rb"<(?:script|style|textarea|!--)", body, re.IGNORECASE)
+    start = body[:cut.start()] if cut else body
     for pattern, after in ((rb"<head(?=[\s>])[^>]*>", True), (rb"<body\b", False), (rb"^\s*<!doctype[^>]*>", True)):
-        at = re.search(pattern, body, re.IGNORECASE)
+        at = re.search(pattern, start, re.IGNORECASE)
         if at:
             i = at.end() if after else at.start()
             return body[:i] + guard + body[i:]
@@ -211,7 +223,7 @@ class Unmaskable(Exception):
 def with_mask(body, content_type, style, guard=b""):
     """The page bytes with the mask style added. Other files (scripts, images) pass through unchanged.
     Raises Unmaskable for a page the mask cannot be placed in, so a shot of it is never kept."""
-    kind = content_type.split(";")[0].strip().lower() or "text/html"  # with no type, Chrome sniffs HTML
+    kind = kind_of(content_type)
     block = style.encode("utf-8")
     if kind in ("image/svg+xml", "application/xhtml+xml"):  # XML: the style must stay inside the root element
         end = b"</svg>" if kind == "image/svg+xml" else b"</html>"
@@ -236,12 +248,12 @@ class MaskHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def reply(self, status, headers, body):
+    def reply(self, status, headers, body, kind=None):
+        """kind is the page's media type (None for an error text); a framable document gets the framing policy."""
         self.send_response(status)
         for name, value in headers:
             self.send_header(name, value)
-        if any(n.lower() == "content-type" and v.split(";")[0].strip().lower() in ("text/html", "application/xhtml+xml")
-               for n, v in headers):
+        if kind in FRAMED_KINDS:
             self.send_header("Content-Security-Policy", FRAMING_POLICY)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -289,7 +301,7 @@ class MaskHandler(http.server.BaseHTTPRequestHandler):
             body = with_mask(body, kind, self.server.style, self.server.guard)
         except Unmaskable as e:
             return self.fail(str(e))
-        self.reply(200, [("Content-Type", kind)], body)
+        self.reply(200, [("Content-Type", kind)], body, kind_of(kind))
 
     def through_mask(self, value):
         """A redirect target, rewritten to the mask server. A redirect must not lead the browser around the mask.
@@ -341,7 +353,7 @@ class MaskHandler(http.server.BaseHTTPRequestHandler):
             body = with_mask(body, kind, self.server.style, self.server.guard)
         except Unmaskable as e:
             return self.fail(str(e))
-        self.reply(status, headers, body)
+        self.reply(status, headers, body, kind_of(kind))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
