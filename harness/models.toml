@@ -4,6 +4,10 @@
 model = "haiku"
 effort = "medium"
 
+[claude.balanced]
+model = "sonnet"
+effort = "medium"
+
 [claude.strong]
 model = "opus"
 effort = "medium"

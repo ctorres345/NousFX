@@ -23,6 +23,8 @@ when a valid mark covers the current code, else exits 2. `verify-attestation --t
 
 Mark mode: `review-gate.py --mark --findings N` or `--mark --skip "reason"` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
+`--tier 0-3 [--reasons "..."]` (from the review loop's tier.py) is stored too; `attest` then prints a separate
+`Review-Tier: N (reasons)` line after the `Review-Gate:` line. The gate never reads the tier to decide.
 Open findings above 0 keep the PR blocked unless a --skip reason was recorded.
 `--mark --findings` also runs the project's check command (`[check] command` in .nousfx/project.toml, read
 from the default branch, so a branch cannot weaken it) and refuses the mark when it fails, times out,
@@ -71,11 +73,11 @@ GIT_REPO_VARS = re.compile(r"\bGIT_(?:DIR|WORK_TREE)\b", re.I)
 BLOCK = """\
 Blocked: no review recorded for this code. Before opening a PR:
 - Run the review now by invoking the `review-loop` skill (Skill tool); do not ask the user to type
-  it. In unattended or /goal runs, do the same steps by hand: /simplify, then the `reviewer` subagent for up to 5
-  rounds, fixing real high/med findings and showing test results.
+  it. In unattended or /goal runs, do the same steps by hand: /simplify, then the reviewer agent and round cap
+  that `review-loop` names for the tier, fixing real high/med findings and showing test results.
 - If the change touches auth, migrations, concurrency, or a public API, offer the
   `reviewer-deep` agent (ask first).
-- When done, record it: python3 "{script}" --mark --findings <open high/med count>
+- When done, record it: python3 "{script}" --mark --findings <open high/med count> --tier <0-3> --reasons "<tier reasons>"
 - If the user explicitly approves skipping the review: python3 "{script}" --mark --skip "<reason>"
 Editing code after the review invalidates the marker; re-run on the final diff."""
 
@@ -286,7 +288,29 @@ def log_tail(path, lines=40):
         return "(no log)"
 
 
+def tier_args(argv):
+    """(tier, reasons) from `--tier 0-3 [--reasons TEXT]`; (None, None) without --tier. ValueError on bad input:
+    a tier outside 0-3, a missing value, or --reasons without --tier."""
+    tier = reasons = None
+    if "--tier" in argv:
+        tier = argv[argv.index("--tier") + 1]
+        if tier not in ("0", "1", "2", "3"):
+            raise ValueError
+        tier = int(tier)
+    if "--reasons" in argv:
+        reasons = argv[argv.index("--reasons") + 1]
+        if tier is None or reasons.startswith("--"):
+            raise ValueError
+        reasons = " ".join(reasons.split()) or None
+    return tier, reasons
+
+
 def mark(argv):
+    try:
+        tier, reasons = tier_args(argv)
+    except (IndexError, ValueError):
+        print("Nothing recorded. --tier takes 0, 1, 2 or 3; --reasons \"...\" needs --tier.", file=sys.stderr)
+        return 2
     findings, skip = None, None
     try:
         if "--findings" in argv:
@@ -310,6 +334,8 @@ def mark(argv):
     tree = worktree_tree(cwd)
     marker = {"tree": tree, "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
               "findings_open": findings, "skipped": skip}
+    if tier is not None and not skip:  # a skip ran no review, so it has no tier
+        marker["tier"], marker["tier_reasons"] = tier, reasons
     if not skip:
         try:
             ref = default_ref(cwd)
@@ -488,6 +514,10 @@ def attest(cwd):
               file=sys.stderr)
         return 2
     print(f"Review-Gate: {tree}" + (f" skipped: {skipped}" if skipped else ""))
+    tier = marker.get("tier")
+    if isinstance(tier, int) and not isinstance(tier, bool) and 0 <= tier <= 3:
+        reasons = " ".join(str(marker.get("tier_reasons") or "").split())
+        print(f"Review-Tier: {tier}" + (f" ({reasons})" if reasons else ""))
     return 0
 
 

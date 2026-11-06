@@ -38,7 +38,7 @@ The steps I repeat by hand for NousFX. Each one installs into my own `~/.claude/
    "autoCompactWindow": 300000
    ```
 
-5. Start a **new** session (hooks and agents load at session start) and run `/agents`. You should see `Explore`, `researcher`, `reviewer`, `reviewer-deep`, `architect` and `test-runner`.
+5. Start a **new** session (hooks and agents load at session start) and run `/agents`. You should see `Explore`, `researcher`, `reviewer-light`, `reviewer`, `reviewer-high`, `reviewer-deep`, `architect` and `test-runner`.
 6. [Verify the gate](#verify-the-gate).
 
 UI skills that `ui-review` uses are not in this repo. `harness/skills.lock.json` pins most of them and sync installs them (see the README). Missing ones are skipped and reported.

@@ -50,6 +50,36 @@ class Attest(Base):
         self.assertEqual(r.returncode, 0)
         self.assertEqual(r.stdout.strip(), "Review-Gate: " + self.tree() + " skipped: docs only second line")
 
+    def test_attest_prints_the_tier_on_its_own_line(self):
+        self.mark("--findings", "0", "--tier", "3", "--reasons", "risk path: claude/hooks\nsecond")
+        r = self.run_gate("attest")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout.splitlines(),
+                         ["Review-Gate: " + self.tree(), "Review-Tier: 3 (risk path: claude/hooks second)"])
+
+    def test_attest_tier_without_reasons(self):
+        self.mark("--findings", "0", "--tier", "0")
+        self.assertEqual(self.run_gate("attest").stdout.splitlines()[1], "Review-Tier: 0")
+
+    def test_attest_without_a_tier_prints_one_line(self):
+        self.mark("--findings", "0")
+        self.assertEqual(len(self.run_gate("attest").stdout.splitlines()), 1)
+
+    def test_a_skip_has_no_tier_line(self):
+        self.assertEqual(self.mark("--skip", "docs only", "--tier", "1").returncode, 0)
+        self.assertNotIn("Review-Tier", self.run_gate("attest").stdout)
+
+    def test_bad_tier_or_reasons_without_tier_record_nothing(self):
+        for args in (["--tier", "4"], ["--tier", "-1"], ["--tier", "x"], ["--tier"], ["--reasons", "why"],
+                     ["--tier", "2", "--reasons"], ["--tier", "2", "--reasons", "--findings"]):
+            r = self.run_gate("--mark", "--findings", "0", *args)
+            self.assertEqual(r.returncode, 2, args)
+            self.assertEqual(self.run_gate("attest").returncode, 2, args)
+
+    def test_verify_accepts_a_body_with_the_tier_line(self):
+        r = self.verify("Review-Gate: " + self.tree() + "\nReview-Tier: 3 (risk path)\n")
+        self.assertEqual(r.returncode, 0)
+
     def test_attest_refused_after_tree_changes(self):
         self.mark("--findings", "0")
         with open(os.path.join(self.repo, "f.txt"), "w", encoding="utf-8") as f:

@@ -16,7 +16,7 @@ A shareable framework for building software with Claude Code. It holds the agent
 
 ```
 idea ─► grilling ─► /to-spec ─► /to-tickets (Jira) ─► implement ─► ui-review ─► review-loop ─► gate ─► PR
-                                                      (tdd, prototype)   (UI only)    (max 5 rounds)
+                                                      (tdd, prototype)   (UI only)    (rounds by tier)
 ```
 
 ## Quickstart
@@ -29,7 +29,7 @@ git clone https://github.com/ctorres345/NousFX.git
 cd NousFX && ./install.sh
 ```
 
-Then start a **new** Claude Code session (hooks and agents load at session start) and run `/agents`. You should see `Explore`, `researcher`, `reviewer`, `reviewer-deep`, `architect` and `test-runner`.
+Then start a **new** Claude Code session (hooks and agents load at session start) and run `/agents`. You should see `Explore`, `researcher`, `reviewer-light`, `reviewer`, `reviewer-high`, `reviewer-deep`, `architect` and `test-runner`.
 
 `install.sh` copies the files into `~/.claude/` (override with `CLAUDE_HOME`) and backs up anything it replaces as `*.bak-<stamp>`. It no longer writes rules: `scripts/nousfx_sync.py` generates `~/.claude/CLAUDE.md` (see [docs/sync.md](docs/sync.md)). It registers the review gate in `~/.claude/settings.json`, after backing that up too.
 
@@ -86,7 +86,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | Step | What happens |
 |---|---|
 | `ui-review` | Runs automatically for UI changes. It detects the platform (Compose, Flutter, SwiftUI, web), runs the matching design skills, takes light and dark screenshots, and asks Argon for a second opinion when configured |
-| `review-loop` | `/simplify`, then up to 5 rounds of the Opus `reviewer`, fixing the real high and medium findings. It records the result for the gate |
+| `review-loop` | `/simplify`, then rounds of a reviewer chosen by the diff's risk tier (`tier.py`): Sonnet `reviewer-light` for tiers 0 and 1 (1 and 3 rounds), Opus `reviewer` for tier 2, `reviewer-high` for tier 3 (5 rounds). It fixes the real high and medium findings and records the result and tier for the gate |
 | PR gate | `gh pr create` is blocked until a review with 0 open high/med findings matches the current code and the branch name has a Jira key |
 | PR body | Uses `claude/templates/pull_request_template.md` (ticket, what and why, how to test, screenshots) |
 
@@ -102,10 +102,12 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/agents/Explore.md` | Haiku code search; replaces the built-in Explore |
 | `claude/agents/researcher.md` | Haiku docs and API lookups |
 | `claude/agents/test-runner.md` | Haiku build and test runner; returns only failures |
-| `claude/agents/reviewer.md` | Read-only Opus code reviewer |
+| `claude/agents/reviewer.md` | Read-only Opus code reviewer (tier 2) |
+| `claude/agents/reviewer-light.md` | Read-only Sonnet reviewer (tiers 0 and 1) |
+| `claude/agents/reviewer-high.md` | Read-only Opus reviewer at high effort (tier 3) |
 | `claude/agents/reviewer-deep.md` | Fable second-opinion reviewer for large or risky changes, only after asking |
 | `claude/agents/architect.md` | Fable architecture and performance consultant, read-only, only after asking |
-| `claude/skills/review-loop/` | `/review-loop`: review-fix loop, max 5 rounds, never commits |
+| `claude/skills/review-loop/` | `/review-loop`: review-fix loop, rounds set by the risk tier (max 5), never commits |
 | `claude/skills/ui-review/` | `/ui-review`: platform-aware UI/UX review. Includes `scripts/argon_review.py` (Gemini second opinion with safety stops; the project must be on the outbound allow-list in `~/.config/nousfx/via.json`) and a Flutter screenshot test template |
 | `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/gemini_common.py` holds the safety checks both Gemini scripts share; they run on macOS and Windows |
 | `claude/skills/handoff/` | `/handoff`: session handoff note |
@@ -145,10 +147,10 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 A `/goal` evaluator reads only the transcript, so paste the procedure as the goal. Start the session in auto mode so test commands don't prompt.
 
 ```text
-/goal Review-fix loop on everything on this branch since it left the default branch, plus untracked files. Run git merge-base origin/HEAD HEAD || git merge-base origin/main HEAD first; it prints the base hash. If it fails, stop, say so and record nothing. Then use git diff <base hash> and git ls-files --others --exclude-standard, with the literal hash, and give that hash to the reviewer. If both are empty, stop, say so and record nothing. Each round, print "Round N/5", run the reviewer subagent, verify its findings, fix the real high/med ones, then run tests. Done when the reviewer's latest output is NO FINDINGS or low-only, and the passing test output is shown. Stop after Round 5 regardless and list what remains. Then run the tests one last time and show the result. If any test fails, say so and record nothing. Otherwise run `python3 <gate> --mark --findings <open high/med count>` (`python` on Windows), where `<gate>` is the gate path printed in the gate's block message, or the path in the `command` of the review-gate hook in your tool's hook config (`~/.claude/settings.json` for Claude Code, the plugin's `hooks.json` for agy); the gate blocks the PR while the count is above 0. Do not commit.
+/goal Review-fix loop on everything on this branch since it left the default branch, plus untracked files. Run git merge-base origin/HEAD HEAD || git merge-base origin/main HEAD first; it prints the base hash. If it fails, stop, say so and record nothing. Then use git diff <base hash> and git ls-files --others --exclude-standard, with the literal hash, and give that hash to the reviewer. If both are empty, stop, say so and record nothing. Then run python3 -B <review-loop skill folder>/scripts/tier.py --base <base hash> (`python` on Windows; the skill lives in ~/.claude/skills for Claude Code and ~/.agents/skills for agy) (add --labels with the ticket labels; if the branch has a ticket key and you cannot read them, use at least tier 2 and say "labels unavailable" in the reasons), print the tier and reasons, and use the reviewer for that tier: 0 reviewer-light with effort low and 1 round, 1 reviewer-light and 3 rounds, 2 reviewer and 5 rounds, 3 reviewer-high and 5 rounds. If tier.py fails, use tier 2. Run tier.py again after each round's fixes; the tier only goes up. On a rise, switch to that reviewer and cap; rounds already used count. At tier 0 or 1, when the cap's final round had fixes that no reviewer has seen, raise the tier by one and run another round. Each round, print "Round N/<cap>", run that reviewer subagent, verify its findings, fix the real high/med ones, then run tests. Done when the reviewer's latest output is NO FINDINGS or low-only, and the passing test output is shown. Stop after the last round of the cap regardless and list what remains. Then run the tests one last time and show the result. If any test fails, say so and record nothing. Otherwise run `python3 <gate> --mark --findings <open high/med count> --tier <final tier> --reasons "<tier reasons>"` (`python` on Windows), where `<gate>` is the gate path printed in the gate's block message, or the path in the `command` of the review-gate hook in your tool's hook config (`~/.claude/settings.json` for Claude Code, the plugin's `hooks.json` for agy); the gate blocks the PR while the count is above 0. Do not commit.
 ```
 
-- The cap counts rounds (`Round N/5`), not turns. One round takes several turns.
+- The cap counts rounds (`Round N/<cap>`), not turns. One round takes several turns.
 - "Clean" means no high or medium findings. Reviewers almost always find something minor.
 - For interactive use, just run `/review-loop`.
 

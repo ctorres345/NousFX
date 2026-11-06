@@ -20,3 +20,6 @@
 - [ ] `/review-loop` ran on the final diff
 - [ ] Docs updated if behavior, architecture, or security posture changed
 - [ ] No secrets or credentials in the diff
+
+## Review
+<!-- Paste the output of `review-gate.py attest` here: the `Review-Gate:` line and the `Review-Tier:` line, each on its own line. -->
