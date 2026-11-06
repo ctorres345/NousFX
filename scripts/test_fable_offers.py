@@ -34,11 +34,14 @@ class FableOffers(unittest.TestCase):
         self.assertIn("first time the tier is 3", s)
         self.assertIn("tie-breaker", s)
         self.assertIn("final pass", s)
+        self.assertIn("ends clean at Tier 3", s)
+        self.assertIn("still disagree with the reviewer on a `high`", s)
         self.assertGreaterEqual(s.count("`reviewer-deep`"), 2)
 
     def test_section_states_the_limits(self):
         s = section(SKILL, "Fable offers")
-        for phrase in ("Tier 0 or 1", "unattended", "/goal", "only after", "one line", "once"):
+        for phrase in ("never every round", "Tier 0 or 1", "unattended", "/goal", "only after the user says yes",
+                       "one line", "at most once per loop"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, s)
 
@@ -51,12 +54,14 @@ class FableOffers(unittest.TestCase):
         self.assertIn("Fable offers", section(SKILL, "Step 1"))
 
     def test_overlay_offers_plan_check_at_kickoff(self):
-        line = next(l for l in read("harness", "overlays", "claude.overlay.md").splitlines()
-                    if l.startswith("- Fable"))
+        line = next((l for l in read("harness", "overlays", "claude.overlay.md").splitlines()
+                     if l.startswith("- Fable")), "")
+        self.assertTrue(line, "missing the Fable line in the Claude overlay")
         self.assertIn("`fable-review`", line)
         self.assertIn("`architect`", line)
         self.assertIn("clear yes", line)
         self.assertIn("`/goal`", line)
+        self.assertIn("Never offer or run", line)
 
 
 if __name__ == "__main__":
