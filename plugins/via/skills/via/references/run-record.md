@@ -7,7 +7,7 @@ The agent (Claude Code or agy) makes the design calls. `scripts/via_run.py` (std
 2. Put screenshots and the prototype in `run_dir`. On web, `via_capture.py` prints the `screenshots` entries for the record; on Compose and Flutter, `via_capture_native.py` prints `screenshots`, `coverage` and sometimes `warnings` (see `platforms.md`). Write `run_dir/findings.json` (never write `id`, `status` or `merged_at`).
 3. `via_run.py merge <run_dir>` validates the record, gives each finding its ID, updates the ledger in `docs/design/via.md`, and writes the IDs and statuses back into `findings.json`. It prints counts of new, open, fixed, rejected and regressed.
    After `merge`, `via_prototype.py build <run_dir>` makes `prototype.html` and adds `prototype` links to the record (see `prototype.md`). Run `merge` once more so the ledger gets the anchors.
-4. Routes: after one batch approval, set `route` and `route_reason` on each finding and run `via_run.py route <run_dir>` (see `routes.md`). It rejects, writes markdown tickets and lists the fix-now IDs. A single rejection outside a batch: `via_run.py reject <id> --reason "<why>"`. A rejected finding never returns as new.
+4. Routes: after one batch approval, set `route` and `route_reason` on each finding and run `via_run.py route <run_dir>` (see `routes.md`). It rejects, files tickets (Jira when connected and allowed, else markdown) and lists the fix-now IDs. A single rejection outside a batch: `via_run.py reject <id> --reason "<why>"`. A rejected finding never returns as new.
 5. After the code is final: `via_run.py pass <run_dir>`. It records the pass for the current code state in the git dir (`via-check-ok`). Editing code afterwards makes the record stale.
 
 ## Screenshots and what may leave the run folder
@@ -16,6 +16,7 @@ The agent (Claude Code or agy) makes the design calls. `scripts/via_run.py` (std
 - `coverage` is a list of `{platform, screen, entry, kind, captured, reason}` from native capture (`kind` is `state`, `matrix`, `preview` or `note`): what was shot and why the rest was not. Copy it into the record and report the gaps. `warnings` is for the report, not the record.
 - Pick shots for a second opinion default-state first (phone, light and dark), then the rest, up to 8. The prototype's before image does the same on its own.
 - `via_run.py outbound-shots <run_dir>` prints the shots marked `kept` as absolute paths, and counts the dropped and unreviewed ones. `via_second_opinion.py` refuses any other file.
+- A Jira ticket shows only shots that are `kept` and `redacted: true`, since Jira keeps them for good. Native shots (`redacted: false`) stay in the markdown ticket path and the run folder.
 - `token_cost` is a number, or an object. After a second opinion, set `token_cost.second_opinion` to `{"who": "argon", "input_tokens": n, "output_tokens": n}` from the wrapper's `usage` (use `null` when a count is unknown, and `"claude"` for the fallback reviewer).
 
 ## Rules
