@@ -498,16 +498,17 @@ def ensure_ignored(project):
     write_atomic(path, text + ("" if not text or text.endswith("\n") else eol) + IGNORE_LINE + eol)
 
 
-def resolve_run(project, run_arg):
+def resolve_run(project, run_arg, record_name="findings.json"):
+    """The run folder and its record file. /via spec passes spec.json: a spec run has no findings.json."""
     area = os.path.join(project, RUN_AREA)
     run_dir = os.path.abspath(os.path.join(project, run_arg))
     if any(os.path.islink(part) for part in (os.path.join(project, ".via"), area, run_dir)):
         die(".via or the run folder is a symlink. Nothing was changed.")
     if not os.path.isdir(run_dir) or not inside(run_dir, area) or os.path.realpath(run_dir) == os.path.realpath(area):
         die("%s is not a run folder made by `init` in this project." % run_arg)
-    record = os.path.join(run_dir, "findings.json")
+    record = os.path.join(run_dir, record_name)
     if os.path.islink(record) or not os.path.isfile(record):
-        die("%s has no findings.json (or it is a symlink)." % run_arg)
+        die("%s has no %s (or it is a symlink)." % (run_arg, record_name))
     return run_dir, record
 
 

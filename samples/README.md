@@ -14,4 +14,6 @@ Each has one screen with two deliberate design flaws, so an audit has something 
 
 `compose` and `flutter` also have previews (`Previews.kt`, `previews.dart`) for the default, empty and long states. `/via audit` shoots them with `plugins/via/scripts/via_capture_native.py`. Compose needs Gradle, the Android SDK and, on the first run, a few minutes of downloads; Flutter needs `flutter` on PATH. Set `VIA_GRADLEW`, `VIA_FLUTTER`, `VIA_ROBORAZZI` or `VIA_ROBOLECTRIC` to change a tool or version. Gradle leaves its `build/` folder behind.
 
+`web/tickets/SAMPLE-1.md` is a markdown ticket for `/via spec` without Jira. Run spec on a copy of `web` (for example in a temp folder with `git init`), because `via_run.py init` adds `.via/` to the project's `.gitignore`.
+
 Do not "fix" the flaws. Tests rely on them.
