@@ -11,7 +11,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
 ~/.config/nousfx/local.agy.md      mine, agy only (optional)
         |
         v   python3 -B scripts/nousfx_sync.py [--tools claude,agy]
-~/.claude/CLAUDE.md                generated, header holds a hash of the sources
+~/.claude/CLAUDE.md                generated, header holds a hash of the sources and names them by path
 ~/.claude/settings.json            review gate, drift warning and deny list (other settings kept)
 ~/.claude/hooks/                   review-gate.py, pr_create_parser.py and nousfx-drift.py
 ~/.gemini/config/plugins/nousfx/   (agy) hooks.json, and hooks/ with agy_gate.py and its own copy of the gate
@@ -24,7 +24,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
 | none | back up, write, then self-test the gate hook |
 | `--dry-run` | print a diff, write nothing |
 | `--check` | list drifted files, exit 1 on drift, write nothing |
-| `--check --summary` | the same exit code, but one JSON line of counts (`files`, `skills`, `outside`). The drift warning reads it |
+| `--check --summary` | the same exit code, but one JSON line of counts (`files`, `skills`, `outside`) and a `rules` object (`bytes`, `budget`, `repeats`). The drift warning reads it |
 | `--restore` | put back the last backup (files that did not exist are removed) |
 | `--clean-backups` | also move the `.bak-<stamp>` files the old copy-based `install.sh` left behind into the backup (otherwise they are only listed) |
 | `--yes-replace NAME` | let my skill NAME replace a folder sync does not own (moved into the backup first) |
@@ -40,18 +40,39 @@ What it checks:
 - **This machine is out of date.** It runs `nousfx_sync.py --check --summary` in the clone. Any exit 1 with a valid summary counts, so a skill collision I have not decided yet also warns.
 - **The clone is behind `origin/main`.** It counts `HEAD..origin/main` from the last fetch. The hook starts `git fetch` first, in the background, at most every 10 minutes (no password prompts, no window on Windows), so the next session sees fresh data. The warning can be one session late, and it never waits for the network.
 
+- **The rules are too long or repeat the harness.** It reads the summary's `rules` object, also on exit 0 (the budget only warns). See Rules budget below.
+
 What it prints: nothing when all is well. Otherwise one line, for example `NousFX on this machine is out of date (2 files, 13 skills need a decision). Run python3 -B scripts/nousfx_sync.py in <clone>.` On Windows the command says `python`. The same text goes to me and to the model.
 
 What it never does: sync, pull or write a file of mine. The background fetch is the only write, and it only moves `origin/main` in the clone. Any error, a missing clone or more than 2 seconds means it says nothing and exits 0, so it cannot break a session start.
+
+A rules warning is one more line, for example `NousFX rules: 9492 bytes, over the 6144 byte budget. Run python3 -B scripts/nousfx_sync.py --dry-run in <clone> to see which, then trim the local files (docs/sync.md).`
 
 To turn it off, remove the `SessionStart` entry that names `nousfx-drift.py` from `~/.claude/settings.json`. The next sync puts it back.
 
 agy has no session-start hook (only `PreToolUse` is proven), so its rules carry a line that asks the model to run `--check --summary --tools agy` at the start of a session and report drift. Sync fills the clone's path into that line.
 
+## Rules budget
+
+Longer instruction files lower adherence, so the rules a tool loads stay short on every machine, not just in the repo. Every run measures each tool's generated rules without the header, local layers included (`--check --summary` reports the numbers in its `rules` object). Every other run warns on stderr:
+
+- `warning: rules budget: .claude/CLAUDE.md is 9492 bytes without its header, over the 6144 byte budget. ...` when the body is over budget.
+- `warning: repeated rule: "<sentence>" is in <local file> and <harness file>` for each sentence of 6 words or more that a local layer shares with `harness/AGENTS.md` or the tool's overlay. It uses the same matcher as `scripts/test_rules_single_copy.py`.
+
+The default budget is 6144 bytes. `NOUSFX_RULES_BUDGET=<n>` overrides it for one run; a `rules-budget: <n>` line in `local.md` overrides it for good. That line is a setting, read only from `local.md`, so it stays out of the generated rules. The variable wins over the line.
+
+It only warns: the exit code stays the same, and `--check` still says `no drift`. The repo's own 4096-byte budget for `AGENTS.md` plus the Claude overlay (`test_rules_single_copy.py`) is separate and still fails the tests.
+
+Local files hold only what is personal. A shared rule goes in the harness, once.
+
+### Using /doctor with NousFX
+
+Claude Code's `/doctor` may suggest edits to `~/.claude/CLAUDE.md`. Apply them to the sources (`harness/`, or `local.md` and `local.claude.md` in the state home), then re-run sync. A direct edit to `CLAUDE.md` is overwritten by the next sync, and `--check` flags it as drift until then.
+
 ## Rules I keep
 
 - The home dir comes from the user record, never the `HOME` variable.
-- The generated header holds a short hash of the sources that made the file (rules: neutral file, overlay, local file; agents: the agent file and its role entry in `models.toml`), never the repo commit. `--check` flags a real source change or a hand edit, not every commit.
+- The generated header holds a short hash of the sources that made the file (rules: neutral file, overlay, local file; agents: the agent file and its role entry in `models.toml`), never the repo commit. `--check` flags a real source change or a hand edit, not every commit. The rules header also names its source files by path, as `~/...` when they are under my home (personal, so only in my home, never in `--project` stubs); the hash still comes from the texts alone.
 - The installed hook runs `python3 -I -B "<gate>"` (`python -I -B` on Windows). `-B` leaves no bytecode behind. `-I` ignores `PYTHONPATH` and user site, so a file named like a standard module cannot make the gate allow a PR.
 - Sync refuses a symlinked target file or folder under `~/.claude` instead of replacing it or writing through it. Nothing is changed when it refuses.
 - A backup goes to `<state home>/backups/<stamp>/` before every write. A run with nothing to change writes and backs up nothing.

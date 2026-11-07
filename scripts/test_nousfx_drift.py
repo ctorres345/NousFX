@@ -151,6 +151,47 @@ class Warns(DriftBase):
         self.stub_sync({"files": 0, "skills": 0, "outside": 0}, rc=0)
         self.assertEqual(self.run_hook().stdout, "")
 
+    RULES_OVER = {"files": 0, "skills": 0, "outside": 0, "rules": {"bytes": 9492, "budget": 6144, "repeats": 0}}
+
+    def test_rules_over_budget_with_exit_zero_print_one_line(self):
+        self.stub_sync(self.RULES_OVER, rc=0)
+        msg = self.message(self.run_hook())
+        self.assertEqual(len(msg.splitlines()), 1, msg)
+        self.assertIn("9492 bytes, over the 6144 byte budget", msg)
+        self.assertIn("--dry-run", msg)
+        self.assertNotIn("out of date", msg)
+
+    def test_repeats_with_exit_zero_print_one_line(self):
+        self.stub_sync({**self.RULES_OVER, "rules": {"bytes": 10, "budget": 6144, "repeats": 3}}, rc=0)
+        msg = self.message(self.run_hook())
+        self.assertIn("3 sentences in my local files repeat a harness rule", msg)
+        self.assertNotIn("budget", msg)
+
+    def test_rules_within_budget_and_no_repeats_print_nothing(self):
+        self.stub_sync({**self.RULES_OVER, "rules": {"bytes": 10, "budget": 6144, "repeats": 0}}, rc=0)
+        r = self.run_hook()
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_a_broken_rules_object_prints_nothing(self):
+        self.stub_sync({**self.RULES_OVER, "rules": {"bytes": "lots"}}, rc=0)
+        self.assertEqual(self.run_hook().stdout, "")
+
+    def test_drift_and_rules_over_budget_give_two_lines(self):
+        self.stub_sync({**self.RULES_OVER, "files": 1}, rc=1)
+        lines = self.message(self.run_hook()).splitlines()
+        self.assertEqual(len(lines), 2, lines)
+        self.assertIn("out of date (1 file)", lines[0])
+        self.assertIn("over the 6144 byte budget", lines[1])
+
+    def test_a_real_sync_with_big_local_rules_warns_inside_the_budget(self):
+        rules = "\n".join(f"- Personal rule number {i} about my own habits." for i in range(160))
+        write(os.path.join(self.state, "local.claude.md"), rules + "\n")
+        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
+        msg = self.message(self.run_hook())
+        self.assertIn("byte budget", msg)
+        self.assertNotIn("out of date", msg)
+        self.assertLess(self.elapsed, 2.0)
+
     def test_windows_message_says_python(self):
         self.drift()
         msg = self.message(self.run_hook("--platform", "windows"))
