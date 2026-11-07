@@ -33,7 +33,7 @@ On Windows, in PowerShell, run `.\install.ps1` instead. Both scripts only run `s
 
 Then start a **new** Claude Code session (hooks and agents load at session start) and run `/agents`. You should see `Explore`, `researcher`, `reviewer-light`, `reviewer`, `reviewer-high`, `reviewer-deep`, `architect` and `test-runner`.
 
-The sync writes `~/.claude/CLAUDE.md` (the rules, generated), the agents, skills and hooks, and registers the review gate in `~/.claude/settings.json`. It backs up every file it changes under `~/.config/nousfx/backups/`, never writes through a symlink it does not own, and skips a skill folder you made by hand (a collision, with a diff) until you pass `--yes-replace NAME`. What it writes and every switch is in [docs/sync.md](docs/sync.md).
+The sync writes `~/.claude/CLAUDE.md` (the rules, generated), the agents, skills and hooks, registers the review gate in `~/.claude/settings.json`, and adds a deny list there so Claude's file tools cannot read secret files or edit lockfiles. It backs up every file it changes under `~/.config/nousfx/backups/`, never writes through a symlink it does not own, and skips a skill folder you made by hand (a collision, with a diff) until you pass `--yes-replace NAME`. What it writes and every switch is in [docs/sync.md](docs/sync.md).
 
 If `~/.claude/settings.json` is a symlink (a dotfiles setup), replace it with a regular file first: the sync refuses to write through it. `CLAUDE_HOME` no longer does anything; pass `--home DIR` to aim at another home.
 
