@@ -27,6 +27,7 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
         run: |
           set -eu
           gate_dir="$RUNNER_TEMP/gate"
@@ -70,8 +71,11 @@ jobs:
             exit 1
           }
           cat "$RUNNER_TEMP/tier.json"
+          if ! grep -q -- '--author-association' "$gate_dir/review-gate.py"; then
+            echo "::warning::The gate on '$BASE_REF' predates NFX-95: it honors a Review-Tier override from any PR author."
+          fi
           tier_out=$(python3 -B "$gate_dir/review-gate.py" verify-tier --tier-json "$RUNNER_TEMP/tier.json" \
-                       --text-file "$RUNNER_TEMP/pr-body.txt" </dev/null 2>&1) || {
+                       --text-file "$RUNNER_TEMP/pr-body.txt" --author-association "$AUTHOR_ASSOCIATION" </dev/null 2>&1) || {
             printf '%s\n' "$tier_out"
             echo "::error::The review tier check failed (message above): a Review-Tier line below the computed tier, or one it cannot read."
             exit 1
