@@ -12,7 +12,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
         |
         v   python3 -B scripts/nousfx_sync.py [--tools claude,agy]
 ~/.claude/CLAUDE.md                generated, header holds a hash of the sources
-~/.claude/settings.json            review gate and drift warning registered (other settings kept)
+~/.claude/settings.json            review gate, drift warning and deny list (other settings kept)
 ~/.claude/hooks/                   review-gate.py, pr_create_parser.py and nousfx-drift.py
 ~/.gemini/config/plugins/nousfx/   (agy) hooks.json, and hooks/ with agy_gate.py and its own copy of the gate
 ```
@@ -59,6 +59,55 @@ agy has no session-start hook (only `PreToolUse` is proven), so its rules carry 
 - After writing, the installed gate runs twice: a PR create on a wrong branch must block, a harmless command must pass. If not, the run fails and `--restore` undoes it.
 - On Windows the gate path goes through `cygpath -m`, the interpreter is `python`, and the hook runs in PowerShell. Hooks are copied, not linked, so no junction is needed here.
 - Nothing from Claude's auto-mode allow list is copied anywhere.
+
+## Deny list
+
+Claude's file tools may not read or edit secret files, and may not edit lockfiles. Sync writes these rules to `permissions.deny` in `~/.claude/settings.json`. They are plain Claude Code rules: no model decides, and they work the same on Mac and Windows.
+
+| Files | Rule | Blocks |
+|---|---|---|
+| `.env*` (also `.envrc`, `.env.example`) | `Read(//**/.env*)`, `Edit(//**/.env*)` | read and edit |
+| `*.pem` | `Read(//**/*.pem)`, `Edit(//**/*.pem)` | read and edit |
+| `*.key` (also Keynote files) | `Read(//**/*.key)`, `Edit(//**/*.key)` | read and edit |
+| SSH keys: `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*` (also their `.pub`) | `Read(//**/id_rsa*)`, `Edit(//**/id_rsa*)`, and the same for each | read and edit |
+| `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `pubspec.lock`, `Podfile.lock`, `gradle.lockfile`, `gradle/dependency-locks/*.lockfile` | `Edit(//**/<name>)` | edit only, reading is fine |
+
+How the rules read:
+- `//` means "from the root of the disk", so a rule matches anywhere, not only inside the folder the session started in. A bare `**/.env*` would only cover that folder. On Windows, Claude Code turns `C:\Users\me` into `/c/Users/me` before it matches, so `//**/` covers every drive. The rules are the same text on both machines.
+- `Read` also covers Grep and Glob (Claude Code calls this best effort). `Edit` covers every built-in tool that changes a file: Write, MultiEdit and NotebookEdit. A `Write(...)` rule would never match, so there is none.
+- A deny rule wins over every allow, in every settings file. A project cannot undo it.
+
+What it does not stop (the Bash gap):
+
+| Command | Blocked? |
+|---|---|
+| `cat .env`, `head`, `tail`, `sed`, `tee`, `> file`, `< file` | yes, Claude Code checks the files these name |
+| `grep -r KEY .` (reads files without naming them) | no |
+| a script: `python x.py`, `node x.js` that opens `.env` | no |
+| `npm install`, `flutter pub get`, `pod install` rewriting a lockfile | no, and that is wanted |
+
+For a hard stop on everything, Claude Code's sandbox is the tool, not these rules. agy has no matching setting yet (its gate guards only its own files); that is a follow-up ticket.
+
+### Keeping my own rules
+
+Sync owns only the rules in the table. Any other deny rule I wrote by hand stays where it is, and so does every other setting (`allow`, `defaultMode`, hooks, model). If I write one of the table's rules by hand, sync treats it as its own.
+
+- `--check` reports `settings.json` as drift when one of the rules is missing or edited. The next run puts it back.
+- A second run changes nothing.
+- `--restore` puts back the whole `settings.json` from before the last run.
+
+### Leaving a rule out
+
+A project cannot allow a denied file, so exceptions go in one file of mine, `~/.config/nousfx/deny.toml` (never committed):
+
+```toml
+# a bare pattern drops both rules for it (Read and Edit); a full rule drops just that one
+exclude = ["//**/*.key", "Edit(//**/pubspec.lock)"]
+```
+
+- An entry must match a rule in the table exactly. One that matches nothing (a typo, or `**/.env.example`) stops the run before anything is written, and the message lists the rules.
+- A rule cannot carve one file out of a pattern. To allow `.env.example` but not `.env`, I exclude `//**/.env*` and add my own narrower rules by hand, for example `Read(//**/.env)` and `Read(//**/.env.local)`.
+- After I change `deny.toml`, `--check` shows drift until I run sync.
 
 ## Skills
 

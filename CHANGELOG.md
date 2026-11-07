@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0 (unreleased)
+
+### Sync and install
+- Sync writes a deny list to `~/.claude/settings.json`: Claude's file tools may not read or edit `.env*`, `*.pem`, `*.key` and SSH keys (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`), or edit lockfiles. My own deny rules and settings are kept, and `~/.config/nousfx/deny.toml` leaves a rule out (NFX-74).
+
 ## 1.0.0 (unreleased)
 
 The daily-use harness: Claude Code and agy on Mac and Windows, one sync command, a gate that runs the tests, trimmed rules, and a review loop that scales with risk. Proven on Animus.

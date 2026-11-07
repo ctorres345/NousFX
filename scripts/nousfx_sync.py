@@ -7,7 +7,8 @@
 
 Writes under <home>/.claude (tool "claude", the default):
   CLAUDE.md                  neutral rules + Claude overlay + local.md + local.claude.md, with a header
-  settings.json              the review gate registered as a PreToolUse hook (other settings kept)
+  settings.json              the review gate registered as a PreToolUse hook, and the deny list for secret
+                             files and lockfiles in permissions.deny (nousfx_deny.py; other settings kept)
   hooks/review-gate.py       the gate hook and its parser, copied from the repo
   hooks/pr_create_parser.py
   agents/*.md                from harness/agents (roles) and harness/models.toml (role -> model)
@@ -43,6 +44,7 @@ import time
 
 import nousfx_agents
 import nousfx_agy
+import nousfx_deny
 import nousfx_mcp
 import nousfx_outside
 import nousfx_project
@@ -181,9 +183,12 @@ def replace_owned(entries, marker, entry):
     entries.insert(min(at, len(entries)), entry)
 
 
-def merge_settings(current, gate_path, win, drift=None):
-    """Register the review gate and, when `drift` is (script, repo, tools), the session-start drift warning."""
+def merge_settings(current, gate_path, win, drift=None, deny=None, where="settings.json"):
+    """Register the review gate and, when `drift` is (script, repo, tools), the session-start drift warning.
+    `deny` is the list of deny rules sync owns (None: leave permissions as they are)."""
     cfg = json.loads(current) if current else {}
+    if not isinstance(cfg, dict):
+        raise SyncError(f"{where} is not a JSON object; fix it first", 2)
     py = interpreter(win)
     hooks = cfg.setdefault("hooks", {})
     # -I: PYTHONPATH must not shadow stdlib in the hooks
@@ -194,6 +199,8 @@ def merge_settings(current, gate_path, win, drift=None):
         warn = owned_hook(f'{py} -I -B "{script}" --repo "{repo}" --tools {",".join(tools)}', DRIFT_TIMEOUT, win)
         replace_owned(hooks.setdefault("SessionStart", []), DRIFT_HOOK,
                       {"matcher": "startup", "hooks": [warn]})  # not on resume, clear or compact
+    if deny is not None:
+        nousfx_deny.merge(cfg, deny, SyncError, where)
     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
 
 
@@ -212,9 +219,10 @@ def claude_files(repo, home, state, platform, tools):
             raise SyncError(f"missing hook source: {src}", 2)
         wanted[os.path.join(claude, "hooks", name)] = text
     settings = os.path.join(claude, "settings.json")
+    deny = nousfx_deny.wanted_rules(nousfx_deny.load_excludes(state, SyncError))
     try:
         wanted[settings] = merge_settings(read_or_none(settings), gate_cmd, win,
-                                          (drift_cmd, native(repo), sorted(tools, key=TOOLS.index)))
+                                          (drift_cmd, native(repo), sorted(tools, key=TOOLS.index)), deny, settings)
     except ValueError as e:
         raise SyncError(f"{settings} is not valid JSON ({e}); fix it first", 2)
     return wanted
