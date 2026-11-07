@@ -20,8 +20,8 @@ python3 -B claude/hooks/review-gate.py check --cwd DIR --command "gh pr create"
 - `--allow-non-repo` is for agy. A folder that is not a repo is then judged by the command alone, so `cd <repo> && gh pr create` is still checked in that repo. It only covers git's own "not a git repository" answer: a missing git, a missing folder and a pushed commit (`--tree`) still block.
 - `--tool` names the parser: `Bash` (default), `PowerShell`, or an MCP tool name holding `create_pull_request`, as the Claude hook passes them.
 - The Claude hook parses its JSON payload and then calls the same `evaluate()` function. Behavior of the hook does not change.
-- Marks stay per worktree, in the git dir, keyed by tree hash. They do not move.
-- A mark also names the branch it was recorded on, and covers only that branch. After a fast-forward or squash merge, main's tree equals the last marked tree, so without this a new branch with no commits would pass. A branch renamed after the mark needs the mark again. `--mark` refuses on a detached HEAD, and a create from a detached HEAD blocks. `attest` applies the same branch rule. An old mark with no branch blocks with a message to re-run the review loop.
+- Marks stay per worktree, in the git dir, keyed by tree hash and branch name. They do not move.
+- A mark also names the branch it was recorded on, and covers only that branch. After a fast-forward or squash merge, main's tree equals the last marked tree, so without this a new branch with no commits would pass. A branch renamed after the mark needs the review loop again: the gate cannot tell a rename from a new branch cut from merged main, so it offers no re-mark shortcut. `--mark` refuses on a detached HEAD, and a create from a detached HEAD blocks. `attest` applies the same branch rule. The rule is local and by name only: a branch recreated under the marked name still matches, and the CI attestation (`Review-Gate: <tree>`) stays tree-only. An old mark with no branch blocks with a message to re-run the review loop.
 
 ## The check command
 

@@ -113,6 +113,16 @@ class Check(Base):
             self.assertEqual(json.load(f)["branch"], "cesar/DEM-1")
         self.assertEqual(self.check_create(), ALLOWED)
 
+    def test_a_deleted_marked_branch_gives_no_re_mark_shortcut(self):
+        """`gh pr merge -d` deletes the marked branch; a new branch from main must still be sent to the review."""
+        self.mark("--findings", "0")
+        self.sh("git", "checkout", "-q", "-b", "cesar/DEM-2")
+        self.sh("git", "branch", "-D", "cesar/DEM-1")
+        r = self.check("--cwd", self.repo, "--command", "gh pr create")
+        self.assertEqual(r.returncode, BLOCKED)
+        self.assertIn("review-loop", r.stderr)
+        self.assertNotIn("same --mark", r.stderr)
+
     def test_a_skip_from_another_branch_does_not_cover_this_one(self):
         self.mark("--skip", "user approved")
         self.sh("git", "checkout", "-q", "-b", "cesar/DEM-2")

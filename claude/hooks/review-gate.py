@@ -113,8 +113,7 @@ Fix the cause and run --mark again. Last lines:
 MARK_BRANCH_BLOCK = """\
 Blocked: the review mark was recorded on branch "{marked}", not "{branch}". A mark covers only the branch
 it was recorded on, even when the code is the same (a new branch cut from a merged one). Commit this
-branch's change and run the `review-loop` skill here so it records a new mark. If this is the same work and
-the branch was only renamed, record the mark again here with the same --mark command.
+branch's change and run the `review-loop` skill here so it records a new mark (also after a rename).
 On a push, the local and the remote branch names must be the same.
 """
 
@@ -162,7 +161,8 @@ Reinstall the gate and its parser together (re-run the sync: ./install.sh, or sc
 BRANCH_BLOCK = """\
 Blocked: branch "{branch}" is not named cesar/<JIRA-KEY> (for example cesar/MOB-23).
 - Create or find the Jira ticket, then rename the branch: git branch -m cesar/<KEY>
-  (rename only an unpushed branch, or ask the user first).
+  (rename only an unpushed branch, or ask the user first). A rename leaves the review mark on the old name,
+  so run the `review-loop` skill again after it.
 - If the user explicitly approves this name for the PR: python3 "{script}" --allow-branch "<reason>"
 """
 
@@ -603,7 +603,10 @@ def attest(cwd):
         tree = marker["tree"]
         if not covers(cwd, tree):
             raise ValueError("the review mark is for other code")
-        if not marker.get("branch") or marker.get("branch") != current_branch(cwd):
+        branch = current_branch(cwd)
+        if branch == "HEAD":
+            raise ValueError("HEAD is detached; check out the branch the mark was recorded on")
+        if not marker.get("branch") or marker.get("branch") != branch:
             raise ValueError("the review mark was recorded on another branch, or names none")
         skipped = " ".join(str(marker.get("skipped") or "").split())
         if not skipped and marker.get("findings_open") != 0:
