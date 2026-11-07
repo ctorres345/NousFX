@@ -13,7 +13,11 @@ import collections
 import glob
 import json
 import os
+import re
 import time
+
+# Claude names a project folder after its path with every non-alphanumeric made "-"; drop the home part.
+HOME_PREFIX = re.sub(r"[^A-Za-z0-9]", "-", os.path.expanduser("~")) + "-"
 
 # $/MTok: input, output, cache read. Cache writes are estimated at 1.25x input.
 PRICES = {
@@ -84,7 +88,7 @@ def main():
         if os.path.getmtime(path) < cutoff:
             continue
         rel = os.path.relpath(path, root)
-        pname = rel.split(os.sep)[0].replace("-Users-cesartorres-", "")
+        pname = rel.split(os.sep)[0].replace(HOME_PREFIX, "")
         if a.project and a.project.lower() not in pname.lower():
             continue
         is_sub = os.sep + "subagents" + os.sep in path

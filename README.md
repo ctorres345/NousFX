@@ -15,8 +15,8 @@ A shareable framework for building software with Claude Code. It holds the agent
 | **Tooling** | Jira board audits, session handoffs, project setup and a token usage report |
 
 ```
-idea ─► grilling ─► /to-spec ─► /to-tickets (Jira) ─► implement ─► ui-review ─► review-loop ─► gate ─► PR
-                                                      (tdd, prototype)   (UI only)    (rounds by tier)
+idea ─► grilling ─► /to-spec ─► /to-tickets (Jira) ─► implement ─► /via check ─► review-loop ─► gate ─► PR
+                                                      (tdd, prototype)   (UI only)     (rounds by tier)
 ```
 
 ## Quickstart
@@ -95,7 +95,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 
 | Step | What happens |
 |---|---|
-| `ui-review` | Runs automatically for UI changes. It detects the platform (Compose, Flutter, SwiftUI, web), runs the matching design skills, and takes light and dark screenshots. `review-loop` then asks Argon for a second opinion on UI changes when the project is allow-listed (schedule: "Gemini checks" in its `SKILL.md`) |
+| Via (`/via spec`, `/via check`) | Runs unasked for UI work: `/via spec` at kickoff, `/via check` before the PR. It detects the platform (Compose, Flutter, web), runs the matching design skills and takes light and dark screenshots. `review-loop` then asks Argon for a second opinion on UI changes when the project is allow-listed (schedule: "Gemini checks" in its `SKILL.md`) |
 | `review-loop` | `/simplify`, then rounds of a reviewer chosen by the diff's risk tier (`tier.py`): Sonnet `reviewer-light` for tiers 0 and 1 (1 and 3 rounds), Opus `reviewer` for tier 2, `reviewer-high` for tier 3 (5 rounds). It fixes the real high findings and the real med findings at confidence 60 or more (lists meds under 60 as skipped) and records the result and tier for the gate. The gate runs `tier.py` itself and refuses a lower tier than the diff computes unless I give a reason (`--tier-override`). On Tier 3 and on UI changes it can also ask Gemini for a second opinion (`review.py --allow-list`), only for projects on my allow-list in `~/.config/nousfx/via.json` (the `gemini_code_paths` entry says which folders may be sent) |
 | PR gate | `gh pr create` is blocked until a review with 0 open high or med (confidence 60+) findings matches the current code and the branch name has a Jira key |
 | PR body | Uses `claude/templates/pull_request_template.md` (ticket, what and why, how to test, screenshots, what I checked myself, and the `Review-Gate:` and `Review-Tier:` lines from `review-gate.py attest`) |
@@ -118,8 +118,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/agents/reviewer-deep.md` | Fable second-opinion reviewer for large or risky changes, only after asking |
 | `claude/agents/architect.md` | Fable architecture and performance consultant, read-only, only after asking |
 | `claude/skills/review-loop/` | `/review-loop`: review-fix loop, rounds set by the risk tier (max 5), never commits |
-| `claude/skills/ui-review/` | `/ui-review`: platform-aware UI/UX review. Includes `scripts/argon_review.py` (Gemini second opinion with safety stops, called by `review-loop`; the project must be on the outbound allow-list in `~/.config/nousfx/via.json`) and a Flutter screenshot test template |
-| `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/gemini_common.py` holds the safety checks both Gemini scripts share; they run on macOS and Windows |
+| `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/argon_review.py` is the Argon UI second opinion that `review-loop` calls; the project must be on the outbound allow-list in `~/.config/nousfx/via.json`. `scripts/gemini_common.py` holds the safety checks both Gemini scripts share; they run on macOS and Windows |
 | `claude/skills/handoff/` | `/handoff`: session handoff note |
 | `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list. Applies only approved fixes |
 | `claude/skills/prototype-fidelity/` | Rules for work based on an approved prototype: tickets, implementing, review, PR |
@@ -135,7 +134,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `docs/agents/` | This repo's own tracker setup (Jira project `NFX`) |
 
 ### Skills this framework uses but doesn't store
-`ui-review` skips any missing skill and lists it under "Skipped". Sync installs most of them for me, from a lock file:
+Via skips any missing design skill and lists it under "Skipped". Sync installs most of them for me, from a lock file:
 - User skills pinned in [`harness/skills.lock.json`](harness/skills.lock.json), each with a commit and a checksum. `python3 -B scripts/nousfx_sync.py` fetches, verifies and links them on every machine ([how it works](docs/sync.md#outside-skills)):
   - `ui-ux-pro-max`
   - the Android set (`adaptive`, `edge-to-edge`, `jetpack-compose-performance`, `navigation-3`, `testing-setup`)
@@ -217,7 +216,7 @@ Read-only. Costs are relative weights at list price, not a bill. It shows:
 ## Roadmap
 Tracked in Jira project **NFX**.
 
-- **Via, the designer** (named after Octavia, one of my cats). `ui-review` grows into a designer:
+- **Via, the designer** (named after Octavia, one of my cats). The old UI review skill grew into a designer:
 
   | Command | What it does |
   |---|---|

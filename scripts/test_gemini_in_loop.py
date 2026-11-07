@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NFX-64: review-loop runs the Gemini checks (Argon on UI changes, a code check at Tier 3); ui-review no longer does."""
+"""NFX-64: review-loop runs the Gemini checks (Argon on UI changes, a code check at Tier 3)."""
 import os
 import re
 import unittest
@@ -13,7 +13,6 @@ def read(*parts):
 
 
 LOOP = read("claude", "skills", "review-loop", "SKILL.md")
-UI = read("claude", "skills", "ui-review", "SKILL.md")
 
 
 def section(text, title):
@@ -81,14 +80,12 @@ class GeminiInLoop(unittest.TestCase):
     def test_round_one_runs_the_checks_the_table_lists_for_that_round(self):
         self.assertIn("run the Gemini checks the table lists for that round", section(LOOP, "Loop"))
 
-    def test_ui_review_no_longer_calls_argon(self):
-        self.assertNotIn("argon_review.py", UI)
-        self.assertNotIn("once per UI feature", UI)
-        self.assertIn("`review-loop` runs it", section(UI, "5. Argon"))
+    def test_argon_runs_from_gemini_review(self):
+        self.assertIn("~/.claude/skills/gemini-review/scripts/argon_review.py", GEMINI)
 
-    def test_the_argon_log_row_lives_in_one_place(self):
-        self.assertNotIn("Argon UI review log", UI)
-        self.assertIn("Argon UI review log", GEMINI)
+    def test_the_argon_log_goes_to_the_configured_vault_or_nowhere(self):
+        self.assertIn("obsidian.vault_path", GEMINI)
+        self.assertIn("With no vault set, skip the log.", GEMINI)
 
 
 if __name__ == "__main__":

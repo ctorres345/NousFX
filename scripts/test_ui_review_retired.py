@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""NFX-18: the old UI review skill is retired in favor of Via. Run: python3 -B scripts/test_ui_review_retired.py"""
+import os
+import subprocess
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OLD = "ui" + "-review"  # split so this file does not match its own search
+STUB = "claude/skills/%s/SKILL.md" % OLD
+
+
+def read(path):
+    with open(os.path.join(ROOT, path), encoding="utf-8") as f:
+        return f.read()
+
+
+def grep(pattern):
+    r = subprocess.run(["git", "grep", "-l", "-i", "-E", pattern], cwd=ROOT, capture_output=True, text=True)
+    assert r.returncode in (0, 1), r.stderr  # 1 is "no match"; anything else means the search did not run
+    return set(r.stdout.split())
+
+
+class Retired(unittest.TestCase):
+    def test_only_the_stub_and_the_changelog_name_the_old_skill(self):
+        self.assertEqual(grep(OLD) - {STUB, "CHANGELOG.md"}, set())
+
+    def test_the_stub_points_to_via(self):
+        body = read(STUB).split("---", 2)[2]
+        self.assertEqual(len([l for l in body.splitlines() if l.strip()]), 1)
+        for cmd in ("/via spec", "/via check", "/via audit"):
+            self.assertIn(cmd, body)
+
+    def test_the_old_skill_ships_no_scripts_or_assets(self):
+        r = subprocess.run(["git", "ls-files", os.path.dirname(STUB)], cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(r.stdout.split(), [STUB])
+
+    def test_the_delegation_rules_name_via_spec_and_check_as_proactive(self):
+        claude = read("harness/overlays/claude.overlay.md")
+        self.assertIn("`/via spec` at kickoff, `/via check` before asking about the PR, unasked", claude)
+        agy = read("harness/overlays/agy.overlay.md")
+        self.assertIn("Via's `spec` mode at kickoff and its `check` mode before the PR, unasked", agy)
+
+    def test_no_personal_or_vault_path_remains(self):
+        # A real home folder (also as Claude's dash-encoded project name) or vault path;
+        # not the /Users/me placeholder or a plain "Obsidian vault".
+        home = r"(/Users/|/home/|-Users-|C:\\Users\\)[a-z]{3,}"
+        found = grep(home + r"|Obsidian Vault/|320 Engineering|argon-repos") - {"scripts/test_ui_review_retired.py"}
+        self.assertEqual(found, set())
+
+
+if __name__ == "__main__":
+    unittest.main()

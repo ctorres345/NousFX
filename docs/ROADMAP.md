@@ -56,7 +56,7 @@ flowchart LR
   A13 --> A14["NFX-14 file in Jira"]
   A13 --> A17["NFX-17 /via check"]
   A16 --> A17
-  A10["NFX-10 Compose/Flutter capture"] --> A18["NFX-18 retire ui-review"]
+  A10["NFX-10 Compose/Flutter capture"] --> A18["NFX-18 retire the old UI review"]
   A17 --> A18
   A17 --> A19["NFX-19 eval set"]
   A17 --> A20["NFX-20 Via gate"]
@@ -94,7 +94,7 @@ Free: NFX-10, 12, 59                   NFX-71 before NFX-70 (handoff order, no J
 | NFX-15 | Learning loop | after-v1 | none |
 | NFX-16 | /via spec | v1.1 | 12 |
 | NFX-17 | /via check | v1.1 | 13, 16 |
-| NFX-18 | Retire ui-review | v1.1 | 10, 17 |
+| NFX-18 | Retire the old UI review skill | v1.1 | 10, 17 |
 | NFX-19 | Via eval set | v1.1 | 17 |
 | NFX-59 | Via works in agy | v1.1 | none |
 

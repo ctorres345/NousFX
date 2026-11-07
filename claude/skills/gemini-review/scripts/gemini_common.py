@@ -1,4 +1,4 @@
-"""Shared safety stops for review.py and ui-review's argon_review.py. Import it, then call the functions.
+"""Shared safety stops for review.py and argon_review.py. Import it, then call the functions.
 
 Run the scripts as `python3 -I -B` (`python -I -B` on Windows). Every stop prints "Nothing was sent." and exits:
 3 setup, 4 not allowed, 5 nothing to send, 6 too large, 7 likely secret, 8 bad screenshots, 9 gemini-api failed.
