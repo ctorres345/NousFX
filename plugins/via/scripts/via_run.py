@@ -8,7 +8,7 @@ Usage: via_run.py init   [--project DIR]
        via_run.py merge  RUN_DIR [--project DIR]
        via_run.py reject ID --reason TEXT [--project DIR]
        via_run.py route  RUN_DIR [--jira PROJECT [--parent KEY] [--config FILE]] [--project DIR]
-       via_run.py filed  RUN_DIR --group GROUP --key KEY [--project DIR]
+       via_run.py filed  RUN_DIR --payload FILE --key KEY [--project DIR]
        via_run.py pass   RUN_DIR [--project DIR]
 
 Order for a run: init, write RUN_DIR/findings.json, merge, set the approved routes, route, then pass
@@ -34,6 +34,9 @@ import sys
 import tempfile
 import time
 import unicodedata
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # -I leaves the script folder off sys.path
+import via_outbound  # noqa: E402
 
 RUN_AREA = os.path.join(".via", "runs")
 IGNORE_LINE = ".via/"
@@ -651,15 +654,15 @@ def tickets_dir(project):
     return folder
 
 
-def ticket_stem(folder, group):
-    """A free name in the tickets folder for this group: <group>, or <group>-2 when that is taken.
+def ticket_stem(folder, group, ext=".md"):
+    """A free name in `folder` for this group: <group>, or <group>-2 when that is taken.
     A long group name is cut to 60 characters plus a short hash, so the file name stays valid."""
     base = slug(group)
     if len(base) > 60:
         base = "%s-%s" % (base[:60].rstrip("-"), hashlib.sha256(base.encode("utf-8")).hexdigest()[:8])
     for n in itertools.count(1):
         stem = base if n == 1 else "%s-%d" % (base, n)
-        if not os.path.lexists(os.path.join(folder, stem + ".md")) and not os.path.lexists(os.path.join(folder, stem)):
+        if not os.path.lexists(os.path.join(folder, stem + ext)) and not os.path.lexists(os.path.join(folder, stem)):
             return stem
 
 
@@ -776,8 +779,6 @@ def jira_target(project, args):
     else ("markdown", reason). A config that cannot be read fails closed, to markdown."""
     if not args.jira:
         return "markdown", "no Jira project given (Atlassian MCP not connected, or no --jira)"
-    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # -I leaves the script folder off sys.path
-    import via_outbound  # only the Jira path needs it
     try:
         code, result = via_outbound.decide(project, "jira", args.config)
     except via_outbound.Bad as e:
@@ -785,30 +786,42 @@ def jira_target(project, args):
     return ("jira" if code == via_outbound.ALLOWED else "markdown"), result["reason"]
 
 
-def write_payloads(run_dir, rec, pending, args):
+def finding_marker(repo, fid, entry):
+    """A Jira label for one finding. The same across runs until the finding is fixed (a regression gets a new
+    one, since the old ticket was closed by the fix), and different in another repo with the same screen and file."""
+    seed = "\n".join((repo or "", fid, entry.get("fixed_in", "")))
+    return "via-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+
+
+def write_payloads(project, run_dir, rec, ledger, pending, args):
     """One Jira payload per group in <run_dir>/jira/, for the skill to file through the Atlassian MCP.
     Nothing is recorded: `filed` writes the key back once Jira returns it. Only shots reviewed as kept
     and marked redacted go into a payload, since they leave the machine."""
     folder = os.path.join(run_dir, "jira")
     if os.path.islink(folder):
         die("the run's jira folder is a symlink. Nothing was changed.")
-    shots = [m for m in kept_shots(run_dir, rec.get("screenshots", [])) if m[0].get("redacted") is True]
-    out, used = [], set()
+    shots = [m for m in kept_shots(run_dir, rec.get("screenshots", [])) if m[0].get("redacted") is True] if pending else []
+    out = []
     try:
         os.makedirs(folder, exist_ok=True)
         for name in os.listdir(folder):  # payloads from an earlier route of this run are stale
             if name.endswith(".json") and not os.path.islink(os.path.join(folder, name)):
                 os.remove(os.path.join(folder, name))
+    except OSError as e:
+        die("could not clear the Jira payloads (%s). Nothing was changed." % e)
+    if not pending:
+        return [], []
+    repo = via_outbound.project_key(project)
+    try:
         for group, members in pending.items():
-            stem = ticket_stem(folder, group)
-            while stem in used:
-                stem += "-x"
-            used.add(stem)
+            stem = ticket_stem(folder, group, ".json")  # each payload is written before the next name is picked
             screens = {slug(f["screen"]) for f in members}
             inline = [{"label": "%s %s %s" % (s["screen"], s["theme"], s["size"]), "path": src}
                       for s, src in shots if slug(s["screen"]) in screens]
-            payload = {
-                "project": args.jira, "parent": args.parent, "issue_type": "Story", "labels": ["ui"],
+            markers = [finding_marker(repo, f["id"], ledger[f["id"]]) for f in members]
+            payload = {  # the marker labels find an issue that was created but never recorded with `filed`
+                "project": args.jira, "parent": args.parent, "issue_type": "Story", "labels": ["ui", *markers],
+                "markers": markers,
                 "summary": ("Design: " + re.sub(r"\s+", " ", group).strip())[:200],
                 "description": render_ticket(group, members, rec, [], os.path.basename(run_dir), len(inline)),
                 "shots": inline, "group": group, "findings": [f["id"] for f in members]}
@@ -817,7 +830,7 @@ def write_payloads(run_dir, rec, pending, args):
             out.append({"group": group, "payload": path, "findings": payload["findings"]})
     except OSError as e:
         die("could not write the Jira payloads (%s). Nothing was changed." % e)
-    return out
+    return out, []  # nothing to roll back: the ledger learns a key only through `filed`
 
 
 def remove_written(written):
@@ -844,10 +857,10 @@ def cmd_route(project, args):
             rejected.append(f["id"])
     tracker, reason = jira_target(project, args)
     if tracker == "jira":
-        tickets, written = write_payloads(run_dir, rec, pending_groups(ledger, live), args), []
+        tickets, written = write_payloads(project, run_dir, rec, ledger, pending_groups(ledger, live), args)
     else:
         tickets, written = write_tickets(project, run_dir, rec, ledger, live)
-    if rejected or (tickets and tracker == "markdown"):
+    if rejected or written:
         try:
             save_ledger(path, text, ledger, start, end)
         except OSError as e:
@@ -859,20 +872,39 @@ def cmd_route(project, args):
 
 
 def cmd_filed(project, args):
-    """Record the Jira key the skill got back for one group's payload. Run it right after the issue is
-    created, before uploads: once the key is in the ledger, no later route files these findings again."""
+    """Record the Jira key the skill got back for one payload. Run it right after the issue is created,
+    before uploads: once the key is in the ledger, no later route files these findings again. The payload
+    path names the findings, so no finding text (a group name) has to pass through a shell command."""
     run_dir, record_path = resolve_run(project, args.run_dir)
+    folder = os.path.join(os.path.realpath(run_dir), "jira")
+    payload_path = os.path.realpath(args.payload)
+    if os.path.islink(args.payload) or os.path.dirname(payload_path) != folder or not payload_path.endswith(".json"):
+        die("%s is not a payload in this run's jira folder. Nothing was changed." % args.payload)
+    try:
+        payload = json.loads(read_text(payload_path) or "")
+        ids = set(payload["findings"]) if all(isinstance(i, str) for i in payload["findings"]) else None
+    except (ValueError, KeyError, TypeError):
+        ids = None
+    if not ids:
+        die("%s is not a valid payload. Nothing was changed." % args.payload)
+    if not args.key.startswith(str(payload.get("project")) + "-") or args.key == payload.get("parent"):
+        die("%s is not a new issue in project %s (or it is the parent). Nothing was changed."
+            % (args.key, payload.get("project")))
     rec = load_record(record_path)
     path, text, ledger, start, end = open_ledger(project)
-    live = [f for f in rec["findings"] if f.get("status") != "dismissed" and f.get("id") in ledger]
-    members = pending_groups(ledger, live).get(args.group)
+    live = [f for f in rec["findings"] if f.get("status") != "dismissed" and f.get("id") in ids & set(ledger)]
+    members = [f for group in pending_groups(ledger, live).values() for f in group]
     if not members:
-        die("group %s has no ticket-routed finding waiting for a ticket. Nothing was changed." % json.dumps(args.group))
+        die("no finding in %s is still waiting for a ticket. Nothing was changed." % args.payload)
     for f in members:
         f["ticket"] = ledger[f["id"]]["ticket"] = args.key
-    save_ledger(path, text, ledger, start, end)
-    write_atomic(record_path, json.dumps(rec, indent=2, ensure_ascii=False) + "\n")
-    emit({"group": args.group, "key": args.key, "findings": [f["id"] for f in members]})
+    try:
+        save_ledger(path, text, ledger, start, end)
+        write_atomic(record_path, json.dumps(rec, indent=2, ensure_ascii=False) + "\n")
+    except OSError as e:
+        die("could not record %s (%s). Report the key: until it is recorded, a later route files these findings again."
+            % (args.key, e))
+    emit({"key": args.key, "findings": [f["id"] for f in members]})
 
 
 def cmd_outbound_shots(project, args):
@@ -885,16 +917,13 @@ def cmd_outbound_shots(project, args):
           "unreviewed": sum(1 for s in shots if s.get("review") is None)})
 
 
-def jira_project(value):
-    if not JIRA_PROJECT_RE.fullmatch(value):
-        raise argparse.ArgumentTypeError("%r is not a Jira project key such as NFX" % value)
-    return value
-
-
-def jira_key(value):
-    if not JIRA_KEY_RE.fullmatch(value):
-        raise argparse.ArgumentTypeError("%r is not a Jira issue key such as NFX-14" % value)
-    return value
+def matching(pattern, example):
+    """An argparse type that accepts only values matching `pattern` in full."""
+    def check(value):
+        if not pattern.fullmatch(value):
+            raise argparse.ArgumentTypeError("%r is not a Jira key such as %s" % (value, example))
+        return value
+    return check
 
 
 def main():
@@ -907,13 +936,13 @@ def main():
         sub.add_parser(name, parents=[common]).add_argument("run_dir")
     route = sub.add_parser("route", parents=[common])
     route.add_argument("run_dir")
-    route.add_argument("--jira", type=jira_project, help="Jira project key; omit when the Atlassian MCP is missing")
-    route.add_argument("--parent", type=jira_key, help="the ticket these findings came from")
+    route.add_argument("--jira", type=matching(JIRA_PROJECT_RE, "NFX"), help="Jira project key; omit when the Atlassian MCP is missing")
+    route.add_argument("--parent", type=matching(JIRA_KEY_RE, "NFX-14"), help="the ticket these findings came from")
     route.add_argument("--config", help="the outbound allow-list (default ~/.config/nousfx/via.json)")
     filed = sub.add_parser("filed", parents=[common])
     filed.add_argument("run_dir")
-    filed.add_argument("--group", required=True)
-    filed.add_argument("--key", required=True, type=jira_key)
+    filed.add_argument("--payload", required=True, help="a payload path from `route --jira`")
+    filed.add_argument("--key", required=True, type=matching(JIRA_KEY_RE, "NFX-14"))
     rej = sub.add_parser("reject", parents=[common])
     rej.add_argument("id")
     rej.add_argument("--reason", required=True)

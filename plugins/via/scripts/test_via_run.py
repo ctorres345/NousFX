@@ -921,9 +921,9 @@ class JiraRouteTest(unittest.TestCase):
     git, ok, new_run, merge, shot, ledger_entries = (ViaRunTest.git, ViaRunTest.ok, ViaRunTest.new_run,
                                                      ViaRunTest.merge, ViaRunTest.shot, ViaRunTest.ledger_entries)
 
-    def allow(self, destinations=("jira",)):
-        write(self.config, json.dumps({"version": 1, "outbound_allowlist": {
-            "github.com/acme/app": {"destinations": list(destinations), "gemini_code_paths": []}}}))
+    def allow(self, destinations=("jira",), listed=True):
+        entry = {"github.com/acme/app": {"destinations": list(destinations), "gemini_code_paths": []}}
+        write(self.config, json.dumps({"version": 1, "outbound_allowlist": entry if listed else {}}))
 
     def run_cli(self, *args):
         return subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, *args, "--project", self.repo],
@@ -954,12 +954,27 @@ class JiraRouteTest(unittest.TestCase):
         self.assertEqual(home["findings"], [merged["findings"][0]["id"]])
         payload = json.loads(read(home["payload"]))
         self.assertTrue(os.path.realpath(home["payload"]).startswith(os.path.realpath(run_dir) + os.sep))
-        self.assertEqual((payload["project"], payload["parent"], payload["labels"]), ("NFX", "NFX-14", ["ui"]))
+        self.assertEqual((payload["project"], payload["parent"], payload["labels"][0]), ("NFX", "NFX-14", "ui"))
+        self.assertEqual(len(payload["markers"]), 1)
+        self.assertRegex(payload["markers"][0], r"^via-[0-9a-f]{12}$")
+        self.assertEqual(payload["labels"][1:], payload["markers"])
         self.assertEqual(payload["summary"], "Design: home")
         for text in ("## Acceptance criteria", "Use onSurfaceVariant.", "- [ ] Matches the prototype",
                      "- [ ] Before and after screenshots", "| ID | Severity | Screen |"):
             self.assertIn(text, payload["description"])
         self.assertNotIn("ticket", self.ledger_entries()[home["findings"][0]])  # filed only once the key is back
+
+    def markers_of(self, r, group="home"):
+        return json.loads(read(next(t for t in json.loads(r.stdout)["tickets"] if t["group"] == group)["payload"]))["markers"]
+
+    def test_a_finding_keeps_its_marker_across_runs_until_it_is_fixed(self):
+        self.allow()
+        _, _, first = self.routed([finding()], "--jira", "NFX")
+        _, _, later = self.routed([finding()], "--jira", "NFX")  # an issue made by the first run is still found
+        self.assertEqual(self.markers_of(later), self.markers_of(first))
+        self.merge(record([]))  # fixed
+        _, _, regressed = self.routed([finding()], "--jira", "NFX")  # the old ticket was closed by the fix
+        self.assertNotEqual(self.markers_of(regressed), self.markers_of(first))
 
     def test_a_payload_carries_only_kept_redacted_shots_of_its_screens(self):
         self.allow()
@@ -974,7 +989,8 @@ class JiraRouteTest(unittest.TestCase):
         self.allow()
         run_dir, merged, r = self.routed([finding(), finding(rule="touch-target", line=30)], "--jira", "NFX")
         ids = [f["id"] for f in merged["findings"]]
-        out = self.ok("filed", run_dir, "--group", "home", "--key", "NFX-123")
+        payload = json.loads(r.stdout)["tickets"][0]["payload"]
+        out = self.ok("filed", run_dir, "--payload", payload, "--key", "NFX-123")
         self.assertEqual((out["key"], sorted(out["findings"])), ("NFX-123", sorted(ids)))
         entries = self.ledger_entries()
         self.assertEqual([entries[i]["ticket"] for i in ids], ["NFX-123", "NFX-123"])
@@ -982,7 +998,7 @@ class JiraRouteTest(unittest.TestCase):
         self.assertEqual([f["ticket"] for f in rec["findings"]], ["NFX-123", "NFX-123"])
         again = json.loads(self.run_cli("route", run_dir, "--jira", "NFX").stdout)
         self.assertEqual(again["tickets"], [])
-        twice = self.run_cli("filed", run_dir, "--group", "home", "--key", "NFX-124")
+        twice = self.run_cli("filed", run_dir, "--payload", payload, "--key", "NFX-124")
         self.assertEqual(twice.returncode, 1)
         self.assertEqual(self.ledger_entries()[ids[0]]["ticket"], "NFX-123")
 
@@ -1001,21 +1017,33 @@ class JiraRouteTest(unittest.TestCase):
 
     def test_filed_refuses_a_key_that_is_not_a_jira_key(self):
         self.allow()
-        run_dir, _, _ = self.routed([finding()], "--jira", "NFX")
+        run_dir, _, r = self.routed([finding()], "--jira", "NFX")
+        payload = json.loads(r.stdout)["tickets"][0]["payload"]
         for bad in ("nfx-1", "NFX-0", "NFX-1 x", "](https://evil)", "NFX"):
             with self.subTest(bad):
-                self.assertEqual(self.run_cli("filed", run_dir, "--group", "home", "--key", bad).returncode, 2)
+                self.assertEqual(self.run_cli("filed", run_dir, "--payload", payload, "--key", bad).returncode, 2)
+
+    def test_filed_records_only_the_payload_findings_and_refuses_a_file_outside_the_jira_folder(self):
+        self.allow()
+        run_dir, merged, r = self.routed([finding(), finding(screen="settings", file="app/Settings.kt")], "--jira", "NFX")
+        home = next(t for t in json.loads(r.stdout)["tickets"] if t["group"] == "home")
+        outside = os.path.join(run_dir, "findings.json")
+        self.assertEqual(self.run_cli("filed", run_dir, "--payload", outside, "--key", "NFX-9").returncode, 1)
+        for wrong in ("ANI-9", "NFXA-9"):  # another project, or one that only starts the same
+            with self.subTest(wrong):
+                self.assertEqual(self.run_cli("filed", run_dir, "--payload", home["payload"], "--key", wrong).returncode, 1)
+        self.ok("filed", run_dir, "--payload", home["payload"], "--key", "NFX-9")
+        entries = self.ledger_entries()
+        self.assertEqual([entries[f["id"]].get("ticket") for f in merged["findings"]], ["NFX-9", None])
 
     def test_without_jira_or_the_allow_list_the_markdown_fallback_runs_and_says_why(self):
-        cases = {"no --jira": ((), None, "no Jira project given"),
-                 "not listed": (("--jira", "NFX"), (), "is not on the allow-list"),
-                 "jira not allowed": (("--jira", "NFX"), ("gemini",), "does not allow jira")}
-        for name, (flags, destinations, why) in cases.items():
+        cases = {"no --jira": ((), {}, "no Jira project given"),
+                 "not listed": (("--jira", "NFX"), {"listed": False}, "is not on the allow-list"),
+                 "jira not allowed": (("--jira", "NFX"), {"destinations": ("gemini",)}, "does not allow jira")}
+        for name, (flags, config, why) in cases.items():
             with self.subTest(name):
-                self.setUp()
-                if destinations is not None:
-                    write(self.config, json.dumps({"version": 1, "outbound_allowlist": {} if not destinations else {
-                        "github.com/acme/app": {"destinations": list(destinations), "gemini_code_paths": []}}}))
+                self.setUp()  # a fresh repo per case; each one registers its own cleanup
+                self.allow(**config)
                 _, merged, r = self.routed([finding()], *flags)
                 self.assertEqual(r.returncode, 0, r.stderr)
                 out = json.loads(r.stdout)
