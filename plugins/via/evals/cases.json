@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "about": "Via's eval set. Each case has a sample prompt, the behavior Via should show, and a script-level check that via_eval.py runs. No model calls: the checks run Via's scripts on a throwaway git repo. Run: python3 -B plugins/via/scripts/via_eval.py",
+  "cases": [
+    {
+      "id": "route-fix-now",
+      "kind": "route",
+      "prompt": "/via audit home. The subtitle on Home fails contrast; the fix is one color in app/Home.kt.",
+      "expected": "Via suggests fix-now (one file, no design-system change) and waits for the batch approval. After it, `via_run.py route` lists the finding under fix_now, files no ticket and rejects nothing. Via then fixes it in the working tree and does not commit.",
+      "route": "fix-now",
+      "expect": {
+        "fix_now": 1,
+        "tickets": 0,
+        "rejected": 0,
+        "status": "new"
+      }
+    },
+    {
+      "id": "route-ticket",
+      "kind": "route",
+      "prompt": "/via audit. The primary button is too small on Home and Settings; the fix changes the shared button.",
+      "expected": "Via suggests ticket (crosses screens and a shared component) with one group for both findings. `route` writes one markdown ticket to docs/design/tickets/ and records its path in the ledger.",
+      "route": "ticket",
+      "findings": [
+        {
+          "screen": "home",
+          "file": "app/Home.kt",
+          "rule": "touch-target",
+          "group": "Buttons"
+        },
+        {
+          "screen": "settings",
+          "file": "app/Settings.kt",
+          "rule": "touch-target",
+          "group": "Buttons"
+        }
+      ],
+      "expect": {
+        "fix_now": 0,
+        "tickets": 1,
+        "rejected": 0,
+        "status": "new",
+        "ticketed": 2
+      }
+    },
+    {
+      "id": "route-reject",
+      "kind": "route",
+      "prompt": "/via audit home. The header uses the brand orange, which the audit flags as off-palette.",
+      "expected": "Via suggests reject with a reason (a deliberate brand color). `route` marks it rejected in the ledger with that reason, so it never comes back as new.",
+      "route": "reject",
+      "expect": {
+        "fix_now": 0,
+        "tickets": 0,
+        "rejected": 1,
+        "status": "rejected"
+      }
+    },
+    {
+      "id": "second-opinion-no-gemini",
+      "kind": "second-opinion",
+      "prompt": "/via audit on a machine where /via setup found no Gemini key.",
+      "expected": "via_second_opinion.py exits 10 and sends nothing. Via starts the fresh-context reviewer on the same kept screenshots and says why in the summary.",
+      "gemini": "no-key",
+      "cli": true,
+      "reason": "no Gemini key"
+    },
+    {
+      "id": "second-opinion-no-cli",
+      "kind": "second-opinion",
+      "prompt": "/via audit where the config says Gemini is present but the gemini-api CLI is not installed.",
+      "expected": "Same fallback: exit 10, nothing sent, the fresh-context reviewer runs instead.",
+      "gemini": "present",
+      "cli": false,
+      "reason": "no Gemini key"
+    },
+    {
+      "id": "unattended-route-pending",
+      "kind": "unattended-route",
+      "prompt": "A scheduled /via audit run with VIA_UNATTENDED=1 has findings for all three routes.",
+      "expected": "`route` changes nothing: no ticket, no rejection, the ledger and findings.json stay as they were. It prints every decision under `pending` for Cesar to approve later."
+    },
+    {
+      "id": "unattended-reject-refuses",
+      "kind": "unattended-reject",
+      "prompt": "An unattended run (VIA_UNATTENDED=1) tries to reject one finding on its own.",
+      "expected": "`via_run.py reject` refuses with exit 1 and leaves the ledger as it was."
+    },
+    {
+      "id": "never-commits",
+      "kind": "never-commits",
+      "prompt": "Any /via audit or /via check that routes and fixes findings.",
+      "expected": "Via never commits, pushes or stashes. After init, merge, route, an unattended route and pass, HEAD, every ref, the index and the stash are as they were, and no git command that writes history ran. The skill states the rule."
+    }
+  ]
+}
