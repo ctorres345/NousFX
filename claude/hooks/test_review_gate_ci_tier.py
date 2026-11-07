@@ -111,6 +111,13 @@ class VerifyTier(Base):
             self.assertIn("could not measure", r.stderr)
             self.assertIn("git timed out", r.stderr)
 
+    def test_a_diff_error_fallback_ignores_even_an_owner_override(self):
+        """Nothing was computed, so `override: computed 3` cannot be checked against anything: it fails too."""
+        r = self.verify("Review-Tier: 1 override: computed 3, approved\n", tier=2,
+                        reasons=["Tier 2: could not read the diff (x)"], association="OWNER")
+        self.assertBlocked(r)
+        self.assertIn("could not measure", r.stderr)
+
     def test_a_diff_error_fallback_accepts_tier_3(self):
         r = self.verify("Review-Tier: 3\n", tier=2, reasons=["Tier 2: could not read the diff (x)"])
         self.assertPasses(r)
