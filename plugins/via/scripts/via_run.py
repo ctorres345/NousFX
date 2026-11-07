@@ -431,6 +431,13 @@ def eol_of(text):
     return "\r\n" if crlf > text.count("\n") - crlf else "\n"
 
 
+def cell(value):
+    """A table cell for spec values (via_spec.py): no HTML, one line, `|` and the backslash escaped.
+    Lighter than md_text, so a value like #0a7b5c stays readable in a Jira ticket."""
+    text = html.escape(str(value if value is not None else ""), quote=False)
+    return re.sub(r"[\r\n  ]+", " ", text).replace("\\", "\\\\").replace("|", "\\|")
+
+
 def md_text(value):
     """Finding text comes from screenshots, skills and second opinions, so it is data. Escape it so it
     cannot open a heading, link, image, code span or table cell, or inject HTML, and keep it on one line.

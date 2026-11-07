@@ -41,7 +41,7 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import via_prototype as proto  # noqa: E402
 import via_run  # noqa: E402
 import via_tokens  # noqa: E402
