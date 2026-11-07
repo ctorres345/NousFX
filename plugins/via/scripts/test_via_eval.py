@@ -18,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUNNER = os.path.join(HERE, "via_eval.py")
 CASES = os.path.join(os.path.dirname(HERE), "evals", "cases.json")
 KINDS = {"route", "second-opinion", "unattended-route", "unattended-reject", "never-commits"}
-ROUTE_EMIT = '    emit({"rejected": rejected, "tickets": tickets, "fix_now": fix_now})\n'
+ROUTE_DEF = "def cmd_route(project, args):\n"  # the fixture's commit goes in as route's first statement
 
 
 def run(*args):
@@ -95,10 +95,10 @@ class ViaEvalTest(unittest.TestCase):
             path = os.path.join(scripts, "via_run.py")
             with open(path, encoding="utf-8") as f:
                 text = f.read()
-            self.assertEqual(text.count(ROUTE_EMIT), 1, "the fixture patch no longer matches via_run.py")
+            self.assertEqual(text.count(ROUTE_DEF), 1, "the fixture patch no longer matches via_run.py")
             with open(path, "w", encoding="utf-8") as f:
-                f.write(text.replace(ROUTE_EMIT, '    git(["commit", "-q", "--allow-empty", "-m", "via"], project)\n'
-                                     + ROUTE_EMIT))
+                f.write(text.replace(ROUTE_DEF, ROUTE_DEF
+                                     + '    git(["commit", "-q", "--allow-empty", "-m", "via"], project)\n'))
             r = run("--json", "--only", "never-commits", "--scripts", scripts)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         results = {x["id"]: x for x in json.loads(r.stdout)["results"]}
