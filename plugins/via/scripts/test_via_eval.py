@@ -33,6 +33,10 @@ def load_cases():
 
 
 class ViaEvalTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.full = run("--json")  # the whole set runs once; the text report is checked on one case
+
     def test_the_eval_file_has_one_case_per_behavior_with_a_prompt_and_the_expected_behavior(self):
         cases = load_cases()
         ids = [c["id"] for c in cases]
@@ -44,24 +48,40 @@ class ViaEvalTest(unittest.TestCase):
         self.assertEqual({c["route"] for c in cases if c["kind"] == "route"}, {"fix-now", "ticket", "reject"})
 
     def test_every_case_passes_on_the_current_via(self):
-        r = run("--json")
+        r = self.full
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         results = json.loads(r.stdout)["results"]
         self.assertEqual([x["id"] for x in results], [c["id"] for c in load_cases()])
         self.assertTrue(all(x["ok"] for x in results), results)
 
-    def test_the_text_report_has_one_line_per_case_and_a_total(self):
-        r = run()
+    def test_the_text_report_has_one_line_per_case_and_a_total_and_only_runs_the_named_cases(self):
+        r = run("--only", "route-fix-now", "--only", "unattended-reject-refuses")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        lines = r.stdout.strip().splitlines()
-        self.assertEqual(len(lines), len(load_cases()) + 1)
-        self.assertTrue(all(line.startswith("ok   ") for line in lines[:-1]), r.stdout)
-        self.assertEqual(lines[-1], "%d/%d cases passed" % ((len(load_cases()),) * 2))
+        self.assertEqual(r.stdout.strip().splitlines(),
+                         ["ok   route-fix-now", "ok   unattended-reject-refuses", "2/2 cases passed"])
 
-    def test_only_runs_the_named_case(self):
-        r = run("--json", "--only", "never-commits")
+    def test_a_global_git_config_that_signs_commits_or_blocks_them_does_not_break_the_cases(self):
+        with tempfile.TemporaryDirectory() as home:
+            hooks = os.path.join(home, "hooks")
+            os.makedirs(hooks)
+            with open(os.path.join(hooks, "pre-commit"), "w") as f:
+                f.write("#!/bin/sh\nexit 1\n")
+            os.chmod(os.path.join(hooks, "pre-commit"), 0o755)
+            with open(os.path.join(home, ".gitconfig"), "w") as f:
+                f.write("[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n[core]\n\thooksPath = %s\n" % hooks)
+            r = subprocess.run([sys.executable, "-B", RUNNER, "--only", "route-ticket", "--only", "never-commits"],
+                               capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300,
+                               env={**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+                                    "HOME": home})
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual([x["id"] for x in json.loads(r.stdout)["results"]], ["never-commits"])
+
+    def test_an_empty_cases_file_is_an_error_not_a_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "cases.json")
+            with open(path, "w") as f:
+                json.dump({"version": 1, "cases": []}, f)
+            r = run("--cases", path)
+        self.assertEqual(r.returncode, 2)
 
     def test_an_unknown_case_name_is_an_error(self):
         r = run("--only", "no-such-case")
@@ -79,7 +99,7 @@ class ViaEvalTest(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text.replace(ROUTE_EMIT, '    git(["commit", "-q", "--allow-empty", "-m", "via"], project)\n'
                                      + ROUTE_EMIT))
-            r = run("--json", "--scripts", scripts)
+            r = run("--json", "--only", "never-commits", "--scripts", scripts)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         results = {x["id"]: x for x in json.loads(r.stdout)["results"]}
         self.assertFalse(results["never-commits"]["ok"])

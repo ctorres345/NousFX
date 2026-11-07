@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "Via's eval set. Each case has a sample prompt, the behavior Via should show, and a script-level check that via_eval.py runs. No model calls: the checks run Via's scripts on a throwaway git repo. Run: python3 -B plugins/via/scripts/via_eval.py",
+  "about": "Via's eval set. Each case has a sample prompt, the behavior Via should show, and a script-level check that via_eval.py runs. No model calls: the checks run Via's scripts on a throwaway git repo. `prompt` and `expected` are for people: the check is what the runner asserts for each kind. Run: python3 -B plugins/via/scripts/via_eval.py",
   "cases": [
     {
       "id": "route-fix-now",
@@ -90,7 +90,7 @@
       "id": "never-commits",
       "kind": "never-commits",
       "prompt": "Any /via audit or /via check that routes and fixes findings.",
-      "expected": "Via never commits, pushes or stashes. After init, merge, route, an unattended route and pass, HEAD, every ref, the index and the stash are as they were, and no git command that writes history ran. The skill states the rule."
+      "expected": "Via never commits, pushes or stashes. After via_run.py init, merge, reject, route, an unattended route and pass (the steps that write), HEAD, every ref, the index and the stash are as they were, and no git command that writes history ran. The skill states the rule."
     }
   ]
 }

@@ -9,8 +9,8 @@ script level, on a throwaway git repo per case, with no model calls and nothing 
   second-opinion     `via_second_opinion.py` exits 10 (fresh-context fallback) when Gemini is missing.
   unattended-route   with VIA_UNATTENDED=1, `route` changes nothing and prints the decisions as pending.
   unattended-reject  with VIA_UNATTENDED=1, `reject` refuses.
-  never-commits      a full run leaves HEAD, refs, index and stash alone, and runs no git command that
-                     writes history (a `git` shim on PATH logs every call).
+  never-commits      a full run leaves HEAD, refs, index and stash alone, and runs only read-only git
+                     commands (a `git` shim on PATH logs every call). SKILL.md states the rule.
 --scripts points the checks at another copy of the Via scripts (the tests use it to break one on purpose).
 Exit 0 when every case passed, 1 when one failed, 2 when the arguments or the cases file are invalid.
 """
@@ -23,7 +23,10 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.realpath(__file__))  # realpath: agy reaches the scripts through a link
+sys.path.insert(0, HERE)  # -I leaves the script's folder off sys.path
+import nousfx_testhome as th  # noqa: E402 - fakes the user record, so a check's home stays a temp folder
+
 PLUGIN = os.path.dirname(HERE)
 DEFAULT_CASES = os.path.join(PLUGIN, "evals", "cases.json")
 SKILL = os.path.join(PLUGIN, "skills", "via", "SKILL.md")
@@ -32,9 +35,9 @@ LEDGER = os.path.join("docs", "design", "via.md")
 TIMEOUT = 120
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 ALLOW_KEY = "acme/app"
-# git subcommands that write history, refs or the stash. Via may read git and hash the tree, nothing more.
-HISTORY_WRITERS = {"am", "branch", "checkout", "cherry-pick", "commit", "commit-tree", "merge", "pull", "push",
-                   "rebase", "reset", "restore", "revert", "stash", "switch", "tag", "update-ref"}
+# The only git subcommands Via may run: it reads git and hashes the tree (`add` and `write-tree` on a copy of
+# the index), nothing more. Anything else, a commit or a writer added later, fails the never-commits case.
+GIT_ALLOWED = {"rev-parse", "add", "write-tree", "check-ignore"}
 GIT_VALUE_FLAGS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 GIT_SHIM = '#!/bin/sh\nprintf \'%%s\\037\' "$@" >> "%s"\nprintf \'\\n\' >> "%s"\nexec "%s" "$@"\n'
 
@@ -52,13 +55,15 @@ def expect(condition, detail):
 
 def clean_env(**extra):
     """The caller's environment without VIA_UNATTENDED or GIT_* (a git hook would point every git call at
-    the outer repo), plus extra."""
+    the outer repo), and with no global or system git config (commit signing or a global hooks folder would
+    break the setup commit), plus extra."""
     base = {k: v for k, v in os.environ.items() if k != "VIA_UNATTENDED" and not k.startswith("GIT_")}
-    return {**base, **extra}
+    return {**base, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", **extra}
 
 
 def git(repo, *args):
-    r = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, env=clean_env(), timeout=TIMEOUT)
+    r = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, env=clean_env(),
+                       stdin=subprocess.DEVNULL, timeout=TIMEOUT)
     if r.returncode:
         raise Failed("setup: git %s failed: %s" % (" ".join(args), r.stderr.strip()))
     return r.stdout.strip()
@@ -163,8 +168,6 @@ def check_route(case, scripts, tmp):
 
 
 def check_second_opinion(case, scripts, tmp):
-    sys.path.insert(0, HERE)
-    import nousfx_testhome as th  # the runner's own copy: it fakes the user record, so the home stays a temp folder
     home, project, elsewhere = (os.path.join(tmp, n) for n in ("home", "project", "elsewhere"))
     for d in (home, project, elsewhere):
         os.makedirs(d)
@@ -228,7 +231,8 @@ def check_unattended_reject(case, scripts, tmp):
 
 def git_state(repo):
     return {"HEAD": git(repo, "rev-parse", "HEAD"), "branch": git(repo, "symbolic-ref", "-q", "HEAD"),
-            "refs": git(repo, "for-each-ref"), "index": git(repo, "ls-files", "-s"), "stash": git(repo, "stash", "list")}
+            "refs": git(repo, "for-each-ref"), "index": git(repo, "ls-files", "-s"),
+            "stash": git(repo, "stash", "list"), "config": git(repo, "config", "--local", "--list")}
 
 
 def subcommand(args):
@@ -263,12 +267,10 @@ def check_never_commits(case, scripts, tmp):
     via.ok("pass", run_dir)
     after = git_state(repo)
     changed = [k for k in before if before[k] != after[k]]
-    calls = []
-    if os.path.exists(log):
-        calls = [line.rstrip("\n").split("\037")[:-1] for line in open(log, encoding="utf-8") if line.strip()]
-    writers = sorted({subcommand(c) for c in calls} & HISTORY_WRITERS)
+    calls = [line.split("\037")[:-1] for line in read(log).splitlines() if line] if os.path.exists(log) else []
     expect(calls, "the git shim saw no calls, so the check proved nothing")
-    expect(not writers and not changed, "Via ran git %s and changed %s" % (writers or "-", changed or "-"))
+    others = sorted({subcommand(c) or "(none)" for c in calls} - GIT_ALLOWED)
+    expect(not others and not changed, "Via ran git %s and changed %s" % (others or "-", changed or "-"))
 
 
 CHECKS = {"route": check_route, "second-opinion": check_second_opinion, "unattended-route": check_unattended_route,
@@ -281,6 +283,8 @@ def load_cases(path):
             cases = json.load(f)["cases"]
     except (OSError, ValueError, KeyError, TypeError) as e:
         raise SystemExit("Stopped: cannot read the cases in %s (%s)." % (path, e))
+    if not isinstance(cases, list) or not cases:
+        raise SystemExit("Stopped: %s has no cases." % path)
     ids = set()
     for c in cases:
         if not isinstance(c, dict) or c.get("kind") not in CHECKS or not c.get("id") or c["id"] in ids:
@@ -291,13 +295,14 @@ def load_cases(path):
 
 def run_case(case, scripts):
     with tempfile.TemporaryDirectory(prefix="via-eval-") as tmp:
+        detail = ""
         try:
             CHECKS[case["kind"]](case, scripts, os.path.realpath(tmp))
-            return {"id": case["id"], "ok": True, "detail": ""}
         except Failed as e:
-            return {"id": case["id"], "ok": False, "detail": str(e)}
-        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as e:
-            return {"id": case["id"], "ok": False, "detail": "%s: %s" % (type(e).__name__, e)}
+            detail = str(e)
+        except Exception as e:  # any other error fails this case only, so the report still covers every case
+            detail = "%s: %s" % (type(e).__name__, e)
+        return {"id": case["id"], "ok": not detail, "detail": detail}
 
 
 def main(argv=None):
