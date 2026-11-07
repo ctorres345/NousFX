@@ -251,13 +251,16 @@ class Ui(unittest.TestCase):
         for path in ("app/src/main/java/x/ui/HomeScreen.kt", "app/src/main/res/layout/a.xml",
                      "app/src/main/res/drawable/a.xml", "lib/widgets/card.dart", "lib/screens/home.dart",
                      "Sources/Views/Home.swift", "Sources/HomeView.swift", "Base.lproj/Main.storyboard",
-                     "web/src/App.tsx", "web/src/App.vue", "web/styles/main.css", "public/index.html"):
+                     "web/src/App.tsx", "web/src/App.vue", "web/styles/main.css", "public/index.html",
+                     "lib/components/card.dart", "app/src/main/java/x/components/Card.kt",
+                     "Sources/Components/Card.swift"):
             r = tier.classify([code(1, path)])
             self.assertTrue(r["ui"], path)
             self.assertGreaterEqual(r["tier"], 1, path)
 
     def test_non_ui_paths(self):
-        for path in ("src/app.py", "server/handler.go", "app/data/Repo.kt", "lib/models/user.dart", "README.md"):
+        for path in ("src/app.py", "server/handler.go", "app/data/Repo.kt", "lib/models/user.dart", "README.md",
+                     "web/src/components/card.ts", "web/src/components/card.js"):
             self.assertFalse(tier.classify([code(1, path)])["ui"], path)
 
     def test_ui_lifts_a_tiny_change_to_tier_1_and_says_so(self):

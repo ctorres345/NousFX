@@ -54,7 +54,7 @@ MAX_KEYWORD_REASONS = 10
 
 UI_EXTENSIONS = (".tsx", ".jsx", ".vue", ".svelte", ".astro", ".css", ".scss", ".sass", ".less", ".html", ".htm",
                  ".xib", ".storyboard")
-UI_FOLDERS = ("ui", "screens", "screen", "theme", "compose", "composables", "widgets", "views", "pages")
+UI_FOLDERS = ("ui", "screens", "screen", "theme", "compose", "composables", "widgets", "views", "pages", "components")
 UI_NATIVE_EXTENSIONS = (".kt", ".java", ".dart", ".swift")
 UI_NAME_ENDINGS = ("Screen", "View", "Theme", "Activity", "Fragment", "Widget", "Page")
 UI_RES = re.compile(r"/res/(layout|drawable|values|font|mipmap|anim|menu|navigation)[^/]*/[^/]+\.xml$")
