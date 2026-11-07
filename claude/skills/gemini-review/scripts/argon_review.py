@@ -11,7 +11,7 @@ import stat
 import sys
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "gemini-review", "scripts"))
+sys.path.insert(0, HERE)
 import gemini_common as gc  # noqa: E402
 
 MAX_SHOT_BYTES = 12000000

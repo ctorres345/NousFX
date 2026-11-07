@@ -8,6 +8,7 @@
 ### Via
 - Every finding gets a route (fix now, ticket or reject) and I approve the batch once. `via_run.py route` rejects into the ledger, writes one markdown ticket per screen or theme to `docs/design/tickets/` with escaped finding text, and lists the fix-now findings (NFX-13).
 - `/via check` checks the screens a branch changed against the ticket's spec and target mock, routes the findings and records a pass. `via_spec.py compare` lists theme values that drifted from the spec. With `VIA_UNATTENDED=1`, Via decides nothing: `route` prints the pending decisions and changes nothing (NFX-17).
+- The old `ui-review` skill is retired: a one-line stub points to Via for one release. The rules now run `/via spec` at kickoff and `/via check` before the PR on UI work, and `/via audit` on review requests. `argon_review.py` moved to `gemini-review/scripts/`, and the Argon log goes to the vault set in `via.json` (`obsidian.vault_path`, `obsidian.argon_log`), or nowhere (NFX-18).
 
 ## 1.0.0 (unreleased)
 

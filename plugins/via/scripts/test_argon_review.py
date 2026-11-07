@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for claude/skills/ui-review/scripts/argon_review.py. Run: python3 -B plugins/via/scripts/test_argon_review.py
+"""Tests for claude/skills/gemini-review/scripts/argon_review.py. Run: python3 -B plugins/via/scripts/test_argon_review.py
 
 It must read the outbound allow-list in ~/.claude/via.json (through via_outbound.py) instead of a separate text file.
 Each test runs the script as a subprocess in a throwaway git repo, with a throwaway HOME and a stub gemini-api.
@@ -19,7 +19,7 @@ sys.dont_write_bytecode = True
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 SKILLS = os.path.join(REPO_ROOT, "claude", "skills")
-SCRIPT = os.path.join(SKILLS, "ui-review", "scripts", "argon_review.py")
+SCRIPT = os.path.join(SKILLS, "gemini-review", "scripts", "argon_review.py")
 KEY = "acme/app"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 STUB = """#!/bin/sh
@@ -113,9 +113,7 @@ class ArgonReviewTest(unittest.TestCase):
         self.assertIsNone(self.logged("args.log"))
 
     def test_without_via_outbound_the_script_stops_instead_of_sending(self):
-        copy = os.path.join(self.tmp, "copy", "ui-review", "scripts")
-        os.makedirs(copy)
-        shutil.copy(SCRIPT, copy)
+        copy = os.path.join(self.tmp, "copy", "gemini-review", "scripts")
         shutil.copytree(os.path.join(SKILLS, "gemini-review"), os.path.join(self.tmp, "copy", "gemini-review"),
                         ignore=shutil.ignore_patterns("__pycache__"))
         self.config({KEY: {"destinations": ["gemini"], "gemini_code_paths": ["ui/"]}})
@@ -129,9 +127,7 @@ class ArgonReviewTest(unittest.TestCase):
         os.makedirs(cache)
         with open(os.path.join(cache, "via_outbound.py"), "w") as f:
             f.write("import sys\nif sys.argv[1] == 'paths':\n    sys.stdout.write('ui/\\0')\nsys.exit(0)\n")  # always allows
-        copy = os.path.join(self.tmp, "copy", "ui-review", "scripts")
-        os.makedirs(copy)
-        shutil.copy(SCRIPT, copy)
+        copy = os.path.join(self.tmp, "copy", "gemini-review", "scripts")
         shutil.copytree(os.path.join(SKILLS, "gemini-review"), os.path.join(self.tmp, "copy", "gemini-review"),
                         ignore=shutil.ignore_patterns("__pycache__"))
         self.config({KEY: {"destinations": ["gemini"], "gemini_code_paths": ["ui/"]}})
