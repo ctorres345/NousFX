@@ -110,6 +110,24 @@ Fix the cause and run --mark again. Last lines:
 {tail}
 """
 
+MARK_BRANCH_BLOCK = """\
+Blocked: the review mark was recorded on branch "{marked}", not "{branch}". A mark covers only the branch
+it was recorded on, even when the code is the same (a new branch cut from a merged one). Commit this
+branch's change and run the `review-loop` skill here so it records a new mark. If this is the same work and
+the branch was only renamed, record the mark again here with the same --mark command.
+On a push, the local and the remote branch names must be the same.
+"""
+
+DETACHED_BLOCK = """\
+Blocked: HEAD is detached, and a review mark covers only the branch it was recorded on.
+Check out the branch, run the `review-loop` skill there if it has no mark yet, then try again.
+"""
+
+MARK_NO_BRANCH_BLOCK = """\
+Blocked: the review mark has no branch (it was recorded before the gate stored one), so it cannot show
+which branch was reviewed. Run the `review-loop` skill again so it records a new mark.
+"""
+
 CHECK_MISSING_BLOCK = """\
 Blocked: the recorded review has no passing check result (it was recorded before the gate ran checks, or
 the check did not pass). Run the `review-loop` skill again so it records the mark with the check.
@@ -159,6 +177,18 @@ def git(args, cwd, env=None):
 
 def git_path(name, cwd):
     return os.path.abspath(os.path.join(cwd, git(["rev-parse", "--git-path", name], cwd)))
+
+
+def current_branch(cwd):
+    """The checked-out branch name, exactly as the pre-push hook names it (refs/heads/ stripped, never the
+    `heads/x` form rev-parse gives when a tag shares the name). "HEAD" when detached. Works on an unborn branch."""
+    try:
+        ref = git(["symbolic-ref", "-q", "HEAD"], cwd)
+    except RuntimeError as e:
+        if str(e):
+            raise  # a real git failure, not a detached HEAD
+        return "HEAD"  # -q: exit 1 with no message means detached
+    return ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else "HEAD"
 
 
 def worktree_tree(cwd):
@@ -370,9 +400,18 @@ def mark(argv):
     marker_path = git_path("claude-review-ok", cwd)
     if os.path.exists(marker_path):
         os.remove(marker_path)  # a refused mark must not leave an older good one behind
+    try:
+        branch = current_branch(cwd)
+    except RuntimeError as e:
+        print(f"Nothing recorded: cannot read the checked-out branch: {e}", file=sys.stderr)
+        return 2
+    if branch == "HEAD":
+        print("Nothing recorded: HEAD is detached, and a mark covers only the branch it was recorded on. "
+              "Check out the branch, then run --mark again.", file=sys.stderr)
+        return 2
     tree = worktree_tree(cwd)
-    marker = {"tree": tree, "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
-              "findings_open": findings, "skipped": skip}
+    marker = {"tree": tree, "branch": branch,
+              "time": time.strftime("%Y-%m-%dT%H:%M:%S"), "findings_open": findings, "skipped": skip}
     if tier is not None and not skip:  # a skip ran no review, so it has no tier
         computed, why, note = computed_tier(cwd)
         if note:
@@ -420,7 +459,7 @@ def mark(argv):
 
 def allow_branch(argv):
     cwd = os.getcwd()
-    branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    branch = current_branch(cwd)
     reason = argv[argv.index("--allow-branch") + 1] if len(argv) > argv.index("--allow-branch") + 1 else ""
     with open(git_path("claude-branch-ok", cwd), "w", encoding="utf-8") as f:
         json.dump({"branch": branch, "reason": reason}, f)
@@ -430,7 +469,7 @@ def allow_branch(argv):
 
 def branch_blocked(cwd, branch=None):
     """Message to print when the branch (default: the current one) breaks the naming rule, else None."""
-    branch = branch or git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    branch = branch or current_branch(cwd)
     if branch == "HEAD" or BRANCH_OK.match(branch):  # detached HEAD: nothing to judge
         return None
     try:
@@ -458,6 +497,7 @@ def check_repo(cwd, tree=None, branch=None):
             if "not a git repository" in str(e):
                 return 0
             raise
+        branch = branch or current_branch(cwd)
         msg = branch_blocked(cwd, branch)
         if msg:
             print(msg, file=sys.stderr)
@@ -469,6 +509,16 @@ def check_repo(cwd, tree=None, branch=None):
         except (OSError, KeyError, ValueError):
             ok = None
         if ok and (ok == tree if tree else covers(cwd, ok)):
+            marked = marker.get("branch")
+            if not isinstance(marked, str) or not marked:
+                print(MARK_NO_BRANCH_BLOCK, file=sys.stderr)
+                return 2
+            if branch == "HEAD":
+                print(DETACHED_BLOCK, file=sys.stderr)
+                return 2
+            if marked != branch:
+                print(MARK_BRANCH_BLOCK.format(marked=marked, branch=branch), file=sys.stderr)
+                return 2
             if marker.get("skipped"):
                 return 0
             count = marker.get("findings_open")
@@ -543,8 +593,9 @@ ATTEST_LINE = re.compile(r"^[ \t]*Review-Gate:[ \t]+([0-9a-f]{40}|[0-9a-f]{64})(
 def attest(cwd):
     """Print `Review-Gate: <tree>` (plus ` skipped: <reason>`) when a valid mark covers this code.
 
-    Same validity rule as check_repo: the mark's tree is the working tree or HEAD, and the review
-    is clean (0 open findings) or skipped with a reason. Otherwise exit 2 with nothing on stdout.
+    Same validity rule as check_repo: the mark's tree is the working tree or HEAD, it was recorded on
+    the checked-out branch, and the review is clean (0 open findings) or skipped with a reason.
+    Otherwise exit 2 with nothing on stdout.
     """
     try:
         with open(git_path("claude-review-ok", cwd), encoding="utf-8") as f:
@@ -552,6 +603,8 @@ def attest(cwd):
         tree = marker["tree"]
         if not covers(cwd, tree):
             raise ValueError("the review mark is for other code")
+        if not marker.get("branch") or marker.get("branch") != current_branch(cwd):
+            raise ValueError("the review mark was recorded on another branch, or names none")
         skipped = " ".join(str(marker.get("skipped") or "").split())
         if not skipped and marker.get("findings_open") != 0:
             raise ValueError("the review has open findings or none was recorded")
