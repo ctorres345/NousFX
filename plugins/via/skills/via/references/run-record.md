@@ -16,7 +16,7 @@ The agent (Claude Code or agy) makes the design calls. `scripts/via_run.py` (std
 - `coverage` is a list of `{platform, screen, entry, kind, captured, reason}` from native capture (`kind` is `state`, `matrix`, `preview` or `note`): what was shot and why the rest was not. Copy it into the record and report the gaps. `warnings` is for the report, not the record.
 - Pick shots for a second opinion default-state first (phone, light and dark), then the rest, up to 8. The prototype's before image does the same on its own.
 - `via_run.py outbound-shots <run_dir>` prints the shots marked `kept` as absolute paths, and counts the dropped and unreviewed ones. `via_second_opinion.py` refuses any other file.
-- A Jira ticket shows only shots that are `kept` and `redacted: true`, since Jira keeps them for good. Native shots (`redacted: false`) stay in the markdown ticket path and the run folder.
+- A Jira ticket shows only shots that are `kept` and `redacted: true`, since Jira keeps them for good. Native shots (`redacted: false`) are not uploaded; they stay in the run folder.
 - `token_cost` is a number, or an object. After a second opinion, set `token_cost.second_opinion` to `{"who": "argon", "input_tokens": n, "output_tokens": n}` from the wrapper's `usage` (use `null` when a count is unknown, and `"claude"` for the fallback reviewer).
 
 ## Rules
