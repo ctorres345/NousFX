@@ -819,7 +819,7 @@ def jira_target(project, args):
 def finding_marker(repo, fid, entry):
     """A Jira label for one finding. The same across runs until the finding is fixed (a regression gets a new
     one, since the old ticket was closed by the fix), and different in another repo with the same screen and file."""
-    seed = "\n".join((repo or "", fid, entry.get("fixed_in", "")))
+    seed = "\n".join((repo or "", fid, str(entry.get("fixed_in") or "")))
     return "via-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
 
 
