@@ -3,7 +3,9 @@
 
 Tells me when this machine's harness is behind, so the Mac and the Windows PC do not drift apart:
   1. the installed files differ from what sync would write (`nousfx_sync.py --check --summary`);
-  2. my local NousFX clone is behind origin/main (the origin/main of the last fetch).
+  2. my local NousFX clone is behind origin/main (the origin/main of the last fetch);
+  3. the generated rules are over their byte budget or repeat a harness rule (the summary's `rules`, NFX-78).
+     Sync exits 0 for that, since the budget only warns.
 It prints one JSON line (a message for me and the same text as context for the model), or nothing.
 
 Rules this file keeps:
@@ -37,8 +39,20 @@ def run(cmd, cwd, timeout):
         return None
 
 
+def rules_issue(counts):
+    """The summary's rules numbers (bytes, budget, repeats as ints) when the rules are over budget or repeat a
+    harness rule, else None."""
+    rules = counts.get("rules") if isinstance(counts, dict) else None
+    try:
+        rules = {k: int(rules[k]) for k in ("bytes", "budget", "repeats")}
+    except (TypeError, KeyError, ValueError):
+        return None
+    return rules if rules["bytes"] > rules["budget"] or rules["repeats"] > 0 else None
+
+
 def drift_counts(args, deadline):
-    """The counts sync reports, or None when it says clean or cannot be trusted."""
+    """(counts, stale) from sync's summary, or None when it says clean or cannot be trusted. stale is True
+    when sync exits 1 (files to write); an exit 0 counts only for a rules warning."""
     sync = os.path.join(args.repo, "scripts", "nousfx_sync.py")
     # -E -s: PYTHON* variables and user site-packages must not shadow the standard library. Not -I: sync
     # imports its sibling modules, and -I would leave its own folder off the module path.
@@ -48,13 +62,15 @@ def drift_counts(args, deadline):
             cmd += [flag, value]
     left = deadline - time.monotonic()
     r = run(cmd, args.repo, left) if left > 0 else None
-    if r is None or r.returncode != 1:  # 0 = clean; 2 or a crash = nothing to trust
+    if r is None or r.returncode not in (0, 1):  # 0 = in step; 2 or a crash = nothing to trust
         return None
     try:
         counts = json.loads(r.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
         return None
-    return counts if isinstance(counts, dict) else None
+    if not isinstance(counts, dict) or (r.returncode == 0 and not rules_issue(counts)):
+        return None
+    return counts, r.returncode == 1
 
 
 def commits_behind(args, deadline):
@@ -91,11 +107,26 @@ def plural(n, noun):
     return f"{n} {noun}" + ("" if n == 1 else "s")
 
 
-def message(args, counts, behind):
+def sync_command(args):
     win = args.platform == "windows" or (args.platform is None and os.name == "nt")
     sync = f"{'python' if win else 'python3'} -B scripts/nousfx_sync.py"
-    if args.tools != "claude":
-        sync += f" --tools {args.tools}"
+    return sync + (f" --tools {args.tools}" if args.tools != "claude" else "")
+
+
+def rules_message(args, rules):
+    """One line for rules that are over budget or repeat the harness: sync's dry run lists the details."""
+    parts = []
+    if rules["bytes"] > rules["budget"]:
+        parts.append(f"{rules['bytes']} bytes, over the {rules['budget']} byte budget")
+    if rules["repeats"]:
+        parts.append(f"{plural(rules['repeats'], 'sentence')} in my local files "
+                     f"{'repeats' if rules['repeats'] == 1 else 'repeat'} a harness rule")
+    return (f"NousFX rules: {' and '.join(parts)}. Run {sync_command(args)} --dry-run in {args.repo} "
+            f"to see which, then trim the local files (docs/sync.md).")
+
+
+def message(args, counts, behind):
+    sync = sync_command(args)
     if counts:
         parts = []
         if counts.get("files"):
@@ -129,11 +160,15 @@ def main(argv=None):
     os.chdir(args.repo)
     start_background_fetch(args)  # first, so a slow check can never starve it; it is not waited for
     deadline = started + BUDGET
-    counts = drift_counts(args, deadline)
+    counts, stale = drift_counts(args, deadline) or (None, False)
     behind = commits_behind(args, deadline)
-    if counts is None and not behind:
+    rules = rules_issue(counts)
+    if not stale and not behind and not rules:
         return 0
-    text = message(args, counts, behind)
+    lines = [message(args, counts if stale else None, behind)] if stale or behind else []
+    if rules:
+        lines.append(rules_message(args, rules))
+    text = "\n".join(lines)
     print(json.dumps({"systemMessage": text,
                       "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}))
     return 0
