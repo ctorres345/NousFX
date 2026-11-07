@@ -4,6 +4,7 @@ Run: python3 -B claude/hooks/test_review_gate_check.py
 
 Each test uses a throwaway git repo under a temp dir. BLOCKED is exit 2, ALLOWED exit 0.
 """
+import json
 import os
 import shutil
 import subprocess
@@ -64,6 +65,79 @@ class Check(Base):
         self.mark("--findings", "0")
         self.sh("git", "branch", "-m", "claude/x")
         self.assertEqual(self.check_create(), BLOCKED)
+
+    def marker_file(self):
+        return os.path.join(self.repo, ".git", "claude-review-ok")
+
+    def test_mark_records_the_branch(self):
+        self.mark("--findings", "0")
+        with open(self.marker_file(), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["branch"], "cesar/DEM-1")
+
+    def test_mark_from_another_branch_does_not_cover_a_new_branch_with_no_commits(self):
+        """After a merge, main's tree equals the marked tree; a new branch cut from it must not pass (NFX-71)."""
+        self.mark("--findings", "0")
+        self.sh("git", "checkout", "-q", "-b", "cesar/DEM-2")  # zero commits: same tree as the marked one
+        r = self.check("--cwd", self.repo, "--command", "gh pr create")
+        self.assertEqual(r.returncode, BLOCKED)
+        self.assertIn('recorded on branch "cesar/DEM-1"', r.stderr)
+        self.sh("git", "checkout", "-q", "cesar/DEM-1")
+        self.assertEqual(self.check_create(), ALLOWED)
+
+    def test_mark_is_refused_on_a_detached_head(self):
+        self.sh("git", "checkout", "-q", "--detach")
+        r = self.mark("--findings", "0")
+        self.assertEqual(r.returncode, BLOCKED)
+        self.assertIn("HEAD is detached", r.stderr)
+        self.assertFalse(os.path.exists(self.marker_file()))
+
+    def test_a_create_from_a_detached_head_says_so(self):
+        self.mark("--findings", "0")
+        self.sh("git", "checkout", "-q", "--detach")
+        r = self.check("--cwd", self.repo, "--command", "gh pr create")
+        self.assertEqual(r.returncode, BLOCKED)
+        self.assertIn("HEAD is detached", r.stderr)
+
+    def test_a_branch_exception_matches_when_a_tag_shares_the_name(self):
+        self.sh("git", "branch", "-m", "claude/x")
+        self.sh("git", "tag", "claude/x")
+        subprocess.run([sys.executable, "-B", GATE, "--allow-branch", "ok"], cwd=self.repo, check=True,
+                       capture_output=True)
+        self.mark("--findings", "0")
+        self.assertEqual(self.check_create(), ALLOWED)
+
+    def test_a_tag_with_the_branch_name_does_not_change_the_recorded_name(self):
+        self.sh("git", "tag", "cesar/DEM-1")  # makes rev-parse --abbrev-ref answer heads/cesar/DEM-1
+        self.mark("--findings", "0")
+        with open(self.marker_file(), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["branch"], "cesar/DEM-1")
+        self.assertEqual(self.check_create(), ALLOWED)
+
+    def test_a_deleted_marked_branch_gives_no_re_mark_shortcut(self):
+        """`gh pr merge -d` deletes the marked branch; a new branch from main must still be sent to the review."""
+        self.mark("--findings", "0")
+        self.sh("git", "checkout", "-q", "-b", "cesar/DEM-2")
+        self.sh("git", "branch", "-D", "cesar/DEM-1")
+        r = self.check("--cwd", self.repo, "--command", "gh pr create")
+        self.assertEqual(r.returncode, BLOCKED)
+        self.assertIn("review-loop", r.stderr)
+        self.assertNotIn("same --mark", r.stderr)
+
+    def test_a_skip_from_another_branch_does_not_cover_this_one(self):
+        self.mark("--skip", "user approved")
+        self.sh("git", "checkout", "-q", "-b", "cesar/DEM-2")
+        self.assertEqual(self.check_create(), BLOCKED)
+
+    def test_an_old_mark_without_a_branch_blocks_with_a_clear_message(self):
+        self.mark("--findings", "0")
+        with open(self.marker_file(), encoding="utf-8") as f:
+            marker = json.load(f)
+        marker.pop("branch", None)
+        with open(self.marker_file(), "w", encoding="utf-8") as f:
+            json.dump(marker, f)
+        r = self.check("--cwd", self.repo, "--command", "gh pr create")
+        self.assertEqual(r.returncode, BLOCKED)
+        self.assertIn("has no branch", r.stderr)
 
     def test_command_that_is_not_a_create_is_allowed(self):
         self.assertEqual(self.check("--cwd", self.repo, "--command", "git status").returncode, ALLOWED)
@@ -251,6 +325,11 @@ class PrePush(Base):
         self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1", reviewed)), ALLOWED)
         self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-2", unreviewed)), BLOCKED)
         self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1", unreviewed)), BLOCKED)
+
+    def test_a_mark_does_not_cover_a_push_of_another_branch_with_the_same_tree(self):
+        hook = self.install()
+        self.mark("--findings", "0")  # recorded on cesar/DEM-1
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-2", self.head())), BLOCKED)
 
     def test_blocks_a_sha_that_is_not_a_commit(self):
         hook = self.install()
