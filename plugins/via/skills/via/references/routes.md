@@ -1,6 +1,6 @@
 # Routes: fix now, ticket or reject
 
-Every open finding gets a route. Cesar approves the whole batch once, and then Via acts on it. Audit and check use the same steps. In unattended runs, skip steps 2 to 4: suggest the routes, write them into the report as pending decisions, and change nothing.
+Every open finding gets a route. Cesar approves the whole batch once, and then Via acts on it. Audit and check use the same steps. In unattended runs, skip steps 2 and 4: suggest the routes, write them into `findings.json`, and run step 3 with `VIA_UNATTENDED=1` in front. It changes nothing and prints the decisions as `pending`; put them in the report for Cesar.
 
 ## 1. Suggest a route for each finding
 Give each `new` or `open` finding one route and a one-line reason (`route_reason`):

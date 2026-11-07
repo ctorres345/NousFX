@@ -12,7 +12,8 @@ Usage: via_run.py init   [--project DIR]
 
 Order for a run: init, write RUN_DIR/findings.json, merge, set the approved routes, route, then pass
 once the code is final. `route` rejects, writes markdown tickets to docs/design/tickets/ and lists the
-fix-now IDs.
+fix-now IDs. With VIA_UNATTENDED=1 (an unattended run), `route` changes nothing and prints the
+decisions as `pending`, and `reject` refuses.
 The ledger lives in docs/design/via.md between two marker comments. Everything outside them is left alone.
 Stdout is JSON. Exit 0 on success, 1 when the input is invalid or unsafe (nothing is written),
 2 on a secret-shaped value.
@@ -235,6 +236,9 @@ def check_record(rec):
         return 'scope must be "all" or a list of screen names.'
     if not (isinstance(rec.get("platforms"), list) and all(is_text(p) for p in rec["platforms"])):
         return "platforms must be a list of names."
+    held = rec.get("held", {})
+    if not (isinstance(held, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in held.items())):
+        return "held is written by merge: a map of finding IDs to run names. Remove it and merge again."
     findings = rec.get("findings")
     if not isinstance(findings, list):
         return "findings must be a list."
@@ -390,7 +394,7 @@ def merge_findings(ledger, findings, scope, run_name, held=()):
         elif entry["status"] == "rejected":
             f["status"] = "rejected"  # stays rejected; line and text still follow the finding below
             counts["rejected"] += 1
-        elif entry.get("run") == run_name and entry["status"] in ("new", "open"):
+        elif entry.get("run") == run_name and is_open(entry):
             f["status"] = entry["status"]  # this run was merged already (the prototype step merges again): nothing changed
             counts[entry["status"]] += 1
         else:
@@ -409,7 +413,7 @@ def merge_findings(ledger, findings, scope, run_name, held=()):
         else:
             entry.pop("prototype", None)
     for fid, entry in ledger.items():
-        if fid not in seen and entry["status"] in ("new", "open") and covers(scope, entry.get("screen", "")):
+        if fid not in seen and is_open(entry) and covers(scope, entry.get("screen", "")):
             entry["status"] = "fixed"
             entry["fixed_in"] = run_name
             counts["fixed"] += 1
@@ -598,6 +602,8 @@ def cmd_merge(project, args):
         del f["id"]
         f["status"] = "dismissed"
     counts = merge_findings(ledger, live, rec["scope"], os.path.basename(run_dir), held)
+    # For `pass`: entries this run judged wrong (they stay open in the ledger), each with the run that last saw it.
+    rec["held"] = {fid: ledger[fid].get("run", "") for fid in sorted(held)}
     rec["merged_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     save_ledger(path, text, ledger, start, end)
     write_atomic(record_path, json.dumps(rec, indent=2, ensure_ascii=False) + "\n")
@@ -609,6 +615,8 @@ def reject_entry(entry, reason):
 
 
 def cmd_reject(project, args):
+    if unattended():
+        die("this is an unattended run (VIA_UNATTENDED), so nothing is rejected. List it as a pending decision.")
     if not args.reason.strip():
         die("a rejection needs a reason.")
     if has_secret(args.reason):
@@ -627,9 +635,15 @@ def cmd_pass(project, args):
     if not rec.get("merged_at") or any("status" not in f for f in rec["findings"]):
         die("this run was not merged yet. Run `merge` first. Nothing was recorded.")
     ledger = open_ledger(project)[2]  # a finding rejected after the merge no longer counts
-    open_count = sum(1 for f in rec["findings"] if f["status"] != "dismissed" and f["severity"] in ("high", "med")
-                     and ledger.get(f["id"], f).get("status") in ("new", "open") and f.get("route") != "ticket"
-                     and not ledger.get(f["id"], {}).get("ticket"))
+    # This run's findings, plus anything a later run (a fix-now re-capture) found on the screens in its scope.
+    # Only a filed ticket or a rejection takes a finding off the count.
+    live = [f for f in rec["findings"] if f["status"] != "dismissed"]
+    # Entries `merge` matched to a finding this run judged wrong, unless a later run has seen them since.
+    wrong = {fid for fid, run in rec.get("held", {}).items() if ledger.get(fid, {}).get("run", "") == run}
+    entries = {fid: e for fid, e in ledger.items() if covers(rec["scope"], e.get("screen", "")) and fid not in wrong}
+    entries.update((f["id"], ledger.get(f["id"], f)) for f in live)
+    open_count = sum(1 for e in entries.values()
+                     if e.get("severity") in ("high", "med") and is_open(e) and not e.get("ticket"))
     tree = worktree_tree(project)
     marker = os.path.abspath(os.path.join(project, git(["rev-parse", "--git-path", PASS_FILE], project)))
     write_atomic(marker, json.dumps({"tree": tree, "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -712,14 +726,35 @@ def render_ticket(group, findings, rec, images, run_name):
     return "\n".join(lines)
 
 
+def is_open(entry):
+    return entry["status"] in ("new", "open")
+
+
+def pending_rejects(ledger, live):
+    """Reject-routed findings the ledger has not rejected yet."""
+    return [f for f in live if f.get("route") == "reject" and ledger[f["id"]]["status"] != "rejected"]
+
+
+def ticket_groups(ledger, live):
+    """Ticket-routed findings that are still open and have no ticket yet, by group (or screen)."""
+    pending = collections.OrderedDict()
+    for f in live:
+        if f.get("route") == "ticket" and is_open(ledger[f["id"]]) and not ledger[f["id"]].get("ticket"):
+            pending.setdefault(f.get("group") or f["screen"], []).append(f)
+    return pending
+
+
+def unattended():
+    """An unattended run (VIA_UNATTENDED=1, set by Via in a /goal or scheduled run) decides nothing:
+    no rejections, no tickets, no fixes. The decisions wait in the report for Cesar."""
+    return os.environ.get("VIA_UNATTENDED", "").strip().lower() in ("1", "true", "yes")
+
+
 def write_tickets(project, run_dir, rec, ledger, live):
     """One markdown ticket per group (a finding's `group`, or its screen) for ticket-routed findings
     that have no ticket yet. Returns [{group, path, findings}]. On a failed write, every file written
     here is removed again, so a later run does not file the same findings twice."""
-    pending = collections.OrderedDict()
-    for f in live:
-        if f.get("route") == "ticket" and ledger[f["id"]]["status"] in ("new", "open") and not ledger[f["id"]].get("ticket"):
-            pending.setdefault(f.get("group") or f["screen"], []).append(f)
+    pending = ticket_groups(ledger, live)
     if not pending:
         return [], []
     folder = tickets_dir(project)
@@ -773,12 +808,18 @@ def cmd_route(project, args):
         die("this run was not merged yet. Run `merge` first. Nothing was changed.")
     path, text, ledger, start, end = open_ledger(project)
     live = [f for f in rec["findings"] if f["status"] != "dismissed" and f.get("id") in ledger]
+    fix_now = [f["id"] for f in live if f.get("route") == "fix-now" and is_open(ledger[f["id"]])]
+    if unattended():
+        emit({"unattended": True, "rejected": [], "tickets": [], "fix_now": [],
+              "pending": {"reject": [f["id"] for f in pending_rejects(ledger, live)],
+                          "ticket": {g: [f["id"] for f in m] for g, m in ticket_groups(ledger, live).items()},
+                          "fix_now": fix_now}})
+        return
     rejected = []
-    for f in live:
-        if f.get("route") == "reject" and ledger[f["id"]]["status"] != "rejected":
-            reject_entry(ledger[f["id"]], f["route_reason"].strip())
-            f["status"] = "rejected"
-            rejected.append(f["id"])
+    for f in pending_rejects(ledger, live):
+        reject_entry(ledger[f["id"]], f["route_reason"].strip())
+        f["status"] = "rejected"
+        rejected.append(f["id"])
     tickets, written = write_tickets(project, run_dir, rec, ledger, live)
     if rejected or tickets:
         try:
@@ -787,8 +828,7 @@ def cmd_route(project, args):
             remove_written(written)  # the ledger never learned these paths, so a re-run would file them twice
             die("could not save the ledger (%s). Nothing was changed." % e)
         write_atomic(record_path, json.dumps(rec, indent=2, ensure_ascii=False) + "\n")
-    emit({"rejected": rejected, "tickets": tickets,
-          "fix_now": [f["id"] for f in live if f.get("route") == "fix-now" and ledger[f["id"]]["status"] in ("new", "open")]})
+    emit({"rejected": rejected, "tickets": tickets, "fix_now": fix_now})
 
 
 def cmd_outbound_shots(project, args):

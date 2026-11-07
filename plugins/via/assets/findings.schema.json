@@ -18,14 +18,14 @@
     "skills": {
       "type": "object",
       "properties": {
-        "run": { "type": "array", "items": { "type": "string" } },
+        "run": { "type": "object", "additionalProperties": { "type": "string" } },
         "skipped": { "type": "array", "items": { "$ref": "#/definitions/skipped" } }
       }
     },
     "integrations": {
       "type": "object",
       "properties": {
-        "used": { "type": "array", "items": { "type": "string" } },
+        "used": { "type": "object", "additionalProperties": { "type": "string" } },
         "skipped": { "type": "array", "items": { "$ref": "#/definitions/skipped" } }
       }
     },
@@ -141,6 +141,7 @@
         }
       }
     },
+    "held": { "description": "Set by via_run.py merge: ledger IDs that a finding judged wrong in this run stands for, each with the run that last saw it. `pass` leaves them out until a later run sees them again.", "type": "object", "additionalProperties": { "type": "string" } },
     "merged_at": { "description": "Set by via_run.py merge. `pass` refuses a run without it.", "type": "string" }
   },
   "definitions": {

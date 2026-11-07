@@ -62,9 +62,10 @@ class ViaRunTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout.strip()
 
-    def run_cli(self, *args):
+    def run_cli(self, *args, env=None):
+        base = {k: v for k, v in os.environ.items() if k != "VIA_UNATTENDED"}
         return subprocess.run([sys.executable, SCRIPT, *args, "--project", self.repo],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, env={**base, **(env or {})})
 
     def ok(self, *args):
         r = self.run_cli(*args)
@@ -265,7 +266,14 @@ class ViaRunTest(unittest.TestCase):
             finding(severity="high"), finding(rule="a", severity="med", route="ticket", route_reason="Theme"),
             finding(rule="b", severity="low"), finding(rule="c", severity="med", route="fix-now", route_reason="One file")]))
         self.ok("pass", run_dir)
-        self.assertEqual(self.pass_record()["findings_open"], 2)
+        self.assertEqual(self.pass_record()["findings_open"], 3)  # routed to a ticket, but no ticket was filed yet
+
+    def test_pass_counts_what_a_later_recapture_found_on_the_screens_in_its_scope(self):
+        self.merge(record([finding(screen="profile", severity="high")], scope=["profile"]))
+        run_dir, _, _ = self.merge(record([finding()], scope=["home", "settings"]))
+        self.merge(record([finding(rule="touch-target", severity="high")], scope=["home"]))  # fix-now re-capture
+        self.ok("pass", run_dir)
+        self.assertEqual(self.pass_record()["findings_open"], 1)  # the new home finding; profile is out of scope
 
     def test_editing_code_after_a_pass_changes_the_tree_the_record_no_longer_matches(self):
         run_dir, _, _ = self.merge(record([]))
@@ -323,6 +331,34 @@ class ViaRunTest(unittest.TestCase):
             finding(rule="spacing", severity="high", source="second-opinion:claude", verdict="wrong")]))
         self.ok("pass", run_dir)
         self.assertEqual(self.pass_record()["findings_open"], 0)
+
+    def test_an_open_finding_this_run_judged_wrong_does_not_count_in_pass(self):
+        self.merge(record([finding(source="second-opinion:claude", verdict="unsure")]))
+        run_dir, _, _ = self.merge(record([finding(source="second-opinion:claude", verdict="wrong")]))
+        self.ok("pass", run_dir)
+        self.assertEqual(self.pass_record()["findings_open"], 0)
+
+    def test_a_finding_judged_wrong_does_not_hide_a_later_real_one_from_pass(self):
+        run_dir, _, _ = self.merge(record([finding(source="second-opinion:claude", verdict="wrong")], scope=["home"]))
+        self.merge(record([finding(severity="high", line=200, issue="Text overlaps the icon.")], scope=["home"]))
+        self.ok("pass", run_dir)
+        self.assertEqual(self.pass_record()["findings_open"], 1)
+
+    def test_a_finding_judged_wrong_counts_again_when_a_later_run_finds_it(self):
+        self.merge(record([finding(severity="high")], scope=["home"]))
+        run_dir, _, _ = self.merge(record([finding(severity="high", source="second-opinion:claude", verdict="wrong")],
+                                          scope=["home"]))
+        self.merge(record([finding(severity="high")], scope=["home"]))  # the fix-now re-capture sees it again
+        self.ok("pass", run_dir)
+        self.assertEqual(self.pass_record()["findings_open"], 1)
+
+    def test_pass_refuses_a_record_whose_held_is_not_a_map_of_ids(self):
+        run_dir, _, merged = self.merge(record([finding()]))
+        merged["held"] = 5
+        write(os.path.join(run_dir, "findings.json"), json.dumps(merged))
+        r = self.run_cli("pass", run_dir)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
 
     def test_a_dismissed_finding_does_not_stop_an_old_one_from_being_marked_fixed(self):
         self.merge(record([finding()]))
@@ -745,7 +781,7 @@ class ViaRunTest(unittest.TestCase):
 
     # --- routes (after the batch approval) ---
 
-    def routed(self, findings, routes, files=(), **extra):
+    def routed(self, findings, routes, files=(), env=None, **extra):
         """Merge a run, set the approved routes on the merged record the way Claude does, then run `route`."""
         run_dir, _, merged = self.merge(record(findings, **extra))
         for name in files:
@@ -753,8 +789,39 @@ class ViaRunTest(unittest.TestCase):
         for f, (route, reason) in zip(merged["findings"], routes):
             f["route"], f["route_reason"] = route, reason
         write(os.path.join(run_dir, "findings.json"), json.dumps(merged))
-        r = self.run_cli("route", run_dir)
+        r = self.run_cli("route", run_dir, env=env)
         return run_dir, merged, r
+
+    def test_unattended_route_changes_nothing_and_lists_the_pending_decisions(self):
+        findings = [finding(), finding(rule="touch-target", line=30), finding(screen="settings", file="app/Settings.kt")]
+        run_dir, merged, r = self.routed(findings, [("reject", "Brand color"), ("ticket", "Token change"),
+                                                    ("fix-now", "One file")], env={"VIA_UNATTENDED": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        ids = [f["id"] for f in merged["findings"]]
+        self.assertTrue(out["unattended"])
+        self.assertEqual(out["pending"], {"reject": [ids[0]], "ticket": {"home": [ids[1]]}, "fix_now": [ids[2]]})
+        self.assertEqual((out["rejected"], out["tickets"], out["fix_now"]), ([], [], []))
+        entries = self.ledger_entries()
+        self.assertEqual({entries[i]["status"] for i in ids}, {"new"})
+        self.assertFalse(any("ticket" in entries[i] for i in ids))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "docs", "design", "tickets")))
+        self.assertEqual(json.loads(read(os.path.join(run_dir, "findings.json"))), merged)
+
+    def test_an_unattended_route_leaves_its_findings_open_in_the_pass(self):
+        run_dir, _, r = self.routed([finding(), finding(rule="touch-target", line=30)],
+                                    [("ticket", "Token change"), ("reject", "Brand color")], env={"VIA_UNATTENDED": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.ok("pass", run_dir)
+        self.assertEqual(self.pass_record()["findings_open"], 2)
+
+    def test_unattended_reject_changes_nothing(self):
+        _, merged, _ = self.routed([finding()], [("ticket", "later")])
+        before = read(os.path.join(self.repo, LEDGER))
+        r = self.run_cli("reject", merged["findings"][0]["id"], "--reason", "no", env={"VIA_UNATTENDED": "1"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("unattended", r.stderr)
+        self.assertEqual(read(os.path.join(self.repo, LEDGER)), before)
 
     def test_a_finding_routed_reject_is_rejected_in_the_ledger_with_its_reason(self):
         _, merged, r = self.routed([finding()], [("reject", "Brand color on purpose")])
