@@ -20,6 +20,8 @@ The hook above parses its payload and calls the same evaluate() function.
 Attest mode: `review-gate.py attest` prints `Review-Gate: <tree>` (with ` skipped: <reason>` for a skip)
 when a valid mark covers the current code, else exits 2. `verify-attestation --tree H --text-file F`
 (CI) exits 0 when F holds that line for tree H. An honor-system claim, see docs/review-gate.md.
+`verify-tier --tier-json J --text-file F` (CI, NFX-70) exits 2 when a `Review-Tier:` line in F is below the
+tier in J (tier.py's JSON for the PR diff).
 
 Mark mode: `review-gate.py --mark --findings N` or `--mark --skip "reason"` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
@@ -348,6 +350,15 @@ def tier_args(argv):
     return tier, reasons, override
 
 
+def tier_result(data):
+    """(tier, reasons) from tier.py's JSON object. ValueError unless the tier is an int 0-3."""
+    tier = data.get("tier") if isinstance(data, dict) else None
+    if isinstance(tier, bool) or tier not in (0, 1, 2, 3):
+        raise ValueError(f"unexpected tier.py output (tier {tier!r})")
+    why = data.get("reasons")
+    return tier, [str(x) for x in why] if isinstance(why, list) else []
+
+
 TIER_PY = os.path.join("..", "skills", "review-loop", "scripts", "tier.py")  # relative to this file's folder
 TIER_TIMEOUT = 60
 
@@ -361,12 +372,10 @@ def computed_tier(cwd):
     try:
         r = subprocess.run([sys.executable, "-B", path, "--cwd", cwd], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, timeout=TIER_TIMEOUT)
-        data = json.loads(r.stdout)
-        tier = data["tier"]
-        if r.returncode != 0 or isinstance(tier, bool) or tier not in (0, 1, 2, 3):
-            raise ValueError(f"exit {r.returncode}" if r.returncode else "unexpected output")
-        why = data.get("reasons")
-        return tier, " ".join(str(x) for x in why) if isinstance(why, list) else "", ""
+        if r.returncode != 0:
+            raise ValueError(f"exit {r.returncode}")
+        tier, why = tier_result(json.loads(r.stdout))
+        return tier, " ".join(why), ""
     except Exception as e:
         return 2, "", f"tier.py failed ({type(e).__name__}: {e}); counted as Tier 2"
 
@@ -658,6 +667,77 @@ def verify_attestation(argv):
     return 2
 
 
+TIER_FALLBACK = "Tier 2: could not"  # tier.py's reason when it could not read the diff (pinned by a test)
+TIER_REASON = re.compile(r"Tier ([0-3]):")
+TIER_LINE = re.compile(r"^[ \t]*Review-Tier:(.*)$", re.I | re.M)
+TIER_VALUE = re.compile(r"[ \t]+([0-3])(?=[ \t]|$)(.*)$")
+TIER_OVERRIDE = re.compile(r"[ \t]override:[ \t]+computed[ \t]+([0-3]),[ \t]*(\S.*?)[ \t]*$")
+
+
+def body_tiers(text):
+    """[(line, tier, override_computed, override_reason)] for each `Review-Tier:` line. ValueError on a bad one."""
+    found = []
+    for m in TIER_LINE.finditer(text):
+        line = "Review-Tier:" + m.group(1).rstrip()
+        v = TIER_VALUE.match(m.group(1))
+        if not v:
+            raise ValueError(f"cannot read `{line}`: the tier must be 0, 1, 2 or 3")
+        o = TIER_OVERRIDE.search(v.group(2))  # the first one; its reason runs to the end of the line
+        found.append((line, int(v.group(1)), int(o.group(1)) if o else None, o.group(2) if o else None))
+    return found
+
+
+def verify_tier(argv):
+    """`verify-tier --tier-json FILE --text-file F` (CI, NFX-70): exit 2 when a `Review-Tier:` line in F is below
+    the tier in FILE (tier.py's JSON for the PR diff). An attested override passes when the tier it names as
+    computed is at least the CI tier; it stays self-asserted. No tier line passes (a known hole), and so does a
+    tier.py result that could not read the diff (Tier 2 by default would fail a real Tier 0 or 1 PR). When only
+    `[review] risk_paths` could not be read, the tier the diff measured is compared instead."""
+    tier_json, text_file = option(argv, "--tier-json"), option(argv, "--text-file")
+    if not tier_json or not text_file:
+        print("Blocked: usage: review-gate.py verify-tier --tier-json FILE --text-file FILE", file=sys.stderr)
+        return 2
+    try:
+        with open(tier_json, encoding="utf-8") as f:
+            computed, reasons = tier_result(json.load(f))
+        with open(text_file, encoding="utf-8", errors="replace") as f:
+            claims = body_tiers(f.read())
+    except (OSError, ValueError) as e:
+        print(f"Blocked: cannot check the review tier: {e}", file=sys.stderr)
+        return 2
+    why = "; ".join(reasons) or "no reasons given"
+    if not claims:
+        print("No Review-Tier line in the PR description; the tier is not checked (known hole, docs/review-gate.md).")
+        print("Review tier checked.")
+        return 0
+    if any(r.startswith(TIER_FALLBACK) for r in reasons):
+        # A "could not" Tier 2 is a floor, not a measurement. Compare against what the diff measured, if anything.
+        measured = [int(m.group(1)) for m in (TIER_REASON.match(r) for r in reasons if not r.startswith(TIER_FALLBACK))
+                    if m]
+        if not measured:
+            print(f"Warning: tier.py could not compute the tier ({why}); the Review-Tier line is not checked.")
+            print("Review tier checked.")
+            return 0
+        computed = max(measured)
+    for line, tier, over_computed, over_reason in claims:
+        if tier >= computed:
+            continue
+        if over_computed is not None and over_computed >= computed:
+            print(f"Override honored (self-asserted, not verified): Tier {tier} below the computed Tier {computed}, "
+                  f"reason: {over_reason}")
+            continue
+        if over_computed is not None:
+            print(f"Blocked: `{line}` overrides computed Tier {over_computed}, but CI computes Tier {computed} "
+                  f"({why}). Run the review at Tier {computed}, then attest again.", file=sys.stderr)
+        else:
+            print(f"Blocked: `{line}` is below the computed Tier {computed} ({why}). Run the review at Tier "
+                  f"{computed}, then attest again and paste the new lines.", file=sys.stderr)
+        return 2
+    print(f"Review tier covers the computed Tier {computed}.")
+    print("Review tier checked.")
+    return 0
+
+
 def run_check_ref(argv):
     """`run-check --ref REF` (CI): run the check command that REF holds, in this checkout. 0 passes, 2 blocks."""
     ref = option(argv, "--ref")
@@ -730,6 +810,8 @@ if __name__ == "__main__":
         sys.exit(run_check_ref(sys.argv))
     if sys.argv[1:2] == ["verify-attestation"]:
         sys.exit(verify_attestation(sys.argv))
+    if sys.argv[1:2] == ["verify-tier"]:
+        sys.exit(verify_tier(sys.argv))
     if "--allow-branch" in sys.argv:
         sys.exit(allow_branch(sys.argv))
     sys.exit(mark(sys.argv) if "--mark" in sys.argv else gate())
