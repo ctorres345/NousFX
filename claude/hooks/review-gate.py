@@ -81,7 +81,7 @@ BLOCK = """\
 Blocked: no review recorded for this code. Before opening a PR:
 - Run the review now by invoking the `review-loop` skill (Skill tool); do not ask the user to type
   it. In unattended or /goal runs, do the same steps by hand: /simplify, then the reviewer agent and round cap
-  that `review-loop` names for the tier, fixing real high findings and real med findings at confidence 60 or more and showing test results.
+  that `review-loop` names for the tier (give it the ticket and the scope, no builder summary), fixing real high findings and real med findings at confidence 60 or more and showing test results.
 - If the change touches auth, migrations, concurrency, or a public API, offer the
   `reviewer-deep` agent (ask first).
 - When done, record it: python3 "{script}" --mark --findings <open high count + open med at 60 or more> --tier <0-3> --reasons "<tier reasons>"

@@ -11,6 +11,8 @@ FORMAT = "`ID | severity | confidence | file:line | problem | fix | quoted code`
 FORMAT_PLAIN = "ID | severity | confidence | file:line | problem | fix | quoted code"
 COUNT = "--findings <open high count + open med at 60 or more>"
 NAMES = ("reviewer", "reviewer-light", "reviewer-high", "reviewer-deep")
+QUESTION = "what would have to be true for this to break in production?"
+NO_SUMMARY = "no builder summary"
 
 
 def read(*parts):
@@ -51,6 +53,22 @@ class ReviewerAgents(unittest.TestCase):
         self.assertEqual(len(bullets["reviewer"]), 2)
 
 
+class BreakItQuestion(unittest.TestCase):
+    """NFX-75: the tier 3 and deep reviewers try to break the change in production."""
+
+    def test_high_and_deep_ask_the_question_in_both_copies(self):
+        for folder in ("harness", "claude"):
+            for name in ("reviewer-high", "reviewer-deep"):
+                with self.subTest(folder=folder, name=name):
+                    self.assertIn(QUESTION, read(folder, "agents", name + ".md"))
+
+    def test_high_names_boundaries_races_and_hidden_state(self):
+        for folder in ("harness", "claude"):
+            text = read(folder, "agents", "reviewer-high.md")
+            for word in ("boundary cases", "races", "hidden state", "not the builder's story"):
+                self.assertIn(word, text, (folder, word))
+
+
 class ReviewLoopSkill(unittest.TestCase):
     def setUp(self):
         self.text = read("claude", "skills", "review-loop", "SKILL.md")
@@ -58,6 +76,11 @@ class ReviewLoopSkill(unittest.TestCase):
     def test_step_two_asks_for_the_new_format(self):
         self.assertIn(FORMAT_PLAIN, self.text)
         self.assertNotIn("suggested fix", self.text)
+
+    def test_reviewer_gets_ticket_and_diff_without_builder_summary(self):
+        self.assertIn("the ticket's goal and acceptance criteria", self.text)
+        self.assertIn("No builder summary goes to the reviewer", self.text)
+        self.assertIn('say "ticket unavailable" and do not retell the ticket yourself', self.text)
 
     def test_low_confidence_med_is_listed_not_fixed(self):
         self.assertIn("A `med` under 60 is listed, not fixed", self.text)
@@ -92,6 +115,9 @@ class ReadmeGoalText(unittest.TestCase):
         self.assertIn("is not evidence against the high", goal)
         self.assertIn("quote is not found", goal)
         self.assertIn("If SendMessage is not available", goal)
+        self.assertIn("with the ticket's goal and acceptance criteria", goal)
+        self.assertIn('"ticket unavailable" if Jira cannot be read; never your own retelling', goal)
+        self.assertIn(NO_SUMMARY, goal)
         self.assertIn("real med findings at confidence 60 or more", readme)
         self.assertIn("no med at confidence 60 or more, other than findings already rejected", readme)
         self.assertNotIn("no high or medium findings", readme)
@@ -104,6 +130,7 @@ class GateMessages(unittest.TestCase):
     def test_gate_text_uses_the_same_count(self):
         gate = read("claude", "hooks", "review-gate.py")
         self.assertIn(COUNT, gate)
+        self.assertIn("the ticket and the scope, " + NO_SUMMARY, gate)
         self.assertNotIn("high/med", gate)
 
 
