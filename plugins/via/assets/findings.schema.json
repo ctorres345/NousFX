@@ -68,8 +68,28 @@
           "verdict": { "description": "Second-opinion verdict after checking against code and screenshots. Required when source starts with second-opinion, and a wrong one then becomes status dismissed: kept here as evidence, never added to the ledger. On any other source the verdict is informational.", "enum": ["real", "wrong", "unsure", null] },
           "route": { "enum": ["fix-now", "ticket", null] },
           "status": { "description": "Set by via_run.py: new, open, rejected, or dismissed (a second-opinion finding with verdict wrong).", "enum": ["new", "open", "rejected", "dismissed"] },
-          "ticket": { "type": "string" }
+          "ticket": { "type": "string" },
+          "prototype": {
+            "description": "Set by via_prototype.py build: where this finding sits on the prototype page. Anchors only; they also go into the ledger.",
+            "type": "object",
+            "required": ["anchor", "variants"],
+            "properties": {
+              "anchor": { "type": "string", "pattern": "^f[1-9][0-9]*$" },
+              "variants": { "type": "array", "minItems": 2, "maxItems": 3, "items": { "type": "string", "pattern": "^f[1-9][0-9]*-v[1-9][0-9]*$" } }
+            }
+          }
         }
+      }
+    },
+    "prototype": {
+      "description": "Set by via_prototype.py: the run's prototype page. `build` writes the local file; `link` adds the private Artifact URL when the project may publish to artifacts. The URL stays in this untracked record and never goes into the ledger.",
+      "type": "object",
+      "required": ["path", "published", "url"],
+      "properties": {
+        "path": { "description": "Relative to the run folder.", "type": "string", "pattern": "\\.html$" },
+        "published": { "type": "boolean" },
+        "url": { "type": ["string", "null"], "pattern": "^https://" },
+        "reason": { "description": "Why the page is local only, or what allowed publishing.", "type": "string" }
       }
     },
     "lessons": {
