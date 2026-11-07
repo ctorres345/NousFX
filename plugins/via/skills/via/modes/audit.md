@@ -2,7 +2,7 @@
 
 A designer's review of the app as it is now: screenshots, the platform's design skills, a second opinion and a saved run record. Audit reports. It never edits code.
 
-It works on **web**, **Compose** and **Flutter**. Substitute the real plugin path for `${CLAUDE_PLUGIN_ROOT}` in every command, because the variable is not set inside Bash (outside Claude Code, see `SKILL.md`).
+It works on **web**, **Compose** and **Flutter**. Substitute the real plugin path for `${CLAUDE_PLUGIN_ROOT}` in every command, because the variable is not set inside Bash.
 
 ## 1. Detect the platform
 Follow `references/platforms.md`. Web, Compose and Flutter are built. For any other platform, say in one line which ticket builds it (NFX-11 for SwiftUI) and stop. A project that matches several platforms is reviewed one platform at a time.
@@ -37,7 +37,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/via_capture.py" --run-dir <run_dir> --scr
 Run the skill set for the platform from `references/platforms.md`. For each skill, record that it ran or why it was skipped (not installed, or not relevant to these screens). Give every finding a short stable `rule` name and the `file` and `line` that cause it.
 
 ## 6. Second opinion
-Follow `references/second-opinion.md`. Skip it, with the reason, if there are no screenshots. If `via_run.py outbound-shots` lists no kept shots, skip it and say so. The summary line says which reviewer ran (Argon or the fresh-context fallback) and, for the fallback, why. Every second-opinion finding gets a verdict before it goes in the record.
+Follow `references/second-opinion.md`. Skip it, with the reason, if there are no screenshots. If `via_run.py outbound-shots` lists no kept shots, skip it and say so. The summary line says which reviewer ran (Argon, or the fallback `references/second-opinion.md` names) and, for the fallback, why. Every second-opinion finding gets a verdict before it goes in the record.
 
 ## 7. Write and merge the record
 Complete `<run_dir>/findings.json` (the draft from step 4): `mode` is `audit`, `scope` is `"all"` or the screens you covered, `platforms` is the platform you audited. Include `skills`, `integrations`, `screenshots`, `coverage` (native capture) and `findings`. Never write `id`, `status` or `merged_at`. Then:

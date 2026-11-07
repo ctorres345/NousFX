@@ -63,14 +63,17 @@ class ViaInAgyTest(unittest.TestCase):
         return env
 
     def resolved_root(self):
-        """The plugin folder, resolved with the command SKILL.md gives agy."""
+        """The plugin folder, resolved once per test with the command SKILL.md gives agy."""
+        if getattr(self, "_root", None):
+            return self._root
         with open(os.path.join(SKILL, "SKILL.md"), encoding="utf-8") as f:
             command = re.search(r'`(python3 -c "import os;[^`]+")`', f.read())
         self.assertIsNotNone(command, "SKILL.md lost the command that resolves the plugin folder")
         # agy's gate denies any command naming its plugin folder (harness/agy/agy_gate.py, PLUGIN_FOLDER)
         self.assertNotRegex(command.group(1), r"plugins[/\\]nousfx")
         r = subprocess.run(command.group(1), shell=True, capture_output=True, text=True, env=self.env(), check=True)
-        return r.stdout.strip()
+        self._root = r.stdout.strip()
+        return self._root
 
     def run_script(self, root, name, *args, cwd):
         cmd = [th.python(self.home), "-I", "-B", os.path.join(root, "scripts", name), *args]
@@ -101,10 +104,14 @@ class ViaInAgyTest(unittest.TestCase):
 
     def test_an_unresolved_path_through_the_link_still_runs_the_scripts(self):
         """An agent that skips the resolve step and writes <skill folder>/../.. still reaches the real scripts,
-        and their imports work (they find their folder with realpath, not abspath). The real interpreter is
-        used because the test shim normalizes the path first; --help reads no config."""
+        and their imports work (they find their folder with realpath, not abspath). This calls the real
+        interpreter: th.python() runs scripts through runpy, which would clean up the `..` before the script
+        sees it. --help reads no config. via_second_opinion.py has no --help; the last test covers it."""
         root = os.path.join(self.agy_skill, "..", "..")
-        for name in ("via_outbound.py", "via_prototype.py", "via_capture_native.py", "via_skills.py"):
+        names = sorted(n for n in os.listdir(os.path.join(PLUGIN, "scripts"))
+                       if n.startswith("via_") and n.endswith(".py") and n != "via_second_opinion.py")
+        self.assertIn("via_setup.py", names)
+        for name in names:
             r = subprocess.run([sys.executable, "-I", "-B", os.path.join(root, "scripts", name), "--help"],
                                capture_output=True, text=True, env=self.env(), cwd=self.unlisted)
             self.assertEqual(r.returncode, 0, (name, r.stderr))
