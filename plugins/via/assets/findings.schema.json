@@ -87,9 +87,11 @@
           "fix": { "type": "string", "minLength": 1 },
           "source": { "description": "The skill or second opinion that raised it. A second opinion is named second-opinion:<who>, for example second-opinion:claude.", "type": "string", "minLength": 1 },
           "verdict": { "description": "Second-opinion verdict after checking against code and screenshots. Required when source starts with second-opinion, and a wrong one then becomes status dismissed: kept here as evidence, never added to the ledger. On any other source the verdict is informational.", "enum": ["real", "wrong", "unsure", null] },
-          "route": { "enum": ["fix-now", "ticket", null] },
+          "route": { "description": "Set after the batch approval: fix-now (small, local, low-risk), ticket (cross-screen or design-system) or reject. `via_run.py route` acts on it.", "enum": ["fix-now", "ticket", "reject", null] },
+          "route_reason": { "description": "One line on why this route. Required whenever route is set; on reject it becomes the rejection reason, on a ticket it fills the Why a ticket column.", "type": "string", "minLength": 1 },
+          "group": { "description": "Ticket route only: an optional theme for grouping, such as Buttons. Ticket findings without one are grouped by screen.", "type": "string", "minLength": 1 },
           "status": { "description": "Set by via_run.py: new, open, rejected, or dismissed (a second-opinion finding with verdict wrong).", "enum": ["new", "open", "rejected", "dismissed"] },
-          "ticket": { "type": "string" },
+          "ticket": { "description": "Set by via_run.py route: the markdown ticket path (or a Jira key). A finding with a ticket is never filed again.", "type": "string" },
           "prototype": {
             "description": "Set by via_prototype.py build: where this finding sits on the prototype page. Anchors only; they also go into the ledger.",
             "type": "object",

@@ -5,6 +5,9 @@
 ### Sync and install
 - Sync writes a deny list to `~/.claude/settings.json`: Claude's file tools may not read or edit `.env*`, `*.pem`, `*.key` and SSH keys (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`), or edit lockfiles. My own deny rules and settings are kept, and `~/.config/nousfx/deny.toml` leaves a rule out (NFX-74).
 
+### Via
+- Every finding gets a route (fix now, ticket or reject) and I approve the batch once. `via_run.py route` rejects into the ledger, writes one markdown ticket per screen or theme to `docs/design/tickets/` with escaped finding text, and lists the fix-now findings (NFX-13).
+
 ## 1.0.0 (unreleased)
 
 The daily-use harness: Claude Code and agy on Mac and Windows, one sync command, a gate that runs the tests, trimmed rules, and a review loop that scales with risk. Proven on Animus.
