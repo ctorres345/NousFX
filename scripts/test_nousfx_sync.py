@@ -78,7 +78,8 @@ class FirstRun(Base):
     def test_writes_expected_rules_and_registers_hook(self):
         r = self.sync()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(read(self.rules), read(os.path.join(FIX, "expected_CLAUDE.md")))  # golden
+        golden = read(os.path.join(FIX, "expected_CLAUDE.md")).replace("{repo}", self.repo).replace("{state}", self.state)
+        self.assertEqual(read(self.rules), golden)
         self.assertTrue(os.path.exists(self.hook))
         self.assertTrue(os.path.exists(os.path.join(self.home, ".claude", "hooks", "pr_create_parser.py")))
         cfg = json.loads(read(self.settings))
@@ -398,16 +399,141 @@ class DriftHookRegistration(Base):
         self.assertEqual(len(lines), 1, r.stdout)
         counts = json.loads(lines[0])
         self.assertEqual(counts["files"], 1)
-        self.assertEqual(set(counts), {"files", "skills", "outside"})
+        self.assertEqual(set(counts), {"files", "skills", "outside", "rules"})
+        self.assertEqual(set(counts["rules"]), {"bytes", "budget", "repeats"})
 
     def test_summary_when_clean_exits_zero_with_zero_counts(self):
         self.sync()
         r = self.sync("--check", "--summary")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1]), {"files": 0, "skills": 0, "outside": 0})
+        counts = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual({k: counts[k] for k in ("files", "skills", "outside")}, {"files": 0, "skills": 0, "outside": 0})
+        self.assertEqual(counts["rules"]["repeats"], 0)
+        self.assertLessEqual(counts["rules"]["bytes"], counts["rules"]["budget"])
 
     def test_summary_without_check_is_a_usage_error(self):
         self.assertEqual(self.sync("--summary").returncode, 2)
+
+
+class RulesBudget(Base):
+    """NFX-78: the budget covers the whole generated rules, local layers included, and only warns."""
+    RULE = "- Always run the full test suite before you push a branch."
+
+    def run_sync(self, *args, env=None):
+        return subprocess.run(
+            [sys.executable, "-B", SYNC, "--home", self.home, "--state-home", self.state, "--repo", self.repo, *args],
+            capture_output=True, text=True, cwd=self.tmp,
+            env={**{k: v for k, v in os.environ.items() if k != "NOUSFX_RULES_BUDGET"}, **(env or {})})
+
+    def budget_lines(self, r):
+        return [l for l in r.stderr.splitlines() if l.startswith("warning: rules budget:")]
+
+    def summary(self, env=None):
+        r = self.run_sync("--check", "--summary", env=env)
+        return r.returncode, json.loads(r.stdout.strip().splitlines()[-1])
+
+    def grow_local(self, size=7000):
+        lines = [f"- Personal rule number {i} about my own habits." for i in range(size // 45)]
+        write(os.path.join(self.state, "local.claude.md"), "# Mine\n" + "\n".join(lines) + "\n")
+
+    def test_local_layers_over_budget_give_one_warning_and_keep_the_exit_code(self):
+        self.grow_local()
+        r = self.run_sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        lines = self.budget_lines(r)
+        self.assertEqual(len(lines), 1, r.stderr)
+        body = len(read(self.rules).split(" -->\n\n", 1)[1].encode("utf-8"))
+        self.assertGreater(body, 6144)
+        self.assertIn(f"is {body} bytes", lines[0])
+        self.assertIn("6144 byte budget", lines[0])
+        self.assertEqual(self.run_sync("--check").returncode, 0)  # in step: no drift, warning or not
+        rc, counts = self.summary()
+        self.assertEqual(rc, 0)
+        self.assertEqual(counts["rules"], {"bytes": body, "budget": 6144, "repeats": 0})
+
+    def test_within_budget_prints_no_warning(self):
+        r = self.run_sync()
+        self.assertEqual((r.returncode, self.budget_lines(r)), (0, []), r.stderr)
+
+    def test_the_environment_variable_overrides_the_default(self):
+        r = self.run_sync(env={"NOUSFX_RULES_BUDGET": "100"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.budget_lines(r)), 1, r.stderr)
+        self.assertIn("100 byte budget", self.budget_lines(r)[0])
+        self.assertEqual(self.summary({"NOUSFX_RULES_BUDGET": "100"})[1]["rules"]["budget"], 100)
+
+    def test_a_line_in_local_md_overrides_the_default_and_stays_out_of_the_rules(self):
+        local = os.path.join(self.state, "local.md")
+        write(local, read(local) + "rules-budget: 120\n")
+        r = self.run_sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("120 byte budget", self.budget_lines(r)[0])
+        self.assertNotIn("rules-budget", read(self.rules))
+        self.assertEqual(self.summary()[1]["rules"]["budget"], 120)
+        # the environment wins over the file
+        self.assertEqual(self.budget_lines(self.run_sync(env={"NOUSFX_RULES_BUDGET": "99999"})), [])
+
+    def test_a_sentence_repeated_from_agents_md_is_listed_with_both_paths(self):
+        agents = os.path.join(self.repo, "harness", "AGENTS.md")
+        local = os.path.join(self.state, "local.md")
+        write(agents, read(agents) + self.RULE + "\n")
+        write(local, read(local) + self.RULE + "\n")
+        r = self.run_sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        repeats = [l for l in r.stderr.splitlines() if l.startswith("warning: repeated rule:")]
+        self.assertEqual(len(repeats), 1, r.stderr)
+        self.assertIn("always run the full test suite", repeats[0])
+        self.assertIn(f"is in {local} and {agents}", repeats[0])
+        self.assertEqual(self.summary(), (0, {"files": 0, "skills": 0, "outside": 0,
+                                              "rules": {"bytes": self.summary()[1]["rules"]["bytes"],
+                                                        "budget": 6144, "repeats": 1}}))
+
+    def test_a_repeat_in_local_md_counts_once_when_two_tools_load_it(self):
+        write(os.path.join(self.repo, "harness", "overlays", "agy.overlay.md"), "## agy overlay\n- agy only line\n")
+        write(os.path.join(self.repo, "harness", "agy", "agy_gate.py"),
+              read(os.path.join(ROOT, "harness", "agy", "agy_gate.py")))
+        agents = os.path.join(self.repo, "harness", "AGENTS.md")
+        local = os.path.join(self.state, "local.md")
+        write(agents, read(agents) + self.RULE + "\n")
+        write(local, read(local) + self.RULE + "\n")
+        r = self.run_sync("--dry-run", "--tools", "claude,agy")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len([l for l in r.stderr.splitlines() if "repeated rule" in l]), 1, r.stderr)
+        r = self.run_sync("--check", "--summary", "--tools", "claude,agy")
+        self.assertEqual(json.loads(r.stdout)["rules"]["repeats"], 1)
+
+    def test_a_budget_that_is_not_a_plain_number_is_ignored(self):
+        r = self.run_sync(env={"NOUSFX_RULES_BUDGET": "\u00b2"})
+        self.assertEqual((r.returncode, self.budget_lines(r)), (0, []), r.stderr)
+
+    def test_the_budget_line_is_a_setting_only_in_local_md(self):
+        write(os.path.join(self.state, "local.claude.md"), "rules-budget: 10\n- Mine.\n")
+        r = self.run_sync()
+        self.assertEqual(self.budget_lines(r), [], r.stderr)  # not read from local.claude.md
+        self.assertIn("rules-budget: 10", read(self.rules))  # and so not hidden either
+
+    def test_sources_under_home_are_written_from_tilde(self):
+        state = os.path.join(self.home, ".config", "nousfx")
+        shutil.copytree(self.state, state)
+        r = subprocess.run([sys.executable, "-B", SYNC, "--home", self.home, "--repo", self.repo],
+                           capture_output=True, text=True, cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        header = read(self.rules).split(" -->", 1)[0]
+        self.assertIn("~/.config/nousfx/local.md", header)
+        self.assertNotIn(state, header)
+
+    def test_the_header_names_the_sources_and_its_hash_follows_their_text_only(self):
+        self.run_sync()
+        header = read(self.rules).split(" -->", 1)[0]
+        for path in (os.path.join(self.repo, "harness", "AGENTS.md"), os.path.join(self.state, "local.md")):
+            self.assertIn(path, header)
+        first = header.splitlines()[0]
+        local = os.path.join(self.state, "local.md")
+        write(local, read(local) + "- One more personal line.\n")
+        self.assertEqual(self.run_sync("--check").returncode, 1)
+        self.run_sync()
+        self.assertNotEqual(read(self.rules).splitlines()[0], first)
+        self.assertEqual(self.run_sync("--check").returncode, 0)
 
 
 if __name__ == "__main__":

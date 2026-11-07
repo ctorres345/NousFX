@@ -637,6 +637,8 @@ class Branch(Base):
         self.mark("--findings", "0")
         self.sh("git", "branch", "-m", "claude/x", cwd=self.repo)
         subprocess.run([sys.executable, GATE, "--allow-branch", "ok"], cwd=self.repo, check=True, capture_output=True)
+        self.assertEqual(self.run_gate("gh pr create"), BLOCKED)  # the mark names the old branch (NFX-71)
+        self.mark("--findings", "0")
         self.assertEqual(self.run_gate("gh pr create"), ALLOWED)
 
 

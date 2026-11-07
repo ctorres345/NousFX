@@ -45,7 +45,7 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from via_capture import check_run_dir, die  # noqa: E402
 
 SKIP = {"build", "node_modules", "Pods"}

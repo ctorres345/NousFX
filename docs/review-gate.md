@@ -20,7 +20,8 @@ python3 -B claude/hooks/review-gate.py check --cwd DIR --command "gh pr create"
 - `--allow-non-repo` is for agy. A folder that is not a repo is then judged by the command alone, so `cd <repo> && gh pr create` is still checked in that repo. It only covers git's own "not a git repository" answer: a missing git, a missing folder and a pushed commit (`--tree`) still block.
 - `--tool` names the parser: `Bash` (default), `PowerShell`, or an MCP tool name holding `create_pull_request`, as the Claude hook passes them.
 - The Claude hook parses its JSON payload and then calls the same `evaluate()` function. Behavior of the hook does not change.
-- Marks stay per worktree, in the git dir, keyed by tree hash. They do not move.
+- Marks stay per worktree, in the git dir, keyed by tree hash and branch name. They do not move.
+- A mark also names the branch it was recorded on, and covers only that branch. After a fast-forward or squash merge, main's tree equals the last marked tree, so without this a new branch with no commits would pass. A branch renamed after the mark needs the review loop again: the gate cannot tell a rename from a new branch cut from merged main, so it offers no re-mark shortcut. `--mark` refuses on a detached HEAD, and a create from a detached HEAD blocks. `attest` applies the same branch rule. The rule is local and by name only: a branch recreated under the marked name still matches, and the CI attestation (`Review-Gate: <tree>`) stays tree-only. An old mark with no branch blocks with a message to re-run the review loop.
 
 ## The check command
 
@@ -89,7 +90,7 @@ agy run_command ──► hooks.json ──► agy_gate.py ──► review-gate
 - The gate script runs from outside the repo: `<home>/.claude/hooks/review-gate.py`, with `pr_create_parser.py` beside it. The sync (`python3 -B scripts/nousfx_sync.py --tools claude`) puts both there from this repo's `claude/hooks/`; by hand, copy both. `<home>` comes from the passwd record, not `$HOME`. A copy inside the repo is code under review, and a branch could edit it to pass.
 - `REVIEW_GATE_DIR` overrides that folder. It is for tests and for my own shell. The hook refuses it, and blocks the push, when the folder is inside any git work tree (or git cannot say), because code in a work tree is code under review.
 - It fails closed. A missing gate script, missing `python3` or any git error blocks the push.
-- It reads the ref list git sends on stdin. Deletes, tag pushes and pushes of the default branch (`main`, `master`, or `origin/HEAD`) pass. Any other branch push is judged on the tree of the pushed commit (`local_sha`), not the checked-out branch. That tree needs a valid review mark, and the pushed branch name must be `cesar/<KEY>`. A sha that is not a commit blocks. It calls `review-gate.py check ... --tree TREE --branch NAME`.
+- It reads the ref list git sends on stdin. Deletes, tag pushes and pushes of the default branch (`main`, `master`, or `origin/HEAD`) pass. Any other branch push is judged on the tree of the pushed commit (`local_sha`), not the checked-out branch. That tree needs a valid review mark recorded on the pushed branch name, and that name must be `cesar/<KEY>`. The mark holds the local branch name, so a push to a remote branch with another name (`git push origin cesar/A:cesar/B`) blocks; push under the same name. A sha that is not a commit blocks. It calls `review-gate.py check ... --tree TREE --branch NAME`.
 - It is advisory. `git push --no-verify` skips it, and nothing on the client can stop that. I never treat it as the only control.
 
 ## CI: the real gate for tools without hooks

@@ -41,7 +41,7 @@ Setting up a new machine, updating after a merge, setting up one project, the sm
 
 ### Install Via (early preview)
 
-Via is a plugin in this repo's marketplace. It is at version 0.4.0: `/via setup` and `/via audit` (web projects only) work so far, and the other modes say they are not built yet.
+Via is a plugin in this repo's marketplace. It is at version 0.4.0: `/via setup`, `/via audit` (web projects only) and `/via spec` work so far, and the other modes say they are not built yet.
 
 ```bash
 claude plugin marketplace add ctorres345/NousFX

@@ -34,6 +34,14 @@ class Attest(Base):
         self.assertEqual(r.returncode, 2)
         self.assertEqual(r.stdout, "")
 
+    def test_attest_refused_on_a_new_branch_with_the_marked_tree(self):
+        self.mark("--findings", "0")  # recorded on cesar/DEM-1
+        self.sh("git", "checkout", "-q", "-b", "cesar/DEM-2")  # zero commits, same tree (NFX-71)
+        r = self.run_gate("attest")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("another branch", r.stderr)
+
     def test_attest_refused_with_open_findings(self):
         self.mark("--findings", "2")
         self.assertEqual(self.run_gate("attest").returncode, 2)

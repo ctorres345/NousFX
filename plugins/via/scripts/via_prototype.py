@@ -39,7 +39,7 @@ import re
 import sys
 from html.parser import HTMLParser
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import via_outbound  # noqa: E402
 import via_run  # noqa: E402
 import via_tokens  # noqa: E402
