@@ -266,6 +266,99 @@ class Build(Base):
         self.assertNotIn("Traceback", r.stderr)
 
 
+class Compare(Base):
+    """`compare` (for /via check): the built screens' theme values against the spec's resolved values."""
+
+    def compare(self, *extra):
+        r = self.cli("compare", self.run_dir, *extra)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return json.loads(r.stdout)
+
+    def test_an_unchanged_theme_matches_the_spec(self):
+        self.ok()
+        out = self.compare()
+        self.assertEqual(out["findings"], [])
+        self.assertEqual((out["compared"], out["literal_rows"]), (2, 1))
+
+    def test_a_changed_token_is_a_finding_against_the_spec_with_both_values(self):
+        self.ok()
+        write(os.path.join(self.project, "styles.css"), CSS.replace("--primary:#0a7b5c", "--primary:#ff0000"))
+        out = self.compare()
+        self.assertEqual(len(out["findings"]), 1, out)
+        f = out["findings"][0]
+        self.assertEqual((f["screen"], f["source"], f["severity"], f["location"]["file"]),
+                         ("home", "spec", "med", "styles.css"))
+        self.assertEqual(f["rule"], "spec-start-button-background")
+        for text in ("--primary", "#ff0000", "#0a7b5c", "#7fe0c0"):
+            self.assertIn(text, f["issue"])
+
+    def test_an_unchanged_dark_only_token_matches_the_spec(self):
+        write(os.path.join(self.project, "styles.css"), CSS.replace("--primary:#7fe0c0", "--primary:#7fe0c0;--glow:#223344"))
+        self.spec["screens"][0]["rows"].append(row(prop="glow", token="--glow"))
+        self.save()
+        self.ok()
+        self.assertEqual(self.compare()["findings"], [])
+
+    def test_a_token_that_is_gone_is_a_finding(self):
+        self.ok()
+        write(os.path.join(self.project, "styles.css"), CSS.replace("--radius-md:12px;", ""))
+        f = self.compare()["findings"]
+        self.assertEqual([x["rule"] for x in f], ["spec-start-button-corner-radius"])
+        self.assertIn("no longer", f[0]["issue"])
+
+    def test_the_findings_are_a_valid_via_run_record(self):
+        self.ok()
+        write(os.path.join(self.project, "styles.css"), CSS.replace("--primary:#0a7b5c", "--primary:#ff0000"))
+        findings = self.compare()["findings"]
+        run = os.path.join(self.project, ".via", "runs", "20260102T000000")
+        write(os.path.join(run, "findings.json"), json.dumps(
+            {"version": 1, "mode": "check", "scope": ["home"], "platforms": ["web"], "findings": findings}))
+        r = subprocess.run([th.python(self.home), "-I", "-B", os.path.join(HERE, "via_run.py"), "merge", run,
+                            "--project", self.project], capture_output=True, text=True,
+                           env={"PATH": os.environ["PATH"], **th.env(self.home)})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_compare_needs_a_built_spec(self):
+        r = self.cli("compare", self.run_dir)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("build", r.stderr)
+
+    def native(self):
+        os.remove(os.path.join(self.project, "styles.css"))
+        self.spec["platform"] = "compose"
+        self.spec["theme"] = {"--primary": {"light": "#3f51b5", "dark": "#9fa8da"}, "--radius-md": {"light": "12px", "dark": "12px"}}
+        self.save()
+        self.ok()
+
+    def theme_file(self, theme, source="app/src/main/java/app/ui/theme/Color.kt"):
+        path = os.path.join(self.home, "theme-now.json")
+        write(path, json.dumps({"source": source, "theme": theme}))
+        return path
+
+    def test_on_native_compare_reads_the_current_theme_from_a_file(self):
+        self.native()
+        path = self.theme_file({"--primary": {"light": "#3f51b5", "dark": "#000000"}, "--radius-md": {"light": "12px", "dark": "12px"}})
+        f = self.compare("--theme", path)["findings"]
+        self.assertEqual([x["rule"] for x in f], ["spec-start-button-background"])
+        self.assertEqual(f[0]["location"]["file"], "app/src/main/java/app/ui/theme/Color.kt")
+
+    def test_native_needs_a_theme_file_and_web_refuses_one(self):
+        self.native()
+        r = self.cli("compare", self.run_dir)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--theme", r.stderr)
+        bad = self.theme_file({"--primary": {"light": "red;}x{", "dark": "#fff"}})
+        self.assertEqual(self.cli("compare", self.run_dir, "--theme", bad).returncode, 1)
+        outside = self.theme_file({"--primary": {"light": "#fff", "dark": "#fff"}}, source="../elsewhere/Color.kt")
+        self.assertEqual(self.cli("compare", self.run_dir, "--theme", outside).returncode, 1)
+
+    def test_web_refuses_a_theme_file(self):
+        self.ok()
+        r = self.cli("compare", self.run_dir, "--theme", self.theme_file({"--primary": {"light": "#fff", "dark": "#fff"}}))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("web", r.stderr)
+
+
 class Refusals(Base):
     def refused(self, mutate, code=1, text=None):
         spec = json.loads(json.dumps(self.spec))

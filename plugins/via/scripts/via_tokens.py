@@ -122,9 +122,11 @@ def css_files(project):
     return found[:MAX_FILES]
 
 
-def read_tokens(project):
+def read_tokens(project, owner=None):
+    """`owner`, when given a dict, is filled with each token name's relative CSS files, in the order read:
+    the last one is the declaration that wins."""
     raw = {"light": {}, "dark": {}}
-    owner = {}
+    owner = {} if owner is None else owner
     for path in css_files(project):
         try:
             if os.path.getsize(path) > MAX_BYTES:
@@ -136,7 +138,10 @@ def read_tokens(project):
         rel = os.path.relpath(path, project).replace(os.sep, "/")
         for mode, name, value in declarations(css):
             raw[mode][name] = value
-            owner.setdefault(name, set()).add(rel)
+            files = owner.setdefault(name, [])
+            if rel in files:
+                files.remove(rel)
+            files.append(rel)
     result = {g: {} for g in GROUPS}
     sources = set()
     # CSS inherits a light-only declaration into dark, so its var() refs resolve against the dark values.
@@ -148,7 +153,7 @@ def read_tokens(project):
         if group is None:
             continue
         result[group][name] = {"light": light, "dark": dark}
-        sources |= owner[name]
+        sources.update(owner[name])
     result["sources"] = sorted(sources)
     return result
 

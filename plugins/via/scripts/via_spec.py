@@ -3,6 +3,7 @@
 
 Usage: via_spec.py build RUN_DIR [--project DIR] [--config FILE]
        via_spec.py link  RUN_DIR --url URL [--project DIR] [--config FILE]
+       via_spec.py compare RUN_DIR [--theme FILE] [--project DIR]
 
 Claude reads the ticket and the theme tokens and writes RUN_DIR/spec.json. `build` checks it, resolves each token
 row to the project's light and dark values (via_tokens.py), and writes:
@@ -14,6 +15,10 @@ It also writes the resolved values back into spec.json (`light`, `dark` per row,
 `outputs`), so /via check can compare a built screen against what was specified. A rebuild recomputes them and drops
 `target`. `link` records the published mock (`target: {url, published}`) and rewrites ticket-update.md with the link;
 it refuses when spec.json changed since the build (`built_hash`).
+`compare` (for /via check) reads the theme as it is now (web: the project's CSS; Compose and Flutter: --theme, a JSON
+file {"source": "<theme file>", "theme": {...}} shaped like spec.json theme) and prints, as run-record findings with
+source "spec", every token row whose light or dark value no longer matches the built spec. Literal rows are counted,
+not compared.
 
 spec.json:
   {"version": 1, "mode": "spec",
@@ -66,6 +71,15 @@ PAGE_CSS = ".vs-scroll{overflow-x:auto}.vs-scroll table{min-width:520px}.vp-spec
 Problem = proto.Problem  # invalid input; nothing is written
 
 
+def check_theme(theme):
+    if not isinstance(theme, dict) or not 1 <= len(theme) <= MAX_THEME:
+        raise Problem("theme must map 1 to %d token names to their light and dark values." % MAX_THEME)
+    for name, v in theme.items():
+        if not proto.SAFE_NAME.fullmatch(name) or not isinstance(v, dict) or set(v) != {"light", "dark"} or not all(
+                proto.text(x, 80) and proto.safe_value(x) for x in v.values()):
+            raise Problem("theme.%s needs a --name and plain CSS light and dark values (80 characters)." % name)
+
+
 def check_spec(spec, project):
     """Raises Problem when spec.json is not the shape below. See the module docstring."""
     if not isinstance(spec, dict) or spec.get("version") != 1 or spec.get("mode") != "spec":
@@ -92,13 +106,7 @@ def check_spec(spec, project):
     if theme is not None:
         if spec["platform"] not in NATIVE:
             raise Problem("theme is only for %s; on web the tokens come from the project's CSS." % " and ".join(sorted(NATIVE)))
-        if not isinstance(theme, dict) or not 1 <= len(theme) <= MAX_THEME:
-            raise Problem("theme must map 1 to %d token names to their light and dark values." % MAX_THEME)
-        for name, v in theme.items():
-            if not proto.SAFE_NAME.fullmatch(name) or not isinstance(v, dict) or set(v) != {"light", "dark"} or not all(
-                    proto.text(x, 80) and proto.SAFE_VALUE.fullmatch(x) and proto.balanced(x) and "url(" not in x.lower()
-                    for x in v.values()):
-                raise Problem("theme.%s needs a --name and plain CSS light and dark values (80 characters)." % name)
+        check_theme(theme)
     if not proto.text(spec.get("direction"), 2000):
         raise Problem("direction needs the direction note (up to 2000 characters).")
     screens = spec.get("screens")
@@ -365,22 +373,97 @@ def cmd_link(project, args):
     via_run.emit({"url": url, "published": True})
 
 
+def load_theme_file(project, path):
+    """The app's theme as it is now, on Compose or Flutter: {"source": "<theme file>", "theme": {...}}, written by
+    Claude from Color.kt or ColorScheme in the same shape as spec.json theme. `source` is where findings point."""
+    data = proto.read_json(path, "the --theme file", "--theme must name a JSON file (not a symlink).")
+    source = data.get("source") if isinstance(data, dict) and set(data) == {"source", "theme"} else None
+    if not (proto.text(source, 500) and not os.path.isabs(source) and via_run.inside(os.path.join(project, source), project)):
+        raise Problem("the --theme file needs source (the theme file, relative to the project and inside it) and theme.")
+    check_theme(data["theme"])
+    return source, data["theme"]
+
+
+def same(a, b):
+    """Equal CSS values, ignoring case and spacing. A side that is unset (a dark-only token's light) matches unset."""
+    if a is None or b is None:
+        return a is b
+    return " ".join(a.split()).lower() == " ".join(b.split()).lower()
+
+
+def pair(light, dark):
+    return "%s light, %s dark" % (light or "unset", dark or "unset")
+
+
+def deviation(screen, r, name, now, where):
+    want = pair(r["light"], r["dark"])
+    if now == (None, None):
+        issue = "%s %s: the spec says %s = %s, but the theme no longer defines %s." % (r["element"], r["property"], name, want, name)
+    else:
+        issue = "%s %s: the spec says %s = %s; the theme now has %s." % (
+            r["element"], r["property"], name, want, pair(*now))
+    rule = ("spec-%s-%s" % (via_run.slug(r["element"]), via_run.slug(r["property"])))[:80].rstrip("-")
+    return {"screen": screen, "rule": rule, "severity": "med", "issue": issue, "source": "spec",
+            "fix": "Set %s back to %s, or run /via spec again if the change is intended." % (name, want),
+            "location": {"file": where, "line": None}}
+
+
+def cmd_compare(project, args):
+    """Each token row of a built spec against the theme as it is now. Literal rows (sizes the build must hit) are
+    counted, not compared: Claude checks them on the screenshots."""
+    run_dir, spec_path = resolve_run(project, args.run_dir)
+    spec = load_spec(spec_path, project)
+    if not spec.get("built_at"):
+        raise Problem("this spec was not built yet. Run `build` first.")
+    if spec.get("built_hash") != input_hash(spec):
+        raise Problem("spec.json changed since the last build. Run `build` again, then compare.")
+    owner = {}
+    if spec["platform"] in NATIVE:
+        if not args.theme:
+            raise Problem("a %s spec needs --theme: the app's current theme values as JSON (see load_theme_file)." % spec["platform"])
+        source, theme = load_theme_file(project, args.theme)
+        tokens = theme_tokens(project, {"platform": spec["platform"], "theme": theme})
+    else:
+        if args.theme:
+            raise Problem("--theme is for Compose and Flutter; on web the tokens come from the project's CSS.")
+        tokens = proto.safe_tokens(via_tokens.read_tokens(project, owner))  # the same filter build used
+        source = None
+    fallback = os.path.relpath(spec_path, project).replace(os.sep, "/")
+    findings, compared, literal = [], 0, 0
+    for s in spec["screens"]:
+        for r in s["rows"]:
+            if "token" not in r:
+                literal += 1
+                continue
+            if r.get("light") is None and r.get("dark") is None:
+                continue  # the token was missing when the spec was built: build warned, nothing to compare
+            compared += 1
+            now = lookup(tokens, r["token"])
+            if not (same(now[0], r["light"]) and same(now[1], r["dark"])):
+                # the CSS file whose declaration wins (the last one read), else the spec itself
+                where = source or owner.get(r["token"], [fallback])[-1]
+                findings.append(deviation(s["screen"], r, r["token"], now, where))
+    via_run.emit({"spec_run": run_dir, "compared": compared, "literal_rows": literal, "findings": findings})
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="command", required=True)
-    for name in ("build", "link"):
+    for name in ("build", "link", "compare"):
         p = sub.add_parser(name)
         p.add_argument("run_dir")
         p.add_argument("--project")
         p.add_argument("--config")
         if name == "link":
             p.add_argument("--url", required=True)
+        if name == "compare":
+            p.add_argument("--theme")
     args = ap.parse_args(argv)
     project = os.path.abspath(args.project or os.getcwd())
     if not os.path.isdir(project):
         via_run.die("%s is not a folder." % project)
     try:
-        {"build": cmd_build, "link": cmd_link}[args.command](project, args)
+        {"build": cmd_build, "link": cmd_link, "compare": cmd_compare}[args.command](project, args)
     except Problem as e:
         via_run.die("%s Nothing was written." % e)
     return 0
