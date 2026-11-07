@@ -66,7 +66,7 @@ Print, in this order:
 3. `Target mock:` the link when published, else the local path and why.
 4. `Warnings:` each warning you did not fix, and why.
 5. `Ticket:` updated (where) or not (why).
-6. The run folder path. `spec.json` keeps the values in a stable shape for `/via check` (NFX-17) to compare the built screens against once it is built.
+6. The run folder path. `/via check` compares the built screens against `spec.json` and `target.html`.
 
 If the target needs an architecture-level change (a new component, a navigation or layout restructure), say so in one line and offer the Fable `architect`. Wait for a clear yes. Never run it on your own.
 

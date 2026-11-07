@@ -5,6 +5,8 @@ name: review-gate
 # The gate script is taken from the BASE branch, never from the PR, so a PR cannot edit it to pass.
 # After the attestation, the project's check command (.nousfx/project.toml on the BASE branch) runs on the
 # PR head, so a failing test fails this job even when the PR body holds a valid line.
+# Before that check, the base branch's tier.py recomputes the review tier on the diff, and the job fails when
+# the body's Review-Tier line is lower (NFX-70).
 # Marking this check "required" in the repo settings is a manual step.
 on:
   pull_request:
@@ -25,6 +27,7 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
         run: |
           set -eu
           gate_dir="$RUNNER_TEMP/gate"
@@ -54,6 +57,33 @@ jobs:
           case "$out" in
             *"Review attestation found for tree $tree."*) ;;
             *) echo "::error::The base gate did not confirm the attestation."; exit 1 ;;
+          esac
+          # The tier check (NFX-70) runs before the slow check command, with the same base copies plus tier.py.
+          if ! git show "origin/$BASE_REF:claude/skills/review-loop/scripts/tier.py" > "$gate_dir/tier.py" 2>/dev/null \
+             || ! grep -q 'sys.argv\[1:2\] == \["verify-tier"\]' "$gate_dir/review-gate.py"; then
+            echo "::error::The base branch '$BASE_REF' has no tier.py, or its gate cannot check the review tier (no verify-tier). The PR that introduces them cannot be verified; merge it by hand as the repo owner."
+            exit 1
+          fi
+          base=$(git merge-base "origin/$BASE_REF" HEAD) || { echo "::error::No merge base between origin/$BASE_REF and the PR head."; exit 1; }
+          # The diff only, no labels: labels live in Jira, which CI does not read.
+          python3 -B "$gate_dir/tier.py" --base "$base" --cwd "$GITHUB_WORKSPACE" </dev/null > "$RUNNER_TEMP/tier.json" || {
+            echo "::error::tier.py from '$BASE_REF' failed on this PR's diff."
+            exit 1
+          }
+          cat "$RUNNER_TEMP/tier.json"
+          if ! grep -q -- '--author-association' "$gate_dir/review-gate.py"; then
+            echo "::warning::The gate on '$BASE_REF' predates NFX-95: it honors a Review-Tier override from any PR author."
+          fi
+          tier_out=$(python3 -B "$gate_dir/review-gate.py" verify-tier --tier-json "$RUNNER_TEMP/tier.json" \
+                       --text-file "$RUNNER_TEMP/pr-body.txt" --author-association "$AUTHOR_ASSOCIATION" </dev/null 2>&1) || {
+            printf '%s\n' "$tier_out"
+            echo "::error::The review tier check failed (message above): a Review-Tier line below the computed tier, one it cannot read, or a diff tier.py could not measure (re-run the job)."
+            exit 1
+          }
+          printf '%s\n' "$tier_out"
+          case "$tier_out" in
+            *"Review tier checked."*) ;;
+            *) echo "::error::The base gate did not confirm the tier check."; exit 1 ;;
           esac
           # A skip attestation waives the review, never the tests: the check always runs.
           check_out=$(python3 -B "$gate_dir/review-gate.py" run-check --ref "origin/$BASE_REF" </dev/null) || {

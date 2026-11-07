@@ -4,10 +4,10 @@ The agent (Claude Code or agy) makes the design calls. `scripts/via_run.py` (std
 
 ## Order of a run
 1. `python3 "<plugin>/scripts/via_run.py" init` makes `.via/runs/<stamp>/` and adds `.via/` to the project's `.gitignore` first. It prints `run_dir`.
-2. Put screenshots and the prototype in `run_dir`. On web, `via_capture.py` prints the `screenshots` entries for the record; on Compose and Flutter, `via_capture_native.py` prints `screenshots`, `coverage` and sometimes `warnings` (see `platforms.md`). Write `run_dir/findings.json` (never write `id`, `status` or `merged_at`).
+2. Put screenshots and the prototype in `run_dir`. On web, `via_capture.py` prints the `screenshots` entries for the record; on Compose and Flutter, `via_capture_native.py` prints `screenshots`, `coverage` and sometimes `warnings` (see `platforms.md`). Write `run_dir/findings.json` (never write `id`, `status`, `held` or `merged_at`).
 3. `via_run.py merge <run_dir>` validates the record, gives each finding its ID, updates the ledger in `docs/design/via.md`, and writes the IDs and statuses back into `findings.json`. It prints counts of new, open, fixed, rejected and regressed.
    After `merge`, `via_prototype.py build <run_dir>` makes `prototype.html` and adds `prototype` links to the record (see `prototype.md`). Run `merge` once more so the ledger gets the anchors.
-4. Routes: after one batch approval, set `route` and `route_reason` on each finding and run `via_run.py route <run_dir>` (see `routes.md`). It rejects, files tickets (Jira when connected and allowed, else markdown) and lists the fix-now IDs. A single rejection outside a batch: `via_run.py reject <id> --reason "<why>"`. A rejected finding never returns as new.
+4. Routes: after one batch approval, set `route` and `route_reason` on each finding and run `via_run.py route <run_dir>` (see `routes.md`). It rejects, files tickets (Jira when connected and allowed, else markdown) and lists the fix-now IDs. A single rejection outside a batch: `via_run.py reject <id> --reason "<why>"`. A rejected finding never returns as new. With `VIA_UNATTENDED=1`, `route` changes nothing and prints `pending`, and `reject` and `filed` refuse.
 5. After the code is final: `via_run.py pass <run_dir>`. It records the pass for the current code state in the git dir (`via-check-ok`). Editing code afterwards makes the record stale.
 
 ## Screenshots and what may leave the run folder

@@ -298,6 +298,11 @@ def balanced(value):
     return depth == 0
 
 
+def safe_value(x):
+    """A CSS value that can go into a <style> block as it is."""
+    return bool(SAFE_VALUE.fullmatch(x)) and balanced(x) and "url(" not in x.lower()
+
+
 def safe_tokens(tokens):
     """Tokens whose name and values can go into a <style> block as they are."""
     keep = {}
@@ -305,7 +310,7 @@ def safe_tokens(tokens):
         keep[group] = {}
         for name, v in tokens[group].items():
             vals = [x for x in (v["light"], v["dark"]) if x is not None]
-            if SAFE_NAME.fullmatch(name) and all(SAFE_VALUE.fullmatch(x) and balanced(x) and "url(" not in x.lower() for x in vals):
+            if SAFE_NAME.fullmatch(name) and all(safe_value(x) for x in vals):
                 keep[group][name] = v
     return keep
 
@@ -465,22 +470,27 @@ def render(run_name, blocks, tokens):
 
 # --- commands ---
 
-def load_prototype_json(run_dir):
-    path = os.path.join(run_dir, PROTO_FILE)
+def read_json(path, label, missing):
+    """A small JSON file with no secret-shaped value. `missing` is the message when the file is absent or a symlink."""
     if os.path.islink(path) or not os.path.isfile(path):
-        raise Problem("%s has no %s (or it is a symlink)." % (os.path.basename(run_dir), PROTO_FILE))
+        raise Problem(missing)
     if os.path.getsize(path) > MAX_JSON:
-        raise Problem("%s is over %d bytes." % (PROTO_FILE, MAX_JSON))
+        raise Problem("%s is over %d bytes." % (label, MAX_JSON))
     raw = via_run.read_text(path)
     if via_run.has_secret(raw):
-        via_run.die("%s holds a secret-shaped value. Remove it; nothing was written." % PROTO_FILE, 2)
+        via_run.die("%s holds a secret-shaped value. Remove it; nothing was written." % label, 2)
     try:
         data = json.loads(raw)
     except ValueError:
-        raise Problem("%s is not valid JSON." % PROTO_FILE)
+        raise Problem("%s is not valid JSON." % label)
     if via_run.has_secret(json.dumps(data, ensure_ascii=False)):
-        via_run.die("%s holds a secret-shaped value. Remove it; nothing was written." % PROTO_FILE, 2)
+        via_run.die("%s holds a secret-shaped value. Remove it; nothing was written." % label, 2)
     return data
+
+
+def load_prototype_json(run_dir):
+    return read_json(os.path.join(run_dir, PROTO_FILE), PROTO_FILE,
+                     "%s has no %s (or it is a symlink)." % (os.path.basename(run_dir), PROTO_FILE))
 
 
 def publish_decision(project, config):
