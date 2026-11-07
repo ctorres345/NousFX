@@ -1,6 +1,6 @@
 # Run record and `via_run.py`
 
-Claude makes the design calls. `scripts/via_run.py` (stdlib Python) does the bookkeeping. The run record format is in `assets/findings.schema.json`.
+The agent (Claude Code or agy) makes the design calls. `scripts/via_run.py` (stdlib Python) does the bookkeeping. The run record format is in `assets/findings.schema.json`.
 
 ## Order of a run
 1. `python3 "<plugin>/scripts/via_run.py" init` makes `.via/runs/<stamp>/` and adds `.via/` to the project's `.gitignore` first. It prints `run_dir`.

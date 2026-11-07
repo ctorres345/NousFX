@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)  # run under `python3 -I`, which adds no script folder to sys.path
 import via_home  # noqa: E402
 
@@ -41,7 +41,7 @@ WANTED_SKILLS = {
 }
 
 FIX = {
-    "gemini": ("The Argon second opinion needs the gemini-api CLI and a key in the OS keychain. Without it Via falls back to a Claude reviewer.",
+    "gemini": ("The Argon second opinion needs the gemini-api CLI and a key in the OS keychain. Without it Via falls back to a fresh-context reviewer.",
                "https://ai.google.dev/gemini-api/docs/api-key"),
     "atlassian": ("Files findings as Jira tickets with inline screenshots. Without it Via writes markdown tickets.",
                   "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/"),

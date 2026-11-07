@@ -2,7 +2,7 @@
 """Tests for via_second_opinion.py. Run: python3 -B plugins/via/scripts/test_via_second_opinion.py
 
 The wrapper's contract: exit 0 means Argon ran and its answer is on stdout, exit 10 means "fall back to a
-fresh-context Claude reviewer", exit 1 means the input was invalid and nothing was sent.
+fresh-context reviewer", exit 1 means the input was invalid and nothing was sent.
 Each test runs the script as a subprocess on a throwaway git project, with a throwaway HOME, a config
 file and a stub `gemini-api`. PATH holds only the system folders, so a real gemini-api is never found.
 """

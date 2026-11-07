@@ -32,12 +32,12 @@ import re
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import via_home  # noqa: E402
 
 DESTINATIONS = ("gemini", "jira", "figma", "artifacts", "obsidian")
 LOCAL_ONLY = {
-    "gemini": "use the fresh-context Claude reviewer",
+    "gemini": "use the fresh-context reviewer",
     "jira": "write local markdown tickets in docs/design/tickets/",
     "figma": "skip the export; the prototype stays a local HTML file",
     "artifacts": "save the prototype as a local HTML file in the run folder",
