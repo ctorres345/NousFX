@@ -195,6 +195,28 @@ class Build(Base):
         self.assertNotIn(base64.b64encode(PNG + b"DESKTOP").decode(), self.page())
         self.assertIn(base64.b64encode(PNG).decode(), self.page())
 
+    def test_the_default_state_shot_is_the_before_image_not_a_font_or_empty_one(self):
+        for name, extra in (("home-light-phone-font.png", {"font_scale": "largest"}),
+                            ("home-empty-light-phone.png", {"state": "empty"}),
+                            ("home-light-phone-rtl.png", {"direction": "rtl"})):
+            write(os.path.join(self.run_dir, name), PNG + name.encode(), "wb")
+            self.record["screenshots"].insert(0, {"path": name, "screen": "home", "theme": "light", "size": "phone",
+                                                  "redacted": False, "review": "kept", **extra})
+        self.save_record()
+        self.build()
+        page = self.page()
+        self.assertIn(base64.b64encode(PNG).decode(), page)
+        for name in ("home-light-phone-font.png", "home-empty-light-phone.png", "home-light-phone-rtl.png"):
+            self.assertNotIn(base64.b64encode(PNG + name.encode()).decode(), page)
+
+    def test_a_phone_shot_still_beats_a_large_default_one(self):
+        write(os.path.join(self.run_dir, "home-large.png"), PNG + b"LARGE", "wb")
+        self.record["screenshots"].insert(0, {"path": "home-large.png", "screen": "home", "theme": "light", "size": "large",
+                                              "state": "default", "redacted": False, "review": "kept"})
+        self.save_record()
+        self.build()
+        self.assertNotIn(base64.b64encode(PNG + b"LARGE").decode(), self.page())
+
     def test_a_single_theme_shot_says_so(self):
         self.build()
         self.assertIn("Captured in the light theme only", self.page())

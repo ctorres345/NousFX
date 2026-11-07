@@ -40,7 +40,28 @@
           "theme": { "type": "string", "minLength": 1 },
           "size": { "type": "string", "minLength": 1 },
           "redacted": { "type": "boolean", "description": "True when capture masked personal data in this shot." },
-          "review": { "enum": ["kept", "dropped"], "description": "Claude's verdict after looking at the shot. Only kept shots may leave the run folder (via_run.py outbound-shots)." }
+          "review": { "enum": ["kept", "dropped"], "description": "Claude's verdict after looking at the shot. Only kept shots may leave the run folder (via_run.py outbound-shots)." },
+          "platform": { "type": "string", "minLength": 1, "description": "Set by native capture: flutter or compose." },
+          "state": { "enum": ["default", "empty", "loading", "error", "offline", "long"], "description": "Set by native capture, from the preview's name." },
+          "font_scale": { "enum": ["default", "largest"] },
+          "direction": { "enum": ["ltr", "rtl"] },
+          "source": { "enum": ["preview", "device"], "description": "Native capture only: an app preview, or the screen on a running device or emulator (the fallback)." }
+        }
+      }
+    },
+    "coverage": {
+      "description": "Set from native capture: what it shot and, for what it did not, why. Say the gaps in the summary.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["platform", "screen", "entry", "kind", "captured"],
+        "properties": {
+          "platform": { "type": "string", "minLength": 1 },
+          "screen": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["state", "matrix", "preview", "note"], "description": "What entry names: a state (state:<name>), a matrix shot (phone-light, large-dark, font-largest, rtl), a skipped preview (preview:<function>) or a free note." },
+          "entry": { "type": "string", "minLength": 1 },
+          "captured": { "type": "boolean" },
+          "reason": { "type": "string" }
         }
       }
     },

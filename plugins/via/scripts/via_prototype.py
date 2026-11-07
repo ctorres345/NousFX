@@ -266,7 +266,12 @@ def before_images(rec, run_dir, finding, budget):
     want = via_run.slug(finding["screen"])
     found = {}
     kept = [s for s in rec.get("screenshots", []) if s.get("review") == "kept" and via_run.slug(s["screen"]) == want]
-    for shot in sorted(kept, key=lambda s: 0 if "phone" in s["size"].lower() or s["size"].startswith("390") else 1):  # the frame is a phone
+    def plainness(s):
+        """A phone first (the frame is a phone), then default state, default font and left to right."""
+        phone = "phone" in s["size"].lower() or s["size"].startswith("390")
+        return (not phone, s.get("state", "default") != "default", s.get("font_scale", "default") != "default",
+                s.get("direction", "ltr") != "ltr")
+    for shot in sorted(kept, key=plainness):
         found.setdefault(shot["theme"].lower(), shot)
     if not found:
         raise Problem("%s has no kept screenshot for its screen \"%s\". Capture it and set review to kept."

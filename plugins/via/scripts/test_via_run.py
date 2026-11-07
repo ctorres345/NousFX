@@ -619,6 +619,44 @@ class ViaRunTest(unittest.TestCase):
                                            self.shot("c.png")]))
         self.rejected(record([], screenshots=[self.shot(review="maybe")]), "review")
 
+    # --- NFX-10: native capture fields and the coverage block ---
+
+    def test_native_shot_fields_and_coverage_are_kept_in_the_record(self):
+        native = self.shot(review="kept", platform="compose", state="empty", font_scale="largest", direction="rtl",
+                           source="device", redacted=False)
+        coverage = [{"platform": "compose", "screen": "home", "entry": "state:error", "kind": "state", "captured": False,
+                     "reason": "no preview for this state"},
+                    {"platform": "compose", "screen": "home", "entry": "phone-light", "kind": "matrix", "captured": True}]
+        _, _, merged = self.merge(record([], screenshots=[native], coverage=coverage))
+        self.assertEqual(merged["screenshots"][0]["state"], "empty")
+        self.assertEqual(merged["coverage"], coverage)
+
+    def test_bad_native_shot_fields_are_refused(self):
+        for field, bad in (("state", "sad"), ("font_scale", "huge"), ("direction", "up"), ("source", "magic"),
+                           ("platform", ""), ("platform", 3)):
+            with self.subTest(field=field, bad=bad):
+                self.rejected(record([], screenshots=[self.shot(**{field: bad})]), "screenshots[0]." + field)
+
+    def test_a_list_or_object_where_a_word_belongs_is_refused_not_a_crash(self):
+        for field in ("state", "font_scale", "direction", "source"):
+            for bad in (["x"], {"a": 1}):
+                with self.subTest(field=field, bad=bad):
+                    self.rejected(record([], screenshots=[self.shot(**{field: bad})]), "screenshots[0]." + field)
+        self.rejected(record([], coverage=[{"platform": "a", "screen": "b", "entry": "c", "kind": ["note"],
+                                            "captured": True}]), "coverage[0]")
+
+    def test_a_null_coverage_reason_is_refused_like_the_schema_says(self):
+        self.rejected(record([], coverage=[{"platform": "a", "screen": "b", "entry": "c", "kind": "note",
+                                            "captured": False, "reason": None}]), "coverage[0].reason")
+
+    def test_a_malformed_coverage_block_is_refused(self):
+        good = {"platform": "flutter", "screen": "home", "entry": "rtl", "kind": "matrix", "captured": False,
+                "reason": "not localized"}
+        for bad in ("nope", [3], [{**good, "captured": "no"}], [{**good, "entry": ""}], [{**good, "kind": "vibes"}], [{k: v for k, v in good.items() if k != "kind"}], [{**good, "reason": 5}],
+                    [{k: v for k, v in good.items() if k != "screen"}]):
+            with self.subTest(bad=bad):
+                self.rejected(record([], coverage=bad), "coverage")
+
     def test_token_cost_takes_a_number_or_a_well_formed_second_opinion_object(self):
         self.merge(record([], token_cost=1234))
         self.merge(record([], token_cost={"second_opinion": {"who": "argon", "input_tokens": 900,
