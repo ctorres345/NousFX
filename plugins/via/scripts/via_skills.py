@@ -57,7 +57,7 @@ import tempfile
 import time
 import unicodedata
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` adds no script folder to sys.path
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # `python3 -I` adds no script folder to sys.path
 import via_home  # noqa: E402
 
 MAX_FILES = 2000
@@ -562,7 +562,7 @@ def cmd_update(a, lock):
 
 
 def parser():
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(os.path.realpath(__file__))
     home = via_home.home_dir()
     ap = argparse.ArgumentParser(prog="via_skills", description=__doc__.split("\n")[0])
     ap.add_argument("--lock", default=os.path.join(os.path.dirname(here), "skills.lock.json"))

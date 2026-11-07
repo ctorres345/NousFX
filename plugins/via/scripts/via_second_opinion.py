@@ -12,7 +12,7 @@ Argon (Gemini) runs only when all of these hold. Otherwise the answer is a fallb
 The exit code is the contract:
   0   Argon ran. Stdout is {"status": "ran", "who": "argon", "text": ..., "usage": {"input_tokens": n|null,
       "output_tokens": n|null}}. Copy usage into the run record's token_cost.second_opinion.
-  10  fall back: start a fresh-context Claude reviewer that sees only the screenshots and the brief.
+  10  fall back: start a fresh-context reviewer that sees only the screenshots and the brief.
       Stdout is {"status": "fallback", "reason": ..., "shots": [absolute paths]}. Say the reason in the summary line.
   1   the input is invalid or the config is malformed. Nothing was sent.
 
@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.realpath(__file__))
 MAX_SHOTS = 8  # same cap as capture.max_second_opinion_shots in the personal config
 MAX_SHOT_BYTES = 12000000
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
@@ -178,11 +178,11 @@ def main():
 
     cli = find_gemini()
     if not cli or answer["gemini_integration"] != "present":
-        return fallback("no Gemini key (run /via setup to see how to add one), so use the fresh-context Claude reviewer.",
+        return fallback("no Gemini key (run /via setup to see how to add one), so use the fresh-context reviewer.",
                         absolute)
     reply, why = run_argon(cli, absolute, brief)
     if reply is None:
-        return fallback("%s, so use the fresh-context Claude reviewer." % why, absolute)
+        return fallback("%s, so use the fresh-context reviewer." % why, absolute)
     print(json.dumps(reply))
     return 0
 

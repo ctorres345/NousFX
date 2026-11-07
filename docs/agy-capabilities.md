@@ -125,3 +125,21 @@ I asked `agy -p` in a temp git repo to delegate "find the line of `needle` in no
 - **ran:** agy delegated to the subagent, which read the file and reported back. agy answered with the right line (2) and, when asked, said it used the subagent (conversation ID shown). A plugin can therefore carry real subagents as `agents/<name>.md`.
 - **Not tested:** how a model is chosen per subagent. My orchestrator rules name the model in the call (`Model='flash_lite'`); I did not find a `model` key in the agent file. A role-to-model mapping for agy needs that answer first.
 - **Decision (2026-11-05):** sync writes no agy agent files. agy keeps the inline fallback in its rules, and my `gemini-orchestrator` plugin stays the owner of agy delegation and model choice. Mapping roles for agy, and the fresh-CLI reviewer for tools with no subagents at all (OpenCode), move to NFX-50.
+
+## Via in agy (NFX-59, 2026-11-07)
+
+agy 1.5.1 loads Via through the sync link `~/.gemini/config/plugins/nousfx/skills/via` -> `~/.agents/skills/via` -> `plugins/via/skills/via`. `/via <mode>` at the start of a message expands the skill. What broke, and the fix:
+
+| Gap | Seen in agy | Fix |
+|---|---|---|
+| `$ARGUMENTS` | **ran**: reaches the model as the literal text `$ARGUMENTS` | `SKILL.md`: the arguments are then the words after `/via` |
+| `${CLAUDE_PLUGIN_ROOT}` | not set; agy gives the skill folder as the link path | `SKILL.md`: resolve it once from `~/.agents/skills/via/../..` with `realpath` |
+| Commands that name the skill's agy path | **ran**: the review gate denies any command naming `plugins/nousfx` (`harness/agy/agy_gate.py`, `PLUGIN_FOLDER`) | resolve from `~/.agents/skills/via`, never from the agy plugin folder |
+| `<link>/../../scripts/x.py` | the scripts found their imports with `abspath`, which drops `..` before the link is followed: `ModuleNotFoundError` | scripts use `realpath(__file__)` |
+| Tool names | agy has `read_file` (and `view_file`), `run_command`, `invoke_subagent`; no Agent tool, no Artifacts | `SKILL.md` names the agy tools; the prototype step keeps the local file |
+| `via:second-opinion` agent | not installed in agy (sync writes no agy agents, NFX-43) | `references/second-opinion.md`: `invoke_subagent` under the gemini-orchestrator rules, `source` `second-opinion:agy`; inline as a last resort, `second-opinion:inline`. Limit: those subagents keep a shell (agy cannot limit a subagent's tools), so the agent text forbids commands and the main agent discards a reply that is not just the JSON array |
+| Outbound allow-list | same scripts, same `~/.config/nousfx/via.json`, nothing Claude-specific | `test_via_agy.py` runs them through the agy link with no `CLAUDE_*` variables |
+
+Rules for later modes (`spec`, `check`, `export`): write commands with `${CLAUDE_PLUGIN_ROOT}` as today, since `SKILL.md` covers agy for every mode. When a step needs a Claude-only tool, add one sentence saying what agy does instead. Keep every outbound step behind `via_outbound.py`.
+
+Manual run (**ran**, 2026-11-07): `agy -p "/via audit samples/web"` in this repo, agy 1.5.1, headless with a session-only allow-list (`--settings`). The agy skill link and `~/.agents/skills/via` pointed at the branch (a temp `HOME` whose `.gemini`, `.config`, `.local` and `Library` link to the real ones, so Claude's links were never touched). Result: run folder `.via/runs/20261107T055940Z` with four shots, `findings.json`, the ledger and a local `prototype.html`. Two findings kept (`ui-ux-pro-max`: subtitle contrast, 28 px button). `via_second_opinion.py` exited 10 (no Gemini key), agy started the `research` subagent with only the agent text, the brief and the four kept shots, and its two items were verified and dismissed (`second-opinion:agy`). Artifacts were refused by the allow-list, so the prototype stayed local. Headless agy cannot answer permission prompts: without allow rules for `python3`, the read-only commands it likes (`grep`, `sed`, `find`) and `write_file` on `.via/`, the run stops with a denied action.
