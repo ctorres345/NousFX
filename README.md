@@ -55,6 +55,14 @@ Then run `/reload-plugins` and `/via setup`. It checks which integrations you ha
 
 For a web project, `/via audit` (or `/via audit <screen>`) takes light and dark screenshots at phone and desktop width with headless Chrome or Chromium, runs the web design skills, gets a second opinion and saves a findings report in `.via/runs/`, which git ignores.
 
+To check a change to Via, run its eval set:
+
+```bash
+python3 -B plugins/via/scripts/via_eval.py
+```
+
+[`plugins/via/evals/cases.json`](plugins/via/evals/cases.json) lists each case as a sample prompt and the behavior I expect: routing (fix now, ticket or reject), the fresh-context fallback when Gemini is missing, unattended runs that change nothing, and Via never committing. The runner checks each one on a throwaway git repo, with no model calls and nothing sent out, and prints `ok` or `FAIL` per case. `--only <id>` runs one case and `--json` prints the results as JSON. `scripts/run_checks.py` runs it too, through `test_via_eval.py`. It does not score visual quality.
+
 A plugin can ship hooks that run code on your machine. Via 0.4.0 has none, but read `plugins/via/` before you install a later version.
 
 ## How to use it day to day

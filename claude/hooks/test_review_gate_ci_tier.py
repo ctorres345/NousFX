@@ -19,7 +19,7 @@ WORKFLOW = os.path.join(ROOT, ".github", "workflows", "review-gate.yml")
 
 
 class VerifyTier(Base):
-    def verify(self, body, tier=None, reasons=None, raw=None):
+    def verify(self, body, tier=None, reasons=None, raw=None, association="OWNER"):
         tier_json = os.path.join(self.tmp, "tier.json")
         with open(tier_json, "w", encoding="utf-8") as f:
             f.write(raw if raw is not None else json.dumps(
@@ -27,8 +27,9 @@ class VerifyTier(Base):
         body_file = os.path.join(self.tmp, "body.txt")
         with open(body_file, "w", encoding="utf-8") as f:
             f.write(body)
+        assoc = [] if association is None else ["--author-association", association]
         return subprocess.run([sys.executable, "-B", GATE, "verify-tier", "--tier-json", tier_json,
-                               "--text-file", body_file], cwd=self.tmp, capture_output=True, text=True,
+                               "--text-file", body_file] + assoc, cwd=self.tmp, capture_output=True, text=True,
                               stdin=subprocess.DEVNULL)
 
     def assertPasses(self, r):
@@ -54,6 +55,7 @@ class VerifyTier(Base):
         r = self.verify("Review-Gate: %s\n" % ("a" * 40), tier=3)
         self.assertPasses(r)
         self.assertIn("known hole", r.stdout)
+        self.assertPasses(self.verify("Review-Gate: %s\n" % ("a" * 40), tier=3, association="NONE"))
 
     def test_a_mention_inside_a_sentence_is_not_a_tier_line(self):
         self.assertPasses(self.verify("The Review-Tier: 0 line is new.\n", tier=3))
@@ -64,6 +66,22 @@ class VerifyTier(Base):
         self.assertPasses(r)
         self.assertIn("self-asserted", r.stdout)
         self.assertIn("Cesar approved a docs-only change", r.stdout)
+
+    def test_override_is_honored_for_owner_and_member_only(self):
+        """NFX-95: anyone can write an override line, so CI honors it only from the repo owner or an org member."""
+        body = "Review-Tier: 1 (Tier 1: small) override: computed 3, approved\n"
+        self.assertPasses(self.verify(body, tier=3, association="MEMBER"))
+        for assoc in ("COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", "owner", ""):
+            r = self.verify(body, tier=3, association=assoc)
+            self.assertBlocked(r)
+            self.assertIn("OWNER or MEMBER", r.stderr)
+        r = self.verify(body, tier=3, association=None)
+        self.assertBlocked(r)
+        self.assertIn("unknown", r.stderr)
+
+    def test_a_line_at_or_above_the_tier_needs_no_trusted_author(self):
+        self.assertPasses(self.verify("Review-Tier: 3\n", tier=3, association="NONE"))
+        self.assertPasses(self.verify("Review-Tier: 3 override: computed 3, x\n", tier=2, association=None))
 
     def test_override_naming_a_lower_computed_tier_fails(self):
         r = self.verify("Review-Tier: 0 (Tier 0: tiny) override: computed 1, small\n", tier=3)
@@ -83,10 +101,32 @@ class VerifyTier(Base):
         self.assertBlocked(self.verify("Review-Tier: 0.5\n", tier=0))
         self.assertBlocked(self.verify("Review-Tier: 0x\n", tier=0))
 
-    def test_a_diff_error_fallback_does_not_fail_a_low_tier(self):
-        r = self.verify("Review-Tier: 0\n", tier=2, reasons=["Tier 2: could not read the diff (boom)"])
+    def test_a_diff_error_fallback_fails_closed(self):
+        """NFX-94: an unread diff may be the huge Tier 3 one, so a lower claim fails and names the cause."""
+        reasons = ["Tier 2: could not read the diff (git timed out)"]
+        for body in ("Review-Tier: 0\n", "Review-Tier: 2\n", "Review-Tier: 3\nReview-Tier: 1\n",
+                     "Review-Tier: 1 override: computed 2, small\n"):
+            r = self.verify(body, tier=2, reasons=reasons)
+            self.assertBlocked(r)
+            self.assertIn("could not measure", r.stderr)
+            self.assertIn("git timed out", r.stderr)
+
+    def test_a_diff_error_fallback_ignores_even_an_owner_override(self):
+        """Nothing was computed, so `override: computed 3` cannot be checked against anything: it fails too."""
+        r = self.verify("Review-Tier: 1 override: computed 3, approved\n", tier=2,
+                        reasons=["Tier 2: could not read the diff (x)"], association="OWNER")
+        self.assertBlocked(r)
+        self.assertIn("could not measure", r.stderr)
+
+    def test_a_diff_error_fallback_accepts_tier_3(self):
+        r = self.verify("Review-Tier: 3\n", tier=2, reasons=["Tier 2: could not read the diff (x)"])
         self.assertPasses(r)
-        self.assertIn("Warning", r.stdout)
+        self.assertIn("could not measure", r.stdout)
+
+    def test_a_diff_error_fallback_keeps_the_no_line_hole(self):
+        r = self.verify("Review-Gate: %s\n" % ("a" * 40), tier=2, reasons=["Tier 2: could not read the diff (x)"])
+        self.assertPasses(r)
+        self.assertIn("known hole", r.stdout)
 
     def test_a_risk_paths_error_still_compares_the_measured_tier(self):
         reasons = ["Tier 2: could not read [review] risk_paths (x)", "Tier 2: 300 lines, 5 file(s), 3 hunk(s)"]
@@ -132,7 +172,8 @@ class VerifyTier(Base):
         out = subprocess.run([sys.executable, "-B", TIER_PY, "--base", "0" * 40, "--cwd", self.repo],
                              capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
         self.assertTrue(json.loads(out)["reasons"][0].startswith("Tier 2: could not"), out)
-        self.assertPasses(self.verify("Review-Tier: 0\n", raw=out))
+        self.assertBlocked(self.verify("Review-Tier: 0\n", raw=out))
+        self.assertPasses(self.verify("Review-Tier: 3\n", raw=out))
 
 
 class Workflow(unittest.TestCase):
@@ -156,6 +197,11 @@ class Workflow(unittest.TestCase):
 
     def test_needs_a_positive_confirmation(self):
         self.assertIn('*"Review tier checked."*', self.step)
+
+    def test_passes_the_pr_author_association(self):
+        self.assertIn("AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}", self.text)
+        self.assertIn('--author-association "$AUTHOR_ASSOCIATION"', self.step)
+        self.assertIn("predates NFX-95", self.step)
 
     def test_merge_base_is_the_diff_base(self):
         self.assertIn('git merge-base "origin/$BASE_REF" HEAD', self.step)
