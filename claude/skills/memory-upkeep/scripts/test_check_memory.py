@@ -43,8 +43,12 @@ def note(name, text):
     return f"---\nname: {name}\ndescription: x\n---\n\n{text}\n"
 
 
+CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+CLEAN_ENV.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+
+
 def sh(cwd, *args):
-    subprocess.run(args, cwd=cwd, check=True, capture_output=True)
+    return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True, env=CLEAN_ENV).stdout.strip()
 
 
 class Fixture(unittest.TestCase):
@@ -61,8 +65,7 @@ class Fixture(unittest.TestCase):
         write(os.path.join(self.repo, ".gitignore"), "out/\n.claude/\n")
         sh(self.repo, "git", "add", ".")
         sh(self.repo, "git", "commit", "-q", "-m", "one")
-        self.first = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=self.repo,
-                                    capture_output=True, text=True).stdout.strip()
+        self.first = sh(self.repo, "git", "rev-parse", "--short", "HEAD")
         sh(self.repo, "git", "commit", "-q", "--allow-empty", "-m", "two")
         sh(self.repo, "git", "checkout", "-q", "-b", "cesar/NFX-1")
         self.project_dir = os.path.join(self.home, ".claude", "projects", check_memory.slug(self.repo))
@@ -74,6 +77,9 @@ class Fixture(unittest.TestCase):
         write(os.path.join(self.mem, "MEMORY.md"), index)
         for name, text in notes.items():
             write(os.path.join(self.mem, name), note(name[:-3], text))
+
+    def stale_handoff(self):
+        self.handoff(f"# Handoff: demo (2026-11-01, main, {self.first})")
 
     def handoff(self, header):
         write(os.path.join(self.repo, ".claude", "handoff.md"), header + "\n\n## Goal\nx\n")
@@ -134,15 +140,14 @@ class Findings(Fixture):
 
     def test_stale_handoff_header(self):
         self.memory("- [A](a.md) — a\n", {"a.md": "fine"})
-        self.handoff(f"# Handoff: demo (2026-11-01, main, {self.first})")
+        self.stale_handoff()
         found, data = self.kinds()
         self.assertIn(("handoff-branch", ".claude/handoff.md"), found)
         self.assertIn(("handoff-sha", ".claude/handoff.md"), found)
         self.assertEqual(data["projects"][0]["handoff"], ".claude/handoff.md")
 
     def test_current_handoff_header_is_clean(self):
-        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=self.repo, capture_output=True,
-                              text=True).stdout.strip()
+        head = sh(self.repo, "git", "rev-parse", "--short", "HEAD")
         self.memory("- [A](a.md) — a\n", {"a.md": "fine"})
         self.handoff(f"# Handoff: demo (2026-11-01, cesar/NFX-1, {head})")
         found, _ = self.kinds()
@@ -153,6 +158,9 @@ class Findings(Fixture):
         self.assertEqual(p("# Handoff — 2026-10-25 · branch `main` (c150137, in sync)"), ("2026-10-25", "main", "c150137"))
         self.assertEqual(p("# Handoff · 2026-10-20 · main @ 02ec238"), ("2026-10-20", "main", "02ec238"))
         self.assertIsNone(p("# Handoff\nno state here"))
+        self.assertIsNone(p("# Handoff on 2026-10-25 · abc1234"))
+        self.assertIsNone(p("# Handoff: work on parser (2026-11-07 · abc1234)"))
+        self.assertEqual(p("# Handoff\n**Header:** 2026-11-07 · branch `main` · abc1234"), ("2026-11-07", "main", "abc1234"))
 
 
 class Safety(Fixture):
@@ -168,14 +176,14 @@ class Safety(Fixture):
 
     def test_writes_nothing(self):
         self.broken_memory()
-        self.handoff(f"# Handoff: demo (2026-11-01, main, {self.first})")
+        self.stale_handoff()
         before = self.snapshot()
         self.run_json()
         self.assertEqual(self.snapshot(), before)
 
     def test_opens_only_memory_and_handoff(self):
         self.broken_memory()
-        self.handoff(f"# Handoff: demo (2026-11-01, main, {self.first})")
+        self.stale_handoff()
         OPENED.clear()
         RECORD[0] = True
         try:
@@ -213,6 +221,69 @@ class Safety(Fixture):
             check_memory.main(["--all", "--json", "--home", self.home])
         projects = json.loads(out.getvalue())["projects"]
         self.assertEqual([p["project"] for p in projects], [self.repo])
+
+    def test_unslug_handles_folder_names_with_mixed_punctuation(self):
+        folder = os.path.join(self.tmp, ".odd_name-v2", "x.y")
+        os.makedirs(folder)
+        self.assertEqual(check_memory.unslug(check_memory.slug(folder)), [folder])
+        self.assertEqual(check_memory.unslug(check_memory.slug(folder) + "-missing"), [])
+
+    def test_worktree_and_subfolder_use_the_main_checkouts_memory(self):
+        self.memory("- [A](a.md) — a\n", {"a.md": "fine", "b.md": "unlisted"})
+        tree = os.path.join(self.tmp, "tree")
+        sh(self.repo, "git", "worktree", "add", "-q", "-b", "other", tree)
+        for folder in (tree, os.path.join(self.repo, "scripts")):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = check_memory.main([folder, "--json", "--home", self.home])
+            result = json.loads(out.getvalue())["projects"][0]
+            self.assertEqual(result["memory"], self.mem)
+            self.assertIn("index-unlisted", {f["kind"] for f in result["findings"]})
+            self.assertEqual(code, 1)
+
+    def test_missing_memory_folder_is_a_finding(self):
+        found, _ = self.kinds()
+        self.assertIn(("memory-missing", ""), found)
+
+    def test_remote_refs_and_dotted_paths(self):
+        sh(self.repo, "git", "update-ref", "refs/remotes/upstream/main", "HEAD")
+        self.memory("- [A](a.md) — a\n", {"a.md": "Compare with `upstream/main`; data in `db/app.db`."})
+        found, data = self.kinds()
+        self.assertEqual(found, {("stale-path", "a.md")})
+
+    def test_symlinked_note_is_reported_not_read(self):
+        self.memory("- [A](a.md) — a\n", {"a.md": "fine"})
+        os.symlink(os.path.join(self.project_dir, "abc.jsonl"), os.path.join(self.mem, "link.md"))
+        found, _ = self.kinds()
+        self.assertIn(("note-symlink", "link.md"), found)
+
+    def test_ambiguous_slug_prefers_the_git_checkout(self):
+        plain = os.path.join(self.tmp, "repo", "x")  # repo/x is not a checkout; repo-x is
+        os.makedirs(plain)
+        other = os.path.join(self.tmp, "repo-x")
+        os.makedirs(other)
+        sh(other, "git", "init", "-q")
+        self.assertEqual(sorted(check_memory.unslug(check_memory.slug(other))), sorted([plain, other]))
+        self.assertEqual(check_memory.resolve(check_memory.slug(other)), (other, None))
+
+    def test_index_links_with_anchors_and_urls(self):
+        self.memory("- [A](a.md#top) — a\n- [Web](https://example.com/x.md) — web\n", {"a.md": "fine"})
+        found, _ = self.kinds()
+        self.assertEqual(found, set())
+
+    def test_branch_placeholders_are_skipped(self):
+        self.memory("- [A](a.md) — a\n", {"a.md": "Use branch `cesar/<TICKET-KEY>` or branch `cesar/NFX-n`."})
+        found, _ = self.kinds()
+        self.assertEqual(found, set())
+
+    def test_non_git_project_says_checks_were_skipped(self):
+        plain = os.path.join(self.tmp, "plain")
+        os.makedirs(plain)
+        mem = os.path.join(self.home, ".claude", "projects", check_memory.slug(plain), "memory")
+        write(os.path.join(mem, "MEMORY.md"), "- [A](a.md) — a\n")
+        write(os.path.join(mem, "a.md"), note("a", "See `gone/file.py`."))
+        result = check_memory.run(self.home, plain)[0]
+        self.assertEqual([f["kind"] for f in result["findings"]], ["project-not-git"])
 
     def test_exit_codes(self):
         self.memory("- [A](a.md) — a\n", {"a.md": "fine"})

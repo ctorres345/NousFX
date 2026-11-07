@@ -16,7 +16,7 @@ Memory notes and handoffs leak into every new session, so one wrong note repeats
 python3 -I <this skill's folder>/scripts/check_memory.py <project folder> --json
 ```
 
-(`--all` instead of a folder checks every project under `~/.claude/projects` that has a `memory/` folder; `python` on Windows.) Exit 0 means no findings, 1 means findings, 2 a usage error. The script reads only the project's `memory/` folder and its `.claude/handoff.md` or root `HANDOFF.md`, plus read-only git. It never writes.
+(`--all` instead of a folder checks every project under `~/.claude/projects` that has a `memory/` folder; `python` on Windows. It needs Python 3.11+.) Exit 0 means no findings, 1 means findings, 2 a usage error, 3 that it could not run (the message is on stderr). The script reads only the project's `memory/` folder and its `.claude/handoff.md` or root `HANDOFF.md`, plus read-only git. It never writes. A worktree or subfolder uses the main checkout's memory folder, as Claude Code does, and its own branch and handoff.
 
 ## 2. Jira pass
 
@@ -37,7 +37,7 @@ You may also point out notes that only repeat what the repo or git already recor
 
 Apply only what the user approves, one project at a time, then run the script again and show the remaining findings. If `anthropic-skills:consolidate-memory` is installed, use it for merges and pruning. Never commit the handoff or memory files.
 
-Before re-deriving a past decision, use a targeted transcript search (a keyword grep in `~/.claude/projects/<slug>/`); never read whole transcripts.
+Before re-deriving a past decision, use a targeted transcript search; never read whole transcripts. Transcript lines can be huge, so find files with `grep -rl <keyword> ~/.claude/projects/<slug>/`, then print only context around hits: `grep -o '.\{0,200\}<keyword>.\{0,200\}' <file> | head`.
 
 ## JSON output
 
@@ -48,21 +48,25 @@ Before re-deriving a past decision, use a targeted transcript search (a keyword 
   "handoff": ".claude/handoff.md or null", "findings": [{"kind": "...", "file": "note.md", "evidence": "..."}]}]}
 ```
 
-`file` is relative to the memory folder (a note or `MEMORY.md`) or to the repo (the handoff), and empty for `project-missing`. Kinds:
+`file` is relative to the memory folder (a note or `MEMORY.md`) or to the repo (the handoff), and empty for `memory-missing`, `project-not-git` and `project-missing`. Kinds:
 
 | Kind | Meaning |
 |---|---|
+| `memory-missing` | single project only: Claude Code has no memory folder for this repo |
+| `note-symlink` | a note or `MEMORY.md` that is a symbolic link; it is not read |
+| `handoff-symlink` | the handoff is a symbolic link; it is not read |
 | `index-dangling` | a `MEMORY.md` line links a note that does not exist |
 | `index-unlisted` | a note that `MEMORY.md` does not link |
 | `index-too-long` | `MEMORY.md` is over 200 lines, which Claude Code stops loading |
 | `index-missing` | notes but no `MEMORY.md` |
 | `stale-path` | a backticked repo path that is not tracked or on disk (gitignored paths are skipped) |
-| `stale-branch` | a branch the note names that is not local or on origin |
+| `stale-branch` | a branch the note names, or a `name/name` token, that is no local or remote branch |
 | `stale-symbol` | a backticked `name()` that `git grep` does not find |
 | `duplicate` | two notes share a sentence of 6 or more words |
 | `handoff-header` | the handoff's first lines have no date, branch and short sha |
 | `handoff-branch` | the header's branch is not the checked-out branch |
 | `handoff-sha` | the header's sha is not HEAD (evidence says how many commits behind) |
-| `project-missing` | the project folder for a memory folder was not found; repo checks were skipped |
+| `project-not-git` | the project folder is not a git work tree; repo checks were skipped |
+| `project-missing` | the project folder for a memory folder was not found, or the slug fits several folders; repo checks were skipped |
 
 A new kind or key raises `version`.
