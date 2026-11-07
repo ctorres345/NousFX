@@ -101,10 +101,32 @@ class VerifyTier(Base):
         self.assertBlocked(self.verify("Review-Tier: 0.5\n", tier=0))
         self.assertBlocked(self.verify("Review-Tier: 0x\n", tier=0))
 
-    def test_a_diff_error_fallback_does_not_fail_a_low_tier(self):
-        r = self.verify("Review-Tier: 0\n", tier=2, reasons=["Tier 2: could not read the diff (boom)"])
+    def test_a_diff_error_fallback_fails_closed(self):
+        """NFX-94: an unread diff may be the huge Tier 3 one, so a lower claim fails and names the cause."""
+        reasons = ["Tier 2: could not read the diff (git timed out)"]
+        for body in ("Review-Tier: 0\n", "Review-Tier: 2\n", "Review-Tier: 3\nReview-Tier: 1\n",
+                     "Review-Tier: 1 override: computed 2, small\n"):
+            r = self.verify(body, tier=2, reasons=reasons)
+            self.assertBlocked(r)
+            self.assertIn("could not measure", r.stderr)
+            self.assertIn("git timed out", r.stderr)
+
+    def test_a_diff_error_fallback_ignores_even_an_owner_override(self):
+        """Nothing was computed, so `override: computed 3` cannot be checked against anything: it fails too."""
+        r = self.verify("Review-Tier: 1 override: computed 3, approved\n", tier=2,
+                        reasons=["Tier 2: could not read the diff (x)"], association="OWNER")
+        self.assertBlocked(r)
+        self.assertIn("could not measure", r.stderr)
+
+    def test_a_diff_error_fallback_accepts_tier_3(self):
+        r = self.verify("Review-Tier: 3\n", tier=2, reasons=["Tier 2: could not read the diff (x)"])
         self.assertPasses(r)
-        self.assertIn("Warning", r.stdout)
+        self.assertIn("could not measure", r.stdout)
+
+    def test_a_diff_error_fallback_keeps_the_no_line_hole(self):
+        r = self.verify("Review-Gate: %s\n" % ("a" * 40), tier=2, reasons=["Tier 2: could not read the diff (x)"])
+        self.assertPasses(r)
+        self.assertIn("known hole", r.stdout)
 
     def test_a_risk_paths_error_still_compares_the_measured_tier(self):
         reasons = ["Tier 2: could not read [review] risk_paths (x)", "Tier 2: 300 lines, 5 file(s), 3 hunk(s)"]
@@ -150,7 +172,8 @@ class VerifyTier(Base):
         out = subprocess.run([sys.executable, "-B", TIER_PY, "--base", "0" * 40, "--cwd", self.repo],
                              capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
         self.assertTrue(json.loads(out)["reasons"][0].startswith("Tier 2: could not"), out)
-        self.assertPasses(self.verify("Review-Tier: 0\n", raw=out))
+        self.assertBlocked(self.verify("Review-Tier: 0\n", raw=out))
+        self.assertPasses(self.verify("Review-Tier: 3\n", raw=out))
 
 
 class Workflow(unittest.TestCase):

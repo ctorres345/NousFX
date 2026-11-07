@@ -692,9 +692,9 @@ def verify_tier(argv):
     """`verify-tier --tier-json FILE --text-file F --author-association A` (CI, NFX-70): exit 2 when a
     `Review-Tier:` line in F is below the tier in FILE (tier.py's JSON for the PR diff). An attested override passes
     when the tier it names as computed is at least the CI tier and A (the PR author's `author_association`) is OWNER
-    or MEMBER (NFX-95); a missing A honors no override. It stays self-asserted. No tier line passes (a known hole),
-    and so does a tier.py result that could not read the diff (Tier 2 by default would fail a real Tier 0 or 1 PR). When only
-    `[review] risk_paths` could not be read, the tier the diff measured is compared instead."""
+    or MEMBER (NFX-95); a missing A honors no override. It stays self-asserted. No tier line passes (a known hole).
+    A tier.py result that could not read the diff fails unless every line claims Tier 3 (NFX-94): a diff too big or
+    slow to read is the Tier 3 case. When only `[review] risk_paths` could not be read, the measured tier is compared."""
     tier_json, text_file = option(argv, "--tier-json"), option(argv, "--text-file")
     association = option(argv, "--author-association") or ""  # empty or missing: no override is honored
     if not tier_json or not text_file:
@@ -714,15 +714,17 @@ def verify_tier(argv):
         print("No Review-Tier line in the PR description; the tier is not checked (known hole, docs/review-gate.md).")
         print("Review tier checked.")
         return 0
+    measured_nothing = False
     if any(r.startswith(TIER_FALLBACK) for r in reasons):
         # A "could not" Tier 2 is a floor, not a measurement. Compare against what the diff measured, if anything.
         measured = [int(m.group(1)) for m in (TIER_REASON.match(r) for r in reasons if not r.startswith(TIER_FALLBACK))
                     if m]
-        if not measured:
-            print(f"Warning: tier.py could not compute the tier ({why}); the Review-Tier line is not checked.")
-            print("Review tier checked.")
-            return 0
-        computed = max(measured)
+        # Nothing measured: tier.py never read the diff. Only Tier 3, the highest, is safe to accept (NFX-94).
+        computed, measured_nothing = (max(measured), False) if measured else (3, True)
+        if not measured and any(tier < 3 for _, tier, _, _ in claims):
+            print(f"Blocked: tier.py could not measure this diff ({why}), so a Review-Tier below 3 cannot be "
+                  "checked. Re-run the job; if it fails again, fix the cause or review at Tier 3.", file=sys.stderr)
+            return 2
     for line, tier, over_computed, over_reason in claims:
         if tier >= computed:
             continue
@@ -742,7 +744,10 @@ def verify_tier(argv):
             print(f"Blocked: `{line}` is below the computed Tier {computed} ({why}). Run the review at Tier "
                   f"{computed}, then attest again and paste the new lines.", file=sys.stderr)
         return 2
-    print(f"Review tier covers the computed Tier {computed}.")
+    if measured_nothing:
+        print(f"Warning: tier.py could not measure the diff ({why}); every Review-Tier line claims Tier 3.")
+    else:
+        print(f"Review tier covers the computed Tier {computed}.")
     print("Review tier checked.")
     return 0
 

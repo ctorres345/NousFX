@@ -77,7 +77,7 @@ jobs:
           tier_out=$(python3 -B "$gate_dir/review-gate.py" verify-tier --tier-json "$RUNNER_TEMP/tier.json" \
                        --text-file "$RUNNER_TEMP/pr-body.txt" --author-association "$AUTHOR_ASSOCIATION" </dev/null 2>&1) || {
             printf '%s\n' "$tier_out"
-            echo "::error::The review tier check failed (message above): a Review-Tier line below the computed tier, or one it cannot read."
+            echo "::error::The review tier check failed (message above): a Review-Tier line below the computed tier, one it cannot read, or a diff tier.py could not measure (re-run the job)."
             exit 1
           }
           printf '%s\n' "$tier_out"
