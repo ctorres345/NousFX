@@ -17,7 +17,14 @@ class SampleApp extends StatelessWidget {
 // Sample screen for Via's tests. It has two deliberate design flaws for audits to find:
 // the subtitle has weak contrast, and the button is smaller than the 48dp touch target.
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({
+    super.key,
+    this.title = 'Good morning',
+    this.subtitle = 'Your plan for today',
+  });
+
+  final String title;
+  final String subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -28,10 +35,10 @@ class HomeScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: 48),
-            Text('Good morning', style: Theme.of(context).textTheme.headlineMedium),
+            Text(title, style: Theme.of(context).textTheme.headlineMedium),
             const SizedBox(height: 12),
-            const Text('Your plan for today',
-                style: TextStyle(color: Color(0xFFBBBBBB), fontSize: 14)),
+            Text(subtitle,
+                style: const TextStyle(color: Color(0xFFBBBBBB), fontSize: 14)),
             const SizedBox(height: 12),
             SizedBox(
               width: 96,

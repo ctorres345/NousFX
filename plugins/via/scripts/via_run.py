@@ -39,6 +39,11 @@ SEVERITIES = {"high", "med", "low"}
 VERDICTS = {"real", "wrong", "unsure"}
 ROUTES = {"fix-now", "ticket"}
 SECOND_OPINION = "second-opinion"  # source prefix: second-opinion:claude or second-opinion:argon
+SHOT_STATES = {"default", "empty", "loading", "error", "offline", "long"}  # a test keeps these equal to via_capture_native.py and to findings.schema.json
+FONT_SCALES = {"default", "largest"}
+DIRECTIONS = {"ltr", "rtl"}
+SOURCES = {"preview", "device"}  # where a native shot came from; web shots leave it out
+COVERAGE_KINDS = {"state", "matrix", "preview", "note"}
 REVIEWS = {"kept", "dropped"}  # Claude's verdict on a screenshot before it may leave the run folder
 MODES = {"check", "audit"}
 STATUSES = {"new", "open", "fixed", "rejected"}
@@ -198,6 +203,20 @@ def check_finding_prototype(link):
     return None
 
 
+def check_coverage(coverage):
+    """Each entry says what native capture shot or skipped: platform, screen, entry, captured, and why when not."""
+    if not isinstance(coverage, list):
+        return "coverage must be a list."
+    for i, c in enumerate(coverage):
+        if not (isinstance(c, dict) and all(is_text(c.get(k)) for k in ("platform", "screen", "entry"))
+                and isinstance(c.get("kind"), str) and c["kind"] in COVERAGE_KINDS and isinstance(c.get("captured"), bool)):
+            return ("coverage[%d] needs platform, screen, entry, kind (%s) and a true/false captured."
+                    % (i, ", ".join(sorted(COVERAGE_KINDS))))
+        if "reason" in c and not isinstance(c["reason"], str):
+            return "coverage[%d].reason must be text." % i
+    return None
+
+
 def check_record(rec):
     """Return a message naming the first problem, or None when the record is valid."""
     if not isinstance(rec, dict):
@@ -247,6 +266,16 @@ def check_record(rec):
             return "screenshots[%d] needs path, screen, theme, size and a true/false redacted." % i
         if s.get("review") not in REVIEWS | {None}:
             return "screenshots[%d].review must be one of %s or left out." % (i, ", ".join(sorted(REVIEWS)))
+        for key, allowed in (("state", SHOT_STATES), ("font_scale", FONT_SCALES), ("direction", DIRECTIONS),
+                             ("source", SOURCES)):
+            if key in s and not (isinstance(s[key], str) and s[key] in allowed):
+                return "screenshots[%d].%s must be one of %s or left out." % (i, key, ", ".join(sorted(allowed)))
+        if "platform" in s and not is_text(s["platform"]):
+            return "screenshots[%d].platform must be non-empty text or left out." % i
+    if "coverage" in rec:
+        problem = check_coverage(rec["coverage"])
+        if problem:
+            return problem
     for i, l in enumerate(rec.get("lessons", [])):
         if not (isinstance(l, dict) and is_text(l.get("text")) and is_text(l.get("source"))
                 and l.get("scope") in ("project", "general")):
