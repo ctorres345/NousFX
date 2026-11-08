@@ -20,7 +20,10 @@ import nousfx_sync  # noqa: E402
 import real_machine_regression as regression  # noqa: E402
 
 MIN_WORDS = 6
-CLAUDE_RULES_BUDGET = 4096  # bytes: AGENTS.md + Claude overlay, what every Claude session loads
+# Bytes of AGENTS.md + Claude overlay, what every Claude session loads. A ratchet: with the local layers the
+# generated rules sit near the 6144-byte sync budget (nousfx_sync.RULES_BUDGET), so cut a line before adding one,
+# and lower this number when the rules shrink (NFX-96).
+CLAUDE_RULES_BUDGET = 3223
 
 
 def read(path):
@@ -60,8 +63,9 @@ class SingleCopy(unittest.TestCase):
         size = 0
         for rel in ("harness/AGENTS.md", "harness/overlays/claude.overlay.md"):
             size += len(read(os.path.join(ROOT, rel)).encode("utf-8"))
+        self.assertGreater(size, CLAUDE_RULES_BUDGET - 64, f"Claude rules shrank to {size} bytes: lower CLAUDE_RULES_BUDGET to {size}")
         self.assertLessEqual(size, CLAUDE_RULES_BUDGET,
-                             f"Claude rules are {size} bytes; move on-use rules into their skill or hook")
+                             f"Claude rules are {size} bytes, over {CLAUDE_RULES_BUDGET}: cut a line first, or move on-use rules into their skill or hook")
 
     def test_built_rules_use_only_the_listed_sources(self):
         # build_rules reads the same two files (plus the optional local files, absent here).

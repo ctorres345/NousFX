@@ -4,6 +4,7 @@
 Format: ID | severity | confidence | file:line | problem | fix | quoted code
 """
 import os
+import re
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -92,6 +93,17 @@ class ReviewLoopSkill(unittest.TestCase):
         self.assertIn("the ticket's goal and acceptance criteria", self.text)
         self.assertIn("No builder summary goes to the reviewer", self.text)
         self.assertIn('say "ticket unavailable" and do not retell the ticket yourself', self.text)
+
+    def test_reviewer_gets_the_test_result_and_a_budget_under_its_turn_limit(self):
+        # NFX-96: a reviewer that ran the suite hit its turn limit and sent no report.
+        self.assertIn("the result of your latest test run", self.text)
+        budget = int(re.search(r"report within (\d+) tool calls", self.text).group(1))
+        stated = int(re.search(r"reviewers stop at (\d+) turns", self.text).group(1))
+        limits = []
+        for name in ("reviewer-light", "reviewer", "reviewer-high"):
+            limits.append(int(re.search(r"^maxTurns: (\d+)$", read("claude", "agents", name + ".md"), re.M).group(1)))
+        self.assertEqual(stated, min(limits))
+        self.assertLess(budget, stated)
 
     def test_no_summary_rule_covers_the_round_call_only(self):
         """NFX-83: the evidence ask, tie-breaker and prototype still get their context."""
