@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 """Tests for the deny list sync writes (scripts/nousfx_deny.py, NFX-74). Run: python3 -B scripts/test_nousfx_deny.py"""
+import contextlib
+import fnmatch
+import io
 import json
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import nousfx_deny  # noqa: E402
 import nousfx_sync  # noqa: E402
 from test_nousfx_sync import Base, read, write  # noqa: E402
+
+sys.path.insert(0, os.path.join(HERE, "..", "claude", "skills", "gemini-review", "scripts"))
+import gemini_common  # noqa: E402
+import secret_patterns  # noqa: E402
 
 RULES = list(nousfx_deny.RULES)
 ASK = list(nousfx_deny.ASK_RULES)
@@ -52,6 +61,55 @@ class Rules(unittest.TestCase):
                                for flag in ("--skip", "--tier-override", "--allow-branch")])
         self.assertIn("Bash(*review-gate.py*--skip*)", ASK)
         self.assertIn("PowerShell(*review-gate.py*--allow-branch*)", ASK)
+
+
+class SecretPatterns(unittest.TestCase):
+    """NFX-103: one list for the deny rules and the Gemini excludes."""
+    MOBILE = ("*.jks", "*.keystore", "*.p12", "*.p8", "key.properties", "google-services.json",
+              "GoogleService-Info.plist", ".npmrc", ".netrc")
+    # Source files a deny rule must never block (a broad glob such as *secret* or *key* would)
+    SOURCES = ("SecretsRepository.kt", "KeyStoreManager.kt", "ApiKey.swift", "PasswordField.swift", "keys.py",
+               "CredentialsProvider.java", "envConfig.ts", "config.env.ts", "properties.kt", "local.properties",
+               "keyboard.dart", "id_card.kt", "README.md", "build.gradle.kts", "Info.plist")
+
+    def test_deny_rules_cover_the_mobile_secrets(self):
+        for p in self.MOBILE:
+            for tool in ("Read", "Edit"):
+                self.assertIn(f"{tool}(//**/{p})", RULES)
+
+    def test_local_properties_is_exclude_only(self):
+        """Android builds need its sdk.dir, so Claude may read it; Gemini never gets it."""
+        self.assertIn("local.properties", secret_patterns.EXCLUDE_ONLY)
+        self.assertFalse(any("local.properties" in r for r in RULES))
+
+    def test_deny_rules_are_the_deny_list(self):
+        self.assertEqual(nousfx_deny.SECRETS, tuple(f"//**/{p}" for p in secret_patterns.DENY))
+        self.assertIsNone(nousfx_deny.LOAD_ERROR)
+
+    def test_gemini_excludes_are_deny_plus_exclude_only(self):
+        names = gemini_common.EXCLUDE_NAMES
+        self.assertEqual(set(names), set(secret_patterns.DENY) | set(secret_patterns.EXCLUDE_ONLY))
+        self.assertEqual(len(names), len(set(names)))
+        self.assertFalse(set(secret_patterns.DENY) & set(secret_patterns.EXCLUDE_ONLY))
+        for p in secret_patterns.DENY:
+            self.assertIn(f":(exclude,icase,glob)**/{p}", gemini_common.EXCLUDES)
+
+    def test_deny_holds_only_names_extensions_and_key_prefixes(self):
+        for p in secret_patterns.DENY:
+            body = p[2:] if p.startswith("*.") else p[:-1] if p in (".env*", "id_rsa*", "id_ed25519*",
+                                                                       "id_ecdsa*", "id_dsa*") else p
+            self.assertNotRegex(body, r"[*?\[\]/\\]", p)
+            for src in self.SOURCES:
+                self.assertFalse(fnmatch.fnmatch(src.lower(), p.lower()), f"{p} matches {src}")
+
+    def test_unloadable_patterns_raise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for text in (None, "DENY = ()\n", "DENY = ['*.pem']\n", "raise SystemError('x')\n"):
+                path = os.path.join(tmp, "secret_patterns.py")
+                if text is not None:
+                    write(path, text)
+                with self.assertRaises(Exception):
+                    nousfx_deny.load_patterns(path)
 
 
 class Merge(unittest.TestCase):
@@ -150,6 +208,26 @@ class Sync(Base):
             self.assertNotIn(gone, deny)
         self.assertIn("Read(//**/.env*)", deny)
         self.assertEqual(len(deny), len(RULES) - 3)
+
+    def test_new_pattern_can_be_excluded(self):
+        write(os.path.join(self.state, "deny.toml"), 'exclude = ["//**/*.jks", "Read(//**/google-services.json)"]\n')
+        r = self.sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        deny = self.deny()
+        for gone in ("Read(//**/*.jks)", "Edit(//**/*.jks)", "Read(//**/google-services.json)"):
+            self.assertNotIn(gone, deny)
+        self.assertIn("Edit(//**/google-services.json)", deny)
+        self.assertEqual(len(deny), len(RULES) - 3)
+
+    def test_missing_patterns_stop_sync_before_writing(self):
+        """When secret_patterns.py cannot be loaded, sync stops with code 2 and writes nothing."""
+        err = io.StringIO()
+        with mock.patch.object(nousfx_deny, "LOAD_ERROR", "FileNotFoundError: gone"), mock.patch.object(
+                nousfx_deny, "SECRETS", ()), contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = nousfx_sync.main(["--home", self.home, "--state-home", self.state, "--repo", self.repo])
+        self.assertEqual(code, 2, err.getvalue())
+        self.assertIn("cannot load the secret patterns", err.getvalue())
+        self.assertFalse(os.path.exists(self.settings))
 
     def test_gate_rules_cannot_be_excluded(self):
         write(os.path.join(self.state, "deny.toml"), 'exclude = ["//**/claude-review-ok"]\n')
