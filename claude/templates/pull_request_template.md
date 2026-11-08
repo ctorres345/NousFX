@@ -25,4 +25,7 @@
 - [ ] No secrets or credentials in the diff
 
 ## Review
-<!-- Paste the output of `review-gate.py attest` here: the `Review-Gate:` line and the `Review-Tier:` line, each on its own line. -->
+<!-- Replace the two placeholder lines below with the output of `review-gate.py attest` (commit everything first).
+     The gate blocks `gh pr create` without a valid Review-Gate line for HEAD's tree. Keep each line at the start of its own line. -->
+<Review-Gate line from review-gate.py attest>
+<Review-Tier line from review-gate.py attest>

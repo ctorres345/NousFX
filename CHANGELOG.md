@@ -2,6 +2,9 @@
 
 ## 1.1.0 (unreleased)
 
+### Review gate
+- `gh pr create` (and a create-PR MCP tool) now also needs a `Review-Gate: <HEAD tree>` line in the PR body. No body, `--fill`, a stale hash, a body built at run time or a body file without the line blocks, and the message prints the exact lines to paste. `attest` refuses with "commit or clean first" when the working tree differs from HEAD (NFX-85).
+
 ### Sync and install
 - Sync writes a deny list to `~/.claude/settings.json`: Claude's file tools may not read or edit `.env*`, `*.pem`, `*.key` and SSH keys (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`), or edit lockfiles. My own deny rules and settings are kept, and `~/.config/nousfx/deny.toml` leaves a rule out (NFX-74).
 

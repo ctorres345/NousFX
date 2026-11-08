@@ -18,6 +18,8 @@ Answer: a JSON line {"decision": "deny", "reason": ...} to block. To allow, prin
 permission prompt then still applies (an explicit "allow" could skip it). Anything unreadable or
 unexpected for a tool this hook is meant for is a deny, because agy treats silence as "no decision" and
 would run the call. A tool name the matcher should never send is left to agy.
+A create-PR tool's `body` (or `Body`) argument goes to the gate through a temp file (`check --body-file`), since
+the gate also wants a `Review-Gate:` line for HEAD's tree in the PR body (NFX-85). Without one it denies.
 Exit code is always 0 once an answer is given; a crash makes agy error the call, which also blocks.
 """
 import hashlib
@@ -26,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -76,7 +79,7 @@ def verify_files(argv):
 
 
 def read_call():
-    """(tools, command, folders) to check, or None when this hook is not meant for the tool.
+    """(tools, command, folders, body) to check, or None when this hook is not meant for the tool.
     Raises ValueError on anything unreadable and Refused on a call that must not run."""
     payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
     call = payload["toolCall"]
@@ -110,11 +113,23 @@ def read_call():
                 folders.append(folder)
             elif candidate:  # a folder that does not exist cannot run anything, but a create must not slip by
                 raise ValueError(f"argument {key} is not an existing folder")
-    return (shells_for(os.name) if shell else (name,)), command, folders
+    body = None if shell else next((args[k] for k in ("body", "Body") if isinstance(args.get(k), str)), None)
+    return (shells_for(os.name) if shell else (name,)), command, folders, body
 
 
-def first_block(tools, command, folders, total=TOTAL_SECONDS):
-    """The gate's reason for the first check that blocks, or None. One deadline covers all checks."""
+def first_block(tools, command, folders, total=TOTAL_SECONDS, body=None):
+    """The gate's reason for the first check that blocks, or None. One deadline covers all checks.
+    body: a create-PR tool's PR body, handed to the gate as --body-file."""
+    if body is None:
+        return run_checks(tools, command, folders, total, [])
+    with tempfile.TemporaryDirectory(prefix="agy-gate-") as d:
+        path = os.path.join(d, "body.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+        return run_checks(tools, command, folders, total, ["--body-file", path])
+
+
+def run_checks(tools, command, folders, total, extra):
     deadline = time.monotonic() + total
     for folder in dict.fromkeys(folders):
         for tool in tools:
@@ -123,7 +138,7 @@ def first_block(tools, command, folders, total=TOTAL_SECONDS):
                 return f"Blocked: the review gate took longer than {total} s."
             try:
                 r = subprocess.run([sys.executable, "-I", "-B", GATE, "check", "--cwd", folder, "--command", command,
-                                    "--tool", tool, "--allow-non-repo"], capture_output=True, text=True, timeout=left,
+                                    "--tool", tool, "--allow-non-repo", *extra], capture_output=True, text=True, timeout=left,
                                    env=CLEAN_ENV)
             except (OSError, subprocess.SubprocessError) as e:
                 return f"Blocked: the review gate did not answer ({type(e).__name__})."
@@ -143,7 +158,8 @@ def main(argv):
         return deny(f"Blocked: the review gate could not read agy's tool call ({type(e).__name__}: {e}).")
     if call is None:
         return 0
-    reason = first_block(*call)
+    tools, command, folders, body = call
+    reason = first_block(tools, command, folders, body=body)
     return deny(reason) if reason else 0
 
 
