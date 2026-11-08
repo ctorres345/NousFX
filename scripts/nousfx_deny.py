@@ -14,7 +14,7 @@ A bare pattern drops every rule for that pattern (Read and Edit); a full rule dr
 rule cannot carve one file out of a pattern, so an exclusion always drops a whole rule. An entry
 that matches no rule fails the run, so a typo cannot leave a rule in place without notice.
 
-Sync owns exactly the rules in RULES. The user's own deny rules, and every other setting, are kept.
+Sync owns exactly the rules in RULES (deny) and ASK_RULES (ask). The user's own deny rules, and every other setting, are kept.
 """
 import os
 import re
@@ -30,7 +30,23 @@ LOCKFILES = ("//**/package-lock.json", "//**/yarn.lock", "//**/pnpm-lock.yaml", 
 # Read applies to Grep and Glob too (best effort); Edit to every built-in tool that changes files (Write,
 # MultiEdit, NotebookEdit). Write(...) or NotebookEdit(...) path rules never match, so there are none.
 # Docs: https://code.claude.com/docs/en/permissions, "Read and Edit".
-RULES = tuple(f"{tool}({p})" for p in SECRETS for tool in ("Read", "Edit")) + tuple(f"Edit({p})" for p in LOCKFILES)
+EXCLUDABLE = (tuple(f"{tool}({p})" for p in SECRETS for tool in ("Read", "Edit"))
+              + tuple(f"Edit({p})" for p in LOCKFILES))
+# The review gate's marker, pass stamp, stamp key and branch-name exception (NFX-101), so an agent's file tools cannot read the key
+# or write a mark by hand. The gate finds them with `git rev-parse --git-path`, which may be .git/, a
+# worktree's .git/worktrees/<name>/, a submodule's .git/modules/<name>/ or a separate git dir, so the rule
+# matches the (unique) file name anywhere. The gate itself writes them from python, which no Read or Edit
+# rule sees. deny.toml cannot exclude these: they are part of the review gate, not a preference.
+GATE_FILES = ("claude-review-ok", "claude-review-stamp-key", "claude-review-check-pass", "claude-branch-ok")
+GATE_RULES = tuple(f"{tool}(//**/{name})" for name in GATE_FILES for tool in ("Read", "Edit"))
+RULES = EXCLUDABLE + GATE_RULES
+# Best-effort ask rules (permissions.ask) for the gate's waivers, which only the user may approve (NFX-101).
+# An ask rule still prompts in auto and bypassPermissions mode
+# (https://code.claude.com/docs/en/permission-modes, "Actions no mode auto-approves"). A "*" in a Bash rule matches any text, so
+# any path to the gate matches; `python3 -c`, a copy of the script or `eval` do not (docs/review-gate.md).
+# The gate hook also runs on Windows' PowerShell tool, whose rules have the same shape as Bash rules.
+ASK_RULES = tuple(f"{tool}(*review-gate.py*{flag}*)" for tool in ("Bash", "PowerShell")
+                  for flag in ("--skip", "--tier-override", "--allow-branch"))
 FILE_NAME = "deny.toml"
 _RULE = re.compile(r"^(Read|Edit)\((.+)\)$")
 
@@ -54,9 +70,9 @@ def load_excludes(state, SyncError):
     out = set()
     for entry in excludes:
         entry = entry.strip()
-        hits = {r for r in RULES if r == entry or _RULE.match(r).group(2) == entry}
+        hits = {r for r in EXCLUDABLE if r == entry or _RULE.match(r).group(2) == entry}
         if not hits:
-            raise SyncError(f"{path}: {entry!r} matches no deny rule. The rules are: {', '.join(RULES)}", 2)
+            raise SyncError(f"{path}: {entry!r} matches no deny rule. The rules are: {', '.join(EXCLUDABLE)}", 2)
         out |= hits
     return out
 
@@ -65,20 +81,20 @@ def wanted_rules(excludes):
     return [r for r in RULES if r not in excludes]
 
 
-def merge(cfg, rules, SyncError, where):
-    """Put `rules` into cfg["permissions"]["deny"]. Rules in RULES that are not wanted (now excluded) go;
+def merge(cfg, rules, SyncError, where, section="deny"):
+    """Put `rules` into cfg["permissions"][section] ("deny" or "ask"). Rules sync owns there that are not wanted (now excluded) go;
     the user's own rules stay where they are. Ours go where the first of ours was, else at the end."""
     had_perms, perms = "permissions" in cfg, cfg.get("permissions", {})
     if not isinstance(perms, dict):
         raise SyncError(f"{where}: \"permissions\" is not an object; fix it first", 2)
-    had_deny, deny = "deny" in perms, perms.get("deny", [])
-    if not isinstance(deny, list) or not all(isinstance(r, str) for r in deny):
-        raise SyncError(f"{where}: \"permissions.deny\" is not a list of strings; fix it first", 2)
-    owned = set(RULES)
-    at = next((i for i, r in enumerate(deny) if r in owned), len(deny))  # everything before it is the user's
-    kept = [r for r in deny if r not in owned]
-    deny = kept[:at] + list(rules) + kept[at:]
-    if deny or had_deny:  # never leave an empty key behind that the user did not have
-        perms["deny"] = deny
+    had_list, current = section in perms, perms.get(section, [])
+    if not isinstance(current, list) or not all(isinstance(r, str) for r in current):
+        raise SyncError(f"{where}: \"permissions.{section}\" is not a list of strings; fix it first", 2)
+    owned = set({"deny": RULES, "ask": ASK_RULES}[section])
+    at = next((i for i, r in enumerate(current) if r in owned), len(current))  # everything before it is the user's
+    kept = [r for r in current if r not in owned]
+    current = kept[:at] + list(rules) + kept[at:]
+    if current or had_list:  # never leave an empty key behind that the user did not have
+        perms[section] = current
     if perms or had_perms:
         cfg["permissions"] = perms

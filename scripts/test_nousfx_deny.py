@@ -12,6 +12,8 @@ import nousfx_sync  # noqa: E402
 from test_nousfx_sync import Base, read, write  # noqa: E402
 
 RULES = list(nousfx_deny.RULES)
+ASK = list(nousfx_deny.ASK_RULES)
+GATE_FILES = nousfx_deny.GATE_FILES
 
 
 class Rules(unittest.TestCase):
@@ -29,7 +31,27 @@ class Rules(unittest.TestCase):
         self.assertTrue(all(r.startswith(("Read(", "Edit(")) for r in RULES))
 
     def test_no_backslash_so_one_text_fits_mac_and_windows(self):
-        self.assertFalse(any("\\" in r for r in RULES))
+        self.assertFalse(any("\\" in r for r in RULES + ASK))
+
+    def test_gate_files_are_off_limits_in_any_git_dir(self):
+        """NFX-101: matched by name anywhere, so .git/, worktree, submodule and separate git dirs all count."""
+        self.assertEqual(len(GATE_FILES), 4)
+        for name in GATE_FILES:
+            for tool in ("Read", "Edit"):
+                self.assertIn(f"{tool}(//**/{name})", RULES)
+
+    def test_gate_file_names_match_the_gate(self):
+        """The gate is copied standalone, so it cannot import these names; a rename there must show up here."""
+        with open(os.path.join(HERE, "..", "claude", "hooks", "review-gate.py"), encoding="utf-8") as f:
+            gate = f.read()
+        for name in GATE_FILES:
+            self.assertIn(f'"{name}"', gate)
+
+    def test_ask_rules_cover_the_gate_waivers(self):
+        self.assertEqual(ASK, [f"{tool}(*review-gate.py*{flag}*)" for tool in ("Bash", "PowerShell")
+                               for flag in ("--skip", "--tier-override", "--allow-branch")])
+        self.assertIn("Bash(*review-gate.py*--skip*)", ASK)
+        self.assertIn("PowerShell(*review-gate.py*--allow-branch*)", ASK)
 
 
 class Merge(unittest.TestCase):
@@ -63,6 +85,12 @@ class Merge(unittest.TestCase):
     def test_nothing_wanted_leaves_no_empty_keys(self):
         self.assertEqual(self.merge({"model": "x"}, []), {"model": "x"})
         self.assertEqual(self.merge({"permissions": {"deny": RULES}}, []), {"permissions": {"deny": []}})
+
+    def test_ask_section_is_merged_the_same_way(self):
+        cfg = {"permissions": {"ask": ["Bash(git push *)"], "deny": ["Read(./x)"]}}
+        nousfx_deny.merge(cfg, ASK, nousfx_sync.SyncError, "settings.json", section="ask")
+        self.assertEqual(cfg["permissions"]["ask"], ["Bash(git push *)"] + ASK)
+        self.assertEqual(cfg["permissions"]["deny"], ["Read(./x)"])
 
     def test_bad_shapes_stop_the_run(self):
         for cfg in ({"permissions": []}, {"permissions": {"deny": "Read(x)"}}, {"permissions": {"deny": [{"x": 1}]}}):
@@ -122,6 +150,19 @@ class Sync(Base):
             self.assertNotIn(gone, deny)
         self.assertIn("Read(//**/.env*)", deny)
         self.assertEqual(len(deny), len(RULES) - 3)
+
+    def test_gate_rules_cannot_be_excluded(self):
+        write(os.path.join(self.state, "deny.toml"), 'exclude = ["//**/claude-review-ok"]\n')
+        r = self.sync()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("matches no deny rule", r.stderr)
+
+    def test_sync_writes_ask_rules_and_keeps_the_users(self):
+        write(self.settings, json.dumps({"permissions": {"ask": ["Bash(git push *)"]}}))
+        r = self.sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(read(self.settings))["permissions"]["ask"], ["Bash(git push *)"] + ASK)
+        self.assertEqual(self.sync("--check").returncode, 0)
 
     def test_unknown_exclusion_fails_before_writing(self):
         write(os.path.join(self.state, "deny.toml"), 'exclude = ["**/.env.example"]\n')

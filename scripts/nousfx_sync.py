@@ -228,6 +228,7 @@ def merge_settings(current, gate_path, win, drift=None, deny=None, where="settin
                       {"matcher": "startup", "hooks": [warn]})  # not on resume, clear or compact
     if deny is not None:
         nousfx_deny.merge(cfg, deny, SyncError, where)
+        nousfx_deny.merge(cfg, nousfx_deny.ASK_RULES, SyncError, where, section="ask")
     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
 
 

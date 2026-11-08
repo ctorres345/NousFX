@@ -601,7 +601,9 @@ class CheckCommand(Base):
 
 class Marker(Base):
     def test_mark_alone_is_refused_and_records_nothing(self):
-        self.assertNotEqual(self.mark().returncode, 0)
+        r = self.mark()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn('--skip "', r.stdout + r.stderr)  # NFX-101: no ready-made skip command
         self.assertEqual(self.run_gate("gh pr create"), BLOCKED)
 
     def test_mark_with_bad_findings_is_refused(self):
@@ -633,6 +635,19 @@ class Marker(Base):
         self.assertEqual(self.run_gate("gh pr create"), ALLOWED)
         self.mark("--findings", "2", "--skip", "approved")
         self.assertEqual(self.run_gate("gh pr create"), ALLOWED)
+
+    def test_block_messages_print_no_ready_made_skip_command(self):
+        """NFX-101: a skip is the user's call, so no block hands the agent a command to waive its own review."""
+        outputs = [("Blocked: no review", self.run_gate("gh pr create", full=True).stderr.decode())]
+        self.mark("--findings", "2")
+        outputs.append(("Blocked: the recorded review has 2", self.run_gate("gh pr create", full=True).stderr.decode()))
+        self.write_check(self.repo, None)
+        outputs.append(("Nothing recorded: this repo has no check", self.mark("--findings", "0").stderr))
+        for start, out in outputs:
+            with self.subTest(start=start):
+                self.assertTrue(out.startswith(start), out)
+                self.assertNotIn('--skip "', out)
+                self.assertIn("ask the user", out)
 
     def test_committed_edit_after_review_blocks(self):
         self.mark("--findings", "0")

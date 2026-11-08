@@ -89,8 +89,8 @@ GIT_REPO_VARS = re.compile(r"\bGIT_(?:DIR|WORK_TREE)\b", re.I)
 
 TIER_TOO_LOW = """\
 Nothing recorded: --tier {tier} is below the computed Tier {computed} ({why}).
-Record the computed tier or a higher one. If the user explicitly approves the lower tier, add
---tier-override "<reason>" to the same command: python3 "{script}" --mark ... --tier {tier} --tier-override "<reason>\""""
+Record the computed tier or a higher one. A lower tier is the user's call: ask the user. Do not record an
+override yourself."""
 
 BLOCK = """\
 Blocked: no review recorded for this code. Before opening a PR:
@@ -100,14 +100,14 @@ Blocked: no review recorded for this code. Before opening a PR:
 - If the change touches auth, migrations, concurrency, or a public API, offer the
   `reviewer-deep` agent (ask first).
 - When done, record it: python3 "{script}" --mark --findings <open high count + open med at 60 or more> --tier <0-3> --reasons "<tier reasons>"
-  The mark refuses a --tier below what tier.py computes. Add --tier-override "<reason>" only with the user's explicit approval.
-- If the user explicitly approves skipping the review: python3 "{script}" --mark --skip "<reason>"
+  The mark refuses a --tier below what tier.py computes. A lower tier is the user's call: ask the user.
+- Skipping is the user's call: ask the user. Do not record a skip yourself.
 Editing code after the review invalidates the marker; re-run on the final diff."""
 
 FINDINGS_BLOCK = """\
 Blocked: the recorded review has {count} open high or med (confidence 60+) finding(s).
 - Fix them and run the `review-loop` skill again. When none are open, it records: python3 "{script}" --mark --findings 0
-- If the user explicitly approves opening the PR anyway: python3 "{script}" --mark --skip "<reason>"
+- Skipping is the user's call: ask the user. Do not record a skip yourself.
 """
 
 NO_CHECK = """\
@@ -116,7 +116,7 @@ Nothing recorded: this repo has no check command, so the gate cannot run the tes
     [check]
     command = "<your test command, for example ./gradlew test, flutter test or npm test>"
   (the `project-setup` skill can propose one). The command is read from the default branch, so the PR that adds it is marked with the working-tree copy and later PRs with the merged one.
-- If the user explicitly approves skipping the tests: python3 "{script}" --mark --skip "<reason>"
+- Skipping is the user's call: ask the user. Do not record a skip yourself.
 """
 
 CHECK_FAILED = """\
@@ -164,7 +164,8 @@ so the gate cannot tell which repo to check. Run it from the repo, or `cd` to a 
 
 ERROR_BLOCK = """\
 Blocked: the review gate could not check this repo: {error}
-Fix the problem and try again. If the user explicitly approves skipping the review: python3 "{script}" --mark --skip "<reason>"
+Fix the problem and try again.
+- Skipping is the user's call: ask the user. Do not record a skip yourself.
 """
 
 PARSER_BLOCK = """\
@@ -178,7 +179,7 @@ Blocked: branch "{branch}" is not named cesar/<JIRA-KEY> (for example cesar/MOB-
 - Create or find the Jira ticket, then rename the branch: git branch -m cesar/<KEY>
   (rename only an unpushed branch, or ask the user first). A rename leaves the review mark on the old name,
   so run the `review-loop` skill again after it.
-- If the user explicitly approves this name for the PR: python3 "{script}" --allow-branch "<reason>"
+- Another name for this PR is the user's call: ask the user. Do not record an exception yourself.
 """
 
 
@@ -488,7 +489,8 @@ def mark(argv):
     except (IndexError, ValueError):
         findings, skip = None, None
     if findings is None and skip is None:
-        print('Nothing recorded. Use --mark --findings <open high count + open med at 60 or more> or --mark --skip "<reason>".',
+        print("Nothing recorded. Use --mark --findings <open high count + open med at 60 or more>. "
+              "Skipping is the user's call: ask the user.",
               file=sys.stderr)
         return 2
     cwd = os.getcwd()
