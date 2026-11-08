@@ -150,7 +150,7 @@ Via skips any missing design skill and lists it under "Skipped". Sync installs m
   - that review has 0 open high or med (confidence 60+) findings (`--mark --findings <count>`), or you approved a skip (`--mark --skip "<reason>"`).
 - The marker lives in the git dir, so it is never committed.
 - Limits to know:
-  - It does not catch every form, for example PRs created from script files, `gh api`, shell functions, remote shells or `find -exec`.
+  - It does not catch every form, for example PRs created from script files, `gh alias`, SDK calls, shell functions, remote shells or `find -exec`. `gh api`, `curl` and `wget` creates are blocked.
   - An error while checking a create blocks it. The call passes only outside a git repo, when the folder is missing, or when git is not installed.
   - A PR opened in the GitHub web UI is not caught.
   - Hooks load at session start, so restart running sessions after installing.

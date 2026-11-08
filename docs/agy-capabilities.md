@@ -115,7 +115,7 @@ I wrote the adapter (`harness/agy/agy_gate.py`), had sync generate the plugin, c
 | Does the deny reason reach the model? | Yes, the gate's full message | **ran** |
 | Does the gate message name the right gate? | Yes: the plugin folder's own copy, not `~/.claude/hooks` | **ran** |
 | Does it load from the global `~/.gemini/config/plugins/`? | Not run. I only tried the project-level plugin folder; the first real sync needs a live check | untested |
-| Does a hook timeout block or fall back to a prompt? | Not run. The adapter has one 25 s deadline for all its checks and denies when it runs out, so agy's 30 s limit is not reached | untested |
+| Does a hook timeout block or fall back to a prompt? | Not run. The adapter has one deadline for all its checks (`--budget 55` in `hooks.json`) and denies when it runs out, so agy's 60 s limit is not reached | untested |
 | Does `allow` skip agy's permission prompt? | Not run. The adapter prints nothing to allow, which is the proven "no decision" path | untested |
 
 ## Subagent call (NFX-43, 2026-11-05)

@@ -73,7 +73,7 @@ Claude Code's `/doctor` may suggest edits to `~/.claude/CLAUDE.md`. Apply them t
 
 - The home dir comes from the user record, never the `HOME` variable.
 - The generated header holds a short hash of the sources that made the file (rules: neutral file, overlay, local file; agents: the agent file and its role entry in `models.toml`), never the repo commit. `--check` flags a real source change or a hand edit, not every commit. The rules header also names its source files by path, as `~/...` when they are under my home (personal, so only in my home, never in `--project` stubs); the hash still comes from the texts alone.
-- The installed hook runs `python3 -I -B "<gate>"` (`python -I -B` on Windows). `-B` leaves no bytecode behind. `-I` ignores `PYTHONPATH` and user site, so a file named like a standard module cannot make the gate allow a PR.
+- The installed hook runs `python3 -I -B "<gate>" --budget 55` (`python -I -B` on Windows) with a 60 s timeout: the gate blocks when its budget runs out, before the hook times out and lets the call through (NFX-102). `-B` leaves no bytecode behind. `-I` ignores `PYTHONPATH` and user site, so a file named like a standard module cannot make the gate allow a PR.
 - Sync refuses a symlinked target file or folder under `~/.claude` instead of replacing it or writing through it. Nothing is changed when it refuses.
 - A backup goes to `<state home>/backups/<stamp>/` before every write. A run with nothing to change writes and backs up nothing.
 - A secret scan runs over the generated rules and the hook files. A hit fails the run before anything is written.
