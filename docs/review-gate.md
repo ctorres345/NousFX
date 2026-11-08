@@ -48,6 +48,25 @@ A mark now means the tests passed, not only that a reviewer was satisfied. `--ma
 - The agent still reports only the findings count. It cannot report a pass the gate did not see.
 - `sync --project` prints a note when the repo has no check command. It never invents one; the `project-setup` skill proposes one for the stack and asks.
 
+### Pass stamp (NFX-97)
+
+The review loop's last test run and `--mark` used to run the same suite twice. Now the last run goes through the gate and leaves a stamp that `--mark` trusts.
+
+```
+run-check --stamp ──► trusted check (as --mark) ──► pass, tree unchanged? ──► write signed stamp
+                                                    │ fail, timeout, edits files, detached
+                                                    └──► refuse, remove any stamp
+--mark --findings N ──► stamp MAC valid and tree, branch, command, source match? ──► yes: no run
+                                                                                 └─► no: run the check
+```
+
+- `review-gate.py run-check --stamp` reads the check like `--mark` (default branch first), streams its output, and writes `claude-review-check-pass` in the git dir: `{tree, branch, command, source, timeout, exit, time, mac}`.
+- The MAC is HMAC-SHA256 over the other fields, with a random key in `claude-review-stamp-key` in the git dir (mode 0600, created on first use). A stamp written by hand or by a test does not verify. The key is read before the run, and both the stamp run and `--mark` remove any stamp the check command wrote, so a failing check cannot leave one for the next mark.
+- review-loop waits for `run-check --stamp` to exit before `--mark`; a mark that starts first finds no stamp and runs the check.
+- `--mark` deletes the stamp when it reaches the check, used or not, so one stamp serves one mark. A mark refused before that (a bad `--tier`) leaves it for the next try.
+- Any changed, added or removed file that git does not ignore changes the tree, so the stamp no longer matches and `--mark` runs the check. So do another branch, a changed command or timeout on the default branch, or a different source.
+- Limit: the key is readable by the same user, so this stops a stray write, not a deliberate forger. The mark itself is a plain file, and CI runs the check on every PR anyway.
+
 ### In CI
 
 - `review-gate.py run-check --ref origin/<base>` reads the command from the base branch and runs it in the PR checkout. The workflow takes the gate from the base branch too, so a PR cannot change the command or the script that reads it.

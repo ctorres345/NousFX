@@ -41,6 +41,9 @@ changes files, or is not configured. `--skip` runs no check.
 
 Run-check mode: `review-gate.py run-check --ref REF` (CI) reads the check command from REF only and runs it
 in the current checkout. Exit 0 when the command passes, 2 otherwise.
+`run-check --stamp` (local, NFX-97) runs the check `--mark` would run and, when it passes without changing the
+tree, writes a pass stamp signed with a key in the git dir. A `--mark --findings` on the same tree, branch, command
+and source uses the stamp instead of running the check again, and deletes it.
 
 The marker is keyed on a git tree hash of the working tree (tracked + untracked files,
 .gitignore respected), so it survives committing but not further edits. It lives in the
@@ -48,9 +51,12 @@ git dir, so it is never committed and is per-worktree.
 """
 import collections
 import contextlib
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -73,6 +79,8 @@ except ImportError:  # Python < 3.11
 CHECK_FILE = ".nousfx/project.toml"
 CHECK_TIMEOUT = 1800
 CHECK_LOG = "claude-review-check.log"
+STAMP_FILE = "claude-review-check-pass"  # in the git dir, written only by `run-check --stamp` (NFX-97)
+STAMP_KEY = "claude-review-stamp-key"
 GIT_ENV_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
 
 BRANCH_OK = re.compile(r"^cesar/[A-Z][A-Z0-9]+-\d+$")
@@ -325,6 +333,79 @@ def run_check(cwd, check, log_path=None):
     return (True, "") if code == 0 else (False, f"exited with {code}")
 
 
+def trusted_check(cwd):
+    """(check, ref) for a local run: the default branch's CHECK_FILE whenever it exists, even without a usable
+    [check] (then check is None). Only when that branch has no such file (the PR that adds it) or there is no
+    default branch at all does the working-tree copy count. CI always reads the base branch."""
+    ref = default_ref(cwd)
+    trusted = bool(ref) and exists_at(cwd, ref, CHECK_FILE)
+    return load_check(cwd, ref if trusted else None), ref
+
+
+def stamp_key(cwd):
+    """The stamp's HMAC key, created (mode 0600) on first use. It stops a stamp written by hand or by a test, not
+    a user who reads the key on purpose: the mark itself is a plain file too, and CI re-runs the check."""
+    path = git_path(STAMP_KEY, cwd)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass
+    else:
+        with os.fdopen(fd, "wb") as f:
+            f.write(secrets.token_hex(32).encode())
+    with open(path, "rb") as f:
+        key = f.read()
+    if len(key) < 32:
+        raise RuntimeError(f"stamp key {path} is too short; delete it and run again")
+    return key
+
+
+def stamp_fields(tree, branch, check):
+    """The fields a stamp must match for --mark to skip the run, from the tree, branch and trusted check."""
+    return {"tree": tree, "branch": branch, "command": check["command"], "source": check["source"],
+            "timeout": check["timeout"]}
+
+
+def run_verified(cwd, check, tree, log_path=None):
+    """run_check, then refuse a pass that changed the working tree. Returns (ok, why)."""
+    ok, why = run_check(cwd, check, log_path)
+    if ok and worktree_tree(cwd) != tree:
+        ok, why = False, "changed files in the working tree (a check must not edit files)"
+    return ok, why
+
+
+def stamp_mac(key, fields):
+    body = json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()
+    return hmac.new(key, body, hashlib.sha256).hexdigest()
+
+
+def remove_stamp(cwd):
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(git_path(STAMP_FILE, cwd))
+
+
+def write_stamp(cwd, fields, key):
+    stamp = {**fields, "mac": stamp_mac(key, fields)}
+    with open(git_path(STAMP_FILE, cwd), "w", encoding="utf-8") as f:
+        json.dump(stamp, f)
+
+
+def valid_stamp(cwd, expected):
+    """The stamp's fields when its MAC is right and it matches every key of `expected` (stamp_fields), else None.
+    A missing, unreadable or forged stamp is None, so the caller runs the check."""
+    try:
+        with open(git_path(STAMP_FILE, cwd), encoding="utf-8") as f:
+            stamp = json.load(f)
+        mac = stamp.pop("mac")
+        if not isinstance(mac, str) or not hmac.compare_digest(mac, stamp_mac(stamp_key(cwd), stamp)):
+            return None
+    except (OSError, ValueError, KeyError, AttributeError, TypeError, RuntimeError):
+        return None
+    if stamp.get("exit") != 0 or any(stamp.get(k) != v for k, v in expected.items()):
+        return None
+    return stamp
+
+
 def log_tail(path, lines=40):
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -439,12 +520,7 @@ def mark(argv):
             marker["tier_computed"], marker["tier_override"] = computed, override
     if not skip:
         try:
-            ref = default_ref(cwd)
-            # The default branch's file wins whenever it exists, even without a usable [check] (then: no check).
-            # Only when that branch has no such file (the PR that adds it) or there is no default branch at all
-            # does the working-tree copy count. CI always reads the base branch.
-            trusted = bool(ref) and exists_at(cwd, ref, CHECK_FILE)
-            check = load_check(cwd, ref if trusted else None)
+            check, ref = trusted_check(cwd)
         except Exception as e:
             print(f"Nothing recorded: cannot read the check command from {CHECK_FILE}: {e}", file=sys.stderr)
             return 2
@@ -452,9 +528,14 @@ def mark(argv):
             print(NO_CHECK.format(file=CHECK_FILE, script=SCRIPT), file=sys.stderr)
             return 2
         log = git_path(CHECK_LOG, cwd)
-        ok, why = run_check(cwd, check, log)
-        if ok and worktree_tree(cwd) != tree:
-            ok, why = False, "changed files in the working tree (a check must not edit files)"
+        stamp = valid_stamp(cwd, stamp_fields(tree, branch, check))
+        remove_stamp(cwd)  # one mark per stamp
+        if stamp:
+            ok = True
+            print(f"check passed for tree {tree[:10]} at {stamp.get('time')} (run-check --stamp); not run again")
+        else:
+            ok, why = run_verified(cwd, check, tree, log)
+            remove_stamp(cwd)  # the command is branch code: it may have written a stamp for the next mark
         if not ok:
             if os.path.exists(marker_path):
                 os.remove(marker_path)  # the command is branch code: it may have written a mark itself
@@ -806,11 +887,49 @@ def verify_tier(argv):
     return 0
 
 
+def run_check_stamp():
+    """`run-check --stamp` (local): run the check --mark would run, show its output, and on a pass that leaves
+    the tree unchanged write a signed stamp that lets the next --mark skip the run. 0 passes, 2 blocks."""
+    cwd = os.getcwd()
+    try:
+        remove_stamp(cwd)  # a refused run must not leave an older stamp behind
+        branch = current_branch(cwd)
+        if branch == "HEAD":
+            print("Blocked: HEAD is detached, and a stamp covers only the branch it was recorded on.",
+                  file=sys.stderr)
+            return 2
+        tree = worktree_tree(cwd)
+        check, _ = trusted_check(cwd)
+        key = stamp_key(cwd)  # before the run, so a key the command replaces never signs the stamp
+    except Exception as e:
+        print(f"Blocked: cannot prepare the check: {e}", file=sys.stderr)
+        return 2
+    if not check:
+        print(NO_CHECK.format(file=CHECK_FILE, script=SCRIPT), file=sys.stderr)
+        return 2
+    print(f"Running the check from {check['source']}: {check['command']}", flush=True)
+    ok, why = run_verified(cwd, check, tree)
+    remove_stamp(cwd)  # the command is branch code: it may have written one itself
+    if not ok:
+        print(f"Blocked: the check command {why}. No stamp recorded.", file=sys.stderr)
+        return 2
+    write_stamp(cwd, {**stamp_fields(tree, branch, check), "exit": 0, "time": time.strftime("%Y-%m-%dT%H:%M:%S")}, key)
+    print(f"Check passed. Stamp recorded for tree {tree[:10]}: --mark will not run the check again until a file "
+          "changes.")
+    return 0
+
+
 def run_check_ref(argv):
-    """`run-check --ref REF` (CI): run the check command that REF holds, in this checkout. 0 passes, 2 blocks."""
+    """`run-check --ref REF` (CI): run the check command that REF holds, in this checkout. 0 passes, 2 blocks.
+    `run-check --stamp` is the local variant (run_check_stamp)."""
+    if "--stamp" in argv:
+        if "--ref" in argv:
+            print("Blocked: run-check takes --ref REF (CI) or --stamp (local), not both", file=sys.stderr)
+            return 2
+        return run_check_stamp()
     ref = option(argv, "--ref")
     if not ref:
-        print("Blocked: usage: review-gate.py run-check --ref REF", file=sys.stderr)
+        print("Blocked: usage: review-gate.py run-check --ref REF, or run-check --stamp", file=sys.stderr)
         return 2
     cwd = os.getcwd()
     try:

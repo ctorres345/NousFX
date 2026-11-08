@@ -4,6 +4,7 @@
 
 ### Review gate
 - `gh pr create` (and a create-PR MCP tool) now also needs a `Review-Gate: <HEAD tree>` line in the PR body. No body, `--fill`, a stale hash, a body built at run time or a body file without the line blocks, and the message prints the exact lines to paste. `attest` refuses with "commit or clean first" when the working tree differs from HEAD (NFX-85).
+- The tests no longer run twice before a PR. review-loop's last test run is `review-gate.py run-check --stamp`, which writes a signed pass stamp for the tree; `--mark` on the same tree, branch and command uses it instead of running the check again. Any changed file still forces a run. `scripts/run_checks.py` runs the suites in parallel (`-j N`, `-j 1` for one by one). A root `HANDOFF.md` is gitignored, and `via.example.json` lists `obsidian.argon_log` (NFX-97).
 
 ### Sync and install
 - Sync writes a deny list to `~/.claude/settings.json`: Claude's file tools may not read or edit `.env*`, `*.pem`, `*.key` and SSH keys (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`), or edit lockfiles. My own deny rules and settings are kept, and `~/.config/nousfx/deny.toml` leaves a rule out (NFX-74).
