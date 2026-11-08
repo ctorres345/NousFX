@@ -215,7 +215,8 @@ def replace_owned(entries, marker, entry):
 
 def merge_settings(current, gate_path, win, drift=None, deny=None, where="settings.json"):
     """Register the review gate and, when `drift` is (script, repo, tools), the session-start drift warning.
-    `deny` is the list of deny rules sync owns (None: leave permissions as they are)."""
+    `deny` is the list of deny rules sync owns (None: leave permissions as they are). The auto-mode allow rules
+    are always merged."""
     cfg = json.loads(current) if current else {}
     if not isinstance(cfg, dict):
         raise SyncError(f"{where} is not a JSON object; fix it first", 2)
@@ -232,7 +233,7 @@ def merge_settings(current, gate_path, win, drift=None, deny=None, where="settin
     if deny is not None:
         nousfx_deny.merge(cfg, deny, SyncError, where)
         nousfx_deny.merge(cfg, nousfx_deny.ASK_RULES, SyncError, where, section="ask")
-        nousfx_automode.merge(cfg, SyncError, where)
+    nousfx_automode.merge(cfg, SyncError, where)
     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
 
 

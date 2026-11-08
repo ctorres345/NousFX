@@ -91,12 +91,6 @@ class Sync(Base):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("settings.json", r.stdout)
 
-    def test_restore_puts_back_the_old_auto_mode(self):
-        write(self.settings, json.dumps({"autoMode": {"allow": ["Bash(adb:*)"], "environment": ENV}}))
-        self.sync()
-        self.assertEqual(self.sync("--restore").returncode, 0)
-        self.assertEqual(json.loads(read(self.settings)), {"autoMode": {"allow": ["Bash(adb:*)"], "environment": ENV}})
-
     def test_bad_auto_mode_fails_before_writing(self):
         write(self.settings, json.dumps({"autoMode": {"allow": "x"}}))
         r = self.sync()

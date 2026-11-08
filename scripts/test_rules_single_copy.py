@@ -22,8 +22,7 @@ import real_machine_regression as regression  # noqa: E402
 MIN_WORDS = 6
 # Bytes of AGENTS.md + Claude overlay, what every Claude session loads. A ratchet: with the local layers the
 # generated rules sit near the 6144-byte sync budget (nousfx_sync.RULES_BUDGET), so cut a line before adding one,
-# and lower this number when the rules shrink (NFX-96). NFX-117 raised it 41 bytes for the post-merge cleanup
-# rule after cutting 64 elsewhere; the generated rules still fit the sync budget.
+# and lower this number when the rules shrink (NFX-96).
 CLAUDE_RULES_BUDGET = 3264
 
 

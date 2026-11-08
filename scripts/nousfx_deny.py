@@ -108,6 +108,15 @@ def wanted_rules(excludes):
     return [r for r in RULES if r not in excludes]
 
 
+def splice_owned(current, rules, owned):
+    """`current` with every rule in `owned` replaced by `rules`, placed where the first owned one was, else at
+    the end. The user's own entries keep their order (shared with nousfx_automode)."""
+    owned = set(owned)
+    at = next((i for i, r in enumerate(current) if r in owned), len(current))  # everything before it is the user's
+    kept = [r for r in current if r not in owned]
+    return kept[:at] + list(rules) + kept[at:]
+
+
 def merge(cfg, rules, SyncError, where, section="deny"):
     """Put `rules` into cfg["permissions"][section] ("deny" or "ask"). Rules sync owns there that are not wanted (now excluded) go;
     the user's own rules stay where they are. Ours go where the first of ours was, else at the end."""
@@ -118,10 +127,7 @@ def merge(cfg, rules, SyncError, where, section="deny"):
     had_list, current = section in perms, perms.get(section, [])
     if not isinstance(current, list) or not all(isinstance(r, str) for r in current):
         raise SyncError(f"{where}: \"permissions.{section}\" is not a list of strings; fix it first", 2)
-    owned = set({"deny": RULES, "ask": ASK_RULES}[section])
-    at = next((i for i, r in enumerate(current) if r in owned), len(current))  # everything before it is the user's
-    kept = [r for r in current if r not in owned]
-    current = kept[:at] + list(rules) + kept[at:]
+    current = splice_owned(current, rules, {"deny": RULES, "ask": ASK_RULES}[section])
     if current or had_list:  # never leave an empty key behind that the user did not have
         perms[section] = current
     if perms or had_perms:

@@ -143,7 +143,7 @@ After a PR merges, the shared rules tell the agent to delete the branch it made,
 - `Bash(git branch -D cesar/*)`
 - `Bash(git push origin --delete cesar/*)`
 
-Only my `cesar/` ticket branches match; `main` and other people's branches still go through the classifier.
+They name only my `cesar/` ticket branches, one branch per command. Auto mode reads them as guidance for its classifier, not as an exact pattern, so a command that also names another branch is not promised to pass or to be blocked.
 
 - Sync owns only these two. `"$defaults"` (the built-in allow list) and my own entries, such as `Bash(adb:*)`, stay where they are. If I wrote one of the two by hand, sync treats it as its own.
 - With no `autoMode.allow` yet, sync creates it as `["$defaults", ...the two]`, so the built-in rules are not lost. A list I wrote without `"$defaults"` stays without it.
