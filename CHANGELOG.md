@@ -7,6 +7,7 @@
 - The tests no longer run twice before a PR. review-loop's last test run is `review-gate.py run-check --stamp`, which writes a signed pass stamp for the tree; `--mark` on the same tree, branch and command uses it instead of running the check again. Any changed file still forces a run. `scripts/run_checks.py` runs the suites in parallel (`-j N`, `-j 1` for one by one). A root `HANDOFF.md` is gitignored, and `via.example.json` lists `obsidian.argon_log` (NFX-97).
 
 ### Sync and install
+- `nousfx_sync.py --project` checks the repo's copies of the gate, agents and review-loop: `--check` reports a stale one as drift and a real run refreshes it, never adding one. project-setup no longer points review-loop at the repo's gate copy; that copy is only the cloud fallback, and the project hook now skips it when `~/.claude/hooks/review-gate.py` exists; existing repos merge that hook again, and `--project` prints a note until they do (NFX-98).
 - Sync writes a deny list to `~/.claude/settings.json`: Claude's file tools may not read or edit `.env*`, `*.pem`, `*.key` and SSH keys (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`), or edit lockfiles. My own deny rules and settings are kept, and `~/.config/nousfx/deny.toml` leaves a rule out (NFX-74).
 
 ### Via
