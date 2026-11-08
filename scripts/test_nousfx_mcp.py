@@ -232,10 +232,12 @@ class Project(Base):
             '[servers.p]\ntools = ["claude", "agy"]\nurl = "https://p.example.com"\n')
         r = self.plan(project=proj)
         pc, pa = os.path.join(proj, ".mcp.json"), os.path.join(proj, ".agents", "plugins", "nousfx", "mcp_config.json")
-        self.assertEqual(set(r) - {self.owned}, {pc, pa})
+        rec = M.project_record(proj)
+        self.assertEqual(set(r), {pc, pa, rec})  # the state record is not touched (NFX-99)
         self.assertEqual(json.loads(r[pc])["mcpServers"], {"p": {"type": "http", "url": "https://p.example.com"}})
         self.assertEqual(json.loads(r[pa])["mcpServers"], {"p": {"url": "https://p.example.com"}})
-        self.assertEqual(list(json.loads(r[self.owned])["claude"][pc]), ["p"])
+        self.assertEqual(list(json.loads(r[rec])["claude"][".mcp.json"]), ["p"])
+        self.assertLess(list(r).index(rec), list(r).index(pc))  # record first
 
     def test_global_entries_never_in_project(self):
         self.shared()
@@ -247,6 +249,79 @@ class Project(Base):
         self.assertEqual(json.loads(r[os.path.join(proj, ".agents", "plugins", "nousfx",
                                                    "mcp_config.json")]), {"mcpServers": {}})
         self.assertNotIn(os.path.join(proj, ".mcp.json"), r)
+
+
+class ProjectRecord(Base):
+    """NFX-99: the project ownership record travels with the repo, so a new checkout is not "not mine"."""
+    P = '[servers.p]\ntools = ["claude"]\nurl = "https://p.example.com"\n'
+
+    def synced(self, toml=P):
+        self.shared()
+        self.proj = os.path.join(self.tmp, "proj")
+        put(os.path.join(self.proj, ".nousfx", "mcp.toml"), toml)
+        self.apply(self.plan(tools=("claude",), project=self.proj))
+        self.mcp = os.path.join(self.proj, ".mcp.json")
+
+    def copy(self):
+        """A fresh worktree or clone: the committed files, a new path, an empty state home."""
+        other = os.path.join(self.tmp, "clone")
+        shutil.copytree(self.proj, other)
+        shutil.rmtree(self.state)
+        os.makedirs(self.state)
+        return other
+
+    def changed(self, result):
+        return {p: t for p, t in result.items() if not os.path.exists(p) or open(p, encoding="utf-8").read() != t}
+
+    def test_a_copied_project_syncs_clean(self):
+        self.synced()
+        other = self.copy()
+        self.assertEqual(self.changed(self.plan(tools=("claude",), project=other)), {})
+
+    def test_a_stale_committed_file_updates_after_the_list_changed(self):
+        self.synced()
+        other = self.copy()
+        put(os.path.join(other, ".nousfx", "mcp.toml"), self.P.replace("p.example", "q.example"))
+        r = self.plan(tools=("claude",), project=other)
+        self.assertEqual(json.loads(r[os.path.join(other, ".mcp.json")])["mcpServers"]["p"]["url"],
+                         "https://q.example.com")
+
+    def test_without_a_record_anywhere_the_server_is_still_not_mine(self):
+        self.synced()
+        other = self.copy()
+        os.remove(M.project_record(other))
+        with self.assertRaises(SyncError) as c:
+            self.plan(tools=("claude",), project=other)
+        self.assertIn("not mine", str(c.exception))
+        self.assertIn("commit that checkout's .nousfx/mcp-owned.json", str(c.exception))
+
+    def test_a_hand_edit_under_an_owned_name_is_still_refused(self):
+        self.synced()
+        data = json.loads(open(self.mcp, encoding="utf-8").read())
+        data["mcpServers"]["p"]["url"] = "https://mine.example.com"
+        put(self.mcp, json.dumps(data))
+        with self.assertRaises(SyncError) as c:
+            self.plan(tools=("claude",), project=self.proj)
+        self.assertIn("not what sync wrote", str(c.exception))
+
+    def test_a_state_entry_from_before_moves_into_the_repo(self):
+        self.synced()
+        rec = M.project_record(self.proj)
+        legacy = json.loads(open(rec, encoding="utf-8").read())["claude"][".mcp.json"]
+        os.remove(rec)
+        put(self.owned, json.dumps({"claude": {self.mcp: legacy, "/other/.mcp.json": legacy}}))
+        r = self.plan(tools=("claude",), project=self.proj)
+        self.assertEqual(json.loads(r[rec])["claude"], {".mcp.json": legacy})
+        self.assertEqual(json.loads(r[self.owned])["claude"], {"/other/.mcp.json": legacy})
+        self.assertEqual(list(r)[:2], [rec, self.owned])  # records first
+        self.assertEqual(r[self.mcp], open(self.mcp, encoding="utf-8").read())  # .mcp.json already right
+        self.apply(r)
+        self.assertEqual(self.changed(self.plan(tools=("claude",), project=self.proj)), {})
+
+    def test_record_keys_cover_both_records_for_a_project_file(self):
+        self.assertEqual(M.record_keys(self.state, "/r/.mcp.json"),
+                         [(self.owned, "/r/.mcp.json"), (os.path.join("/r", ".nousfx", "mcp-owned.json"), ".mcp.json")])
+        self.assertEqual(M.record_keys(self.state, self.claude), [(self.owned, self.claude)])
 
 
 class ReviewFixes(Base):

@@ -1,7 +1,8 @@
 """One MCP server list for Claude Code and agy. Computes {abs path: new text}; sync does the writing.
 
 Shared list: <repo>/harness/mcp.toml plus optional <state>/mcp.toml (state wins on a name clash).
-Project mode reads only <project>/.nousfx/mcp.toml. No secret is ever written: env values must be
+Project mode reads only <project>/.nousfx/mcp.toml and keeps its ownership record in
+<project>/.nousfx/mcp-owned.json (docs/sync.md, MCP). No secret is ever written: env values must be
 exactly "${VAR}", and every string is scanned. Env references are NOT expanded here. Whether agy
 expands ${VAR} in env is unverified (docs are silent); that is a manual check.
 """
@@ -205,13 +206,40 @@ def servers_slice(text):
         return text
 
 
-def owned_names(record_text, path):
-    """Names the ownership record lists for a merged file. Empty if there is no record; ValueError if
-    there is one and it is unusable (restore must not guess which servers sync added)."""
-    return list(_record_claude(record_text).get(path, {}))
+def owned_names(record_text, key):
+    """Names the ownership record lists under `key` (see record_keys). Empty if there is no record; ValueError
+    if there is one and it is unusable (restore must not guess which servers sync added)."""
+    return list(_record_claude(record_text).get(key, {}))
 
 
-def _merge_claude(path, entries, owned, SyncError):
+def project_record(project):
+    return os.path.join(project, ".nousfx", OWNED_NAME)
+
+
+def record_keys(state, path):
+    """(record path, key) pairs that may list the servers sync added to a merged file: the state record by
+    absolute path (global files, and project files synced before NFX-99), plus the repo's own record for a
+    project .mcp.json."""
+    keys = [(os.path.join(state, OWNED_NAME), path)]
+    if os.path.basename(path) == PROJECT_CLAUDE_REL:
+        keys.append((project_record(os.path.dirname(path)), PROJECT_CLAUDE_REL))
+    return keys
+
+
+def _load_record(rec_path, SyncError):
+    """(old text, record dict, its "claude" maps) for one ownership record; an absent record is empty."""
+    rec_old = _read(rec_path)
+    try:
+        record = json.loads(rec_old) if rec_old else {}
+        maps = _record_claude(rec_old)
+        record["claude"] = dict(maps)
+    except (ValueError, AttributeError, TypeError):
+        raise SyncError(f"mcp: {rec_path} is not usable JSON; delete it only if you know what "
+                        "sync owns", code=2)
+    return rec_old, record, record["claude"]
+
+
+def _merge_claude(path, entries, owned, SyncError, hint=""):
     """Merge sync-owned names into the file's mcpServers. `owned` is {name: hash of what sync wrote}.
     Returns (text or None, {name: hash} now owned)."""
     old = _read(path)
@@ -226,7 +254,7 @@ def _merge_claude(path, entries, owned, SyncError):
     for n in names:
         if n in servers and n not in owned:
             raise SyncError(f"mcp: {path} already has a server named {n}: not mine, left untouched. "
-                            "Rename it in the shared list or remove it by hand.")
+                            f"Rename it in the shared list or remove it by hand.{hint}")
     for n, h in owned.items():  # a name in the record is mine only while its content is still what I wrote
         # "new+old": a run stopped between the record and the file leaves the old entry, which is mine too
         if n in servers and h is not None and _entry_hash(servers[n]) not in h.split("+") \
@@ -255,27 +283,37 @@ def plan_mcp(repo, home, state, tools, SyncError, patterns, project=None):
         result[path] = _dump({"mcpServers": {n: _shape(e, "agy") for n, e in servers.items()
                                              if "agy" in e["tools"]}})
     if "claude" in tools:
-        path = os.path.join(project, PROJECT_CLAUDE_REL) if project else os.path.join(home, CLAUDE_JSON_REL)
-        rec_path = os.path.join(state, OWNED_NAME)
-        rec_old = _read(rec_path)
-        try:
-            record = json.loads(rec_old) if rec_old else {}
-            maps = _record_claude(rec_old)
-            claude = record["claude"] = {p: m for p, m in maps.items()} if rec_old else {}
-            owned = maps.get(path, {})
-        except (ValueError, AttributeError, TypeError):
-            raise SyncError(f"mcp: {rec_path} is not usable JSON; delete it only if you know what "
-                            "sync owns", code=2)
+        if project:
+            path = os.path.join(project, PROJECT_CLAUDE_REL)
+            rec_path, key = project_record(project), PROJECT_CLAUDE_REL
+            hint = (" If another checkout of this repo synced it, commit that checkout's "
+                    ".nousfx/mcp-owned.json with .mcp.json.")
+        else:
+            path = os.path.join(home, CLAUDE_JSON_REL)
+            rec_path, key, hint = os.path.join(state, OWNED_NAME), path, ""
+        rec_old, record, claude = _load_record(rec_path, SyncError)
+        owned = claude.get(key, {})
+        records = [(rec_path, rec_old, record)]
+        if project:  # before NFX-99 the state record held this file by absolute path: move it into the repo
+            st_path = os.path.join(state, OWNED_NAME)
+            st_old, st_record, st_claude = _load_record(st_path, SyncError)
+            legacy = st_claude.pop(path, None)
+            if legacy is not None:
+                if rec_old is None:
+                    owned = legacy
+                records.append((st_path, st_old, st_record))
         entries = {n: _shape(e, "claude") for n, e in servers.items() if "claude" in e["tools"]}
-        text, names = _merge_claude(path, entries, owned, SyncError) if entries or owned else (None, {})
+        text, names = _merge_claude(path, entries, owned, SyncError, hint) if entries or owned else (None, {})
         if text is not None:
             result[path] = text
         if names:
-            claude[path] = names
+            claude[key] = names
         else:
-            claude.pop(path, None)
-        if rec_old is not None or names:
-            rec_new = _dump(record)
-            if rec_new != rec_old:  # first, so a stopped run never leaves a server in the file without its record
-                result = {rec_path: rec_new, **result}
+            claude.pop(key, None)
+        head = {}  # records first, so a stopped run never leaves a server in the file without its record
+        for p, old, rec in records:  # the state record is listed in project mode only when it held an entry
+            new = _dump(rec)
+            if new != old and (old is not None or names):
+                head[p] = new
+        result = {**head, **result}
     return result

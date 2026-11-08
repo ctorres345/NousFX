@@ -410,18 +410,26 @@ def restore(state):
     manifest = json.loads(read_text(os.path.join(root, "manifest.json")))
     merged = set(json.loads(read_or_none(os.path.join(root, "merged.json")) or "[]"))
     made = json.loads(read_or_none(os.path.join(root, "written.json")) or "{}")
-    record = os.path.join(state, nousfx_mcp.OWNED_NAME)
-    saved_record = manifest.get(record)
-    names_now = read_or_none(record)  # read before the record itself is put back
-    names_then = read_or_none(os.path.join(root, saved_record)) if saved_record else None
+    def recorded(path):
+        """Names sync added to a merged file, from each record as it is now and as the backup saved it."""
+        names = set()
+        for record, key in nousfx_mcp.record_keys(state, path):
+            saved = manifest.get(record)
+            now = read_or_none(record)
+            then = read_or_none(os.path.join(root, saved)) if saved else None
+            for text in (now, then):
+                try:
+                    names |= set(nousfx_mcp.owned_names(text, key))
+                except ValueError:
+                    raise SyncError(f"{record} is not usable, so sync cannot tell which servers it added to "
+                                    f"{path}. Nothing was changed. Fix or remove that servers entry by hand, "
+                                    "then run --restore again.")
+        return names
+    owned = {p: recorded(p) for p in manifest if p in merged}  # before the records themselves are put back
     # Merged files first: the ownership record is put back last, so a failed run can be repeated.
     for path, saved in sorted(manifest.items(), key=lambda kv: kv[0] not in merged):
         if path in merged:
-            try:
-                names = set(nousfx_mcp.owned_names(names_now, path)) | set(nousfx_mcp.owned_names(names_then, path))
-            except ValueError:
-                raise SyncError(f"{record} is not usable, so sync cannot tell which servers it added to {path}. "
-                                "Nothing was changed. Fix or remove that servers entry by hand, then run --restore again.")
+            names = owned[path]
             if not names:
                 print(f"warning: no servers recorded for {path}; it was left as it is", file=sys.stderr)
                 continue
