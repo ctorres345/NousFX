@@ -10,7 +10,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/review-gate.py\"; [ ! -f \"$f\" ] || python3 \"$f\"",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/review-gate.py\"; [ -f \"$HOME/.claude/hooks/review-gate.py\" ] || [ ! -f \"$f\" ] || python3 \"$f\"",
             "timeout": 30
           }
         ]
