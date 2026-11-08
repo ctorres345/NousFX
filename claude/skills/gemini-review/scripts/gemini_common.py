@@ -16,6 +16,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import secret_patterns  # noqa: E402
+
 HERE = os.path.dirname(os.path.realpath(__file__))
 CLI_VERSION = "0.4.5"
 MODEL = "gemini-4-argon"
@@ -23,16 +26,9 @@ MAX_BYTES = 200000  # the most diff text one call may send
 STRIP_ENV = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 CLI_TIMEOUT = 600
 
-# Files that often hold secrets never go into a diff.
-_EXCLUDE_NAMES = [
-    ".env*", "*.env", "*.env.*", "*password*", ".pgpass", ".pypirc", ".dockercfg", "kubeconfig", "*.ks",
-    "*.keystore", "*.jks", "*.pem", "*.p12", "*.p8", "*.pfx", "*.key", "*.tfvars", "*.mobileprovision",
-    "key.properties", "local.properties", "google-services.json", "GoogleService-Info.plist",
-    "id_rsa*", "id_ed25519*", ".npmrc", ".netrc", "*secret*", "*credential*",
-]
-EXCLUDES = [":(exclude,icase,glob)**/%s" % p for p in _EXCLUDE_NAMES] + [
-    ":(exclude,icase,glob)**/.env*/**", ":(exclude,icase,glob)**/*secret*/**", ":(exclude,icase,glob)**/*credential*/**",
-]
+# Files that often hold secrets never go into a diff: the deny-rule patterns plus the broad ones (NFX-103).
+EXCLUDE_NAMES = secret_patterns.DENY + secret_patterns.EXCLUDE_ONLY
+EXCLUDES = [":(exclude,icase,glob)**/%s" % p for p in EXCLUDE_NAMES]
 
 # Same pattern Via's setup uses (a test keeps them equal). Matched on bytes, so a line with invalid UTF-8 cannot hide a secret.
 SECRET_PATTERN = (

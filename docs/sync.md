@@ -87,12 +87,15 @@ Claude's file tools may not read or edit secret files, and may not edit lockfile
 
 | Files | Rule | Blocks |
 |---|---|---|
-| `.env*` (also `.envrc`, `.env.example`) | `Read(//**/.env*)`, `Edit(//**/.env*)` | read and edit |
-| `*.pem` | `Read(//**/*.pem)`, `Edit(//**/*.pem)` | read and edit |
-| `*.key` (also Keynote files) | `Read(//**/*.key)`, `Edit(//**/*.key)` | read and edit |
+| `.env*` (also `.envrc`, `.env.example`), `*.env` | `Read(//**/.env*)`, `Edit(//**/.env*)`, and the same for each | read and edit |
 | SSH keys: `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*` (also their `.pub`) | `Read(//**/id_rsa*)`, `Edit(//**/id_rsa*)`, and the same for each | read and edit |
+| Certificates and keys: `*.pem`, `*.key` (also Keynote files), `*.p12`, `*.p8`, `*.pfx` | the same shape | read and edit |
+| Android signing and Firebase: `*.jks`, `*.keystore`, `*.ks`, `key.properties`, `google-services.json`, `GoogleService-Info.plist` | the same shape | read and edit |
+| Credentials: `.npmrc`, `.netrc`, `.pypirc`, `.pgpass`, `.dockercfg`, `kubeconfig`, `.git-credentials`, `application_default_credentials.json` (gcloud) | the same shape | read and edit |
 | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `pubspec.lock`, `Podfile.lock`, `gradle.lockfile`, `gradle/dependency-locks/*.lockfile` | `Edit(//**/<name>)` | edit only, reading is fine |
 | Review gate files: `claude-review-ok`, `claude-review-stamp-key`, `claude-review-check-pass`, `claude-branch-ok`, in any git dir (`.git/`, a worktree's, a submodule's) | `Read(//**/<name>)`, `Edit(//**/<name>)` | read and edit; `deny.toml` cannot exclude them (NFX-101) |
+
+The secret file-name patterns come from one list shared with the Gemini review scripts, `claude/skills/gemini-review/scripts/secret_patterns.py` (NFX-103). Its `DENY` part holds only exact names and extensions, so a rule never blocks source code; a test checks names like `SecretsRepository.kt`. Its `EXCLUDE_ONLY` part (`*secret*`, `*credential*`, `*password*`, `*.env.*`, `*.tfvars`, `*.mobileprovision`, `local.properties` and secret-named folders) only keeps files out of what Gemini sees. `local.properties` stays readable because Android builds need its `sdk.dir`. If sync cannot load that file, it stops with code 2 and writes nothing, never a shorter list.
 
 How the rules read:
 - `//` means "from the root of the disk", so a rule matches anywhere, not only inside the folder the session started in. A bare `**/.env*` would only cover that folder. On Windows, Claude Code turns `C:\Users\me` into `/c/Users/me` before it matches, so `//**/` covers every drive. The rules are the same text on both machines.

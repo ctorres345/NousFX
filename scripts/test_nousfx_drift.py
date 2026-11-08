@@ -34,6 +34,9 @@ class DriftBase(Base):
         shutil.copytree(os.path.join(os.path.dirname(HERE), "plugins", "via", "scripts"),  # sync imports it
                         os.path.join(self.repo, "plugins", "via", "scripts"),
                         ignore=shutil.ignore_patterns("test_*", "__pycache__"))
+        patterns = os.path.join("claude", "skills", "gemini-review", "scripts", "secret_patterns.py")
+        os.makedirs(os.path.dirname(os.path.join(self.repo, patterns)), exist_ok=True)
+        shutil.copy(os.path.join(os.path.dirname(HERE), patterns), os.path.join(self.repo, patterns))  # deny list
         self.assertEqual(self.sync("--tools", "claude").returncode, 0)
         self.installed = os.path.join(self.home, ".claude", "hooks", "nousfx-drift.py")
 

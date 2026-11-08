@@ -16,6 +16,7 @@ that matches no rule fails the run, so a typo cannot leave a rule in place witho
 
 Sync owns exactly the rules in RULES (deny) and ASK_RULES (ask). The user's own deny rules, and every other setting, are kept.
 """
+import importlib.util
 import os
 import re
 import tomllib
@@ -23,8 +24,28 @@ import tomllib
 # "//" anchors a pattern at the file system root, so a rule matches anywhere on disk, not only under the
 # session's folder (a bare "**/x" is relative to the current directory). On Windows Claude Code turns
 # C:\Users\me into /c/Users/me before matching, so "//**/x" covers every drive. The same text works on both.
-SECRETS = ("//**/.env*", "//**/*.pem", "//**/*.key", "//**/id_rsa*", "//**/id_ed25519*", "//**/id_ecdsa*",
-           "//**/id_dsa*")
+# The secret patterns live in one list shared with the Gemini excludes (NFX-103), loaded by path from this repo
+# so sync never needs the skill installed first. If it cannot be loaded, SECRETS is empty and LOAD_ERROR says
+# why; load_excludes and merge then stop sync with code 2 before anything is written, never a shorter list.
+PATTERNS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                             "claude", "skills", "gemini-review", "scripts", "secret_patterns.py")
+
+
+def load_patterns(path=PATTERNS_FILE):
+    """The DENY tuple from secret_patterns.py at path. Raises on any failure."""
+    spec = importlib.util.spec_from_file_location("nousfx_secret_patterns", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    deny = module.DENY
+    if not deny or not isinstance(deny, tuple) or not all(isinstance(p, str) and p for p in deny):
+        raise ValueError("DENY must be a non-empty tuple of patterns")
+    return deny
+
+
+try:
+    SECRETS, LOAD_ERROR = tuple(f"//**/{p}" for p in load_patterns()), None
+except Exception as e:  # noqa: BLE001 - any failure must stop sync, not shorten the list
+    SECRETS, LOAD_ERROR = (), f"{type(e).__name__}: {e}"
 LOCKFILES = ("//**/package-lock.json", "//**/yarn.lock", "//**/pnpm-lock.yaml", "//**/pubspec.lock",
              "//**/Podfile.lock", "//**/gradle.lockfile", "//**/gradle/dependency-locks/*.lockfile")
 # Read applies to Grep and Glob too (best effort); Edit to every built-in tool that changes files (Write,
@@ -51,8 +72,14 @@ FILE_NAME = "deny.toml"
 _RULE = re.compile(r"^(Read|Edit)\((.+)\)$")
 
 
+def require_patterns(SyncError):
+    if LOAD_ERROR:
+        raise SyncError(f"cannot load the secret patterns from {PATTERNS_FILE} ({LOAD_ERROR}); nothing was written", 2)
+
+
 def load_excludes(state, SyncError):
     """The rules to leave out, from <state>/deny.toml (missing file: none)."""
+    require_patterns(SyncError)
     path = os.path.join(state, FILE_NAME)
     try:
         with open(path, encoding="utf-8") as f:
@@ -84,6 +111,7 @@ def wanted_rules(excludes):
 def merge(cfg, rules, SyncError, where, section="deny"):
     """Put `rules` into cfg["permissions"][section] ("deny" or "ask"). Rules sync owns there that are not wanted (now excluded) go;
     the user's own rules stay where they are. Ours go where the first of ours was, else at the end."""
+    require_patterns(SyncError)
     had_perms, perms = "permissions" in cfg, cfg.get("permissions", {})
     if not isinstance(perms, dict):
         raise SyncError(f"{where}: \"permissions\" is not an object; fix it first", 2)
