@@ -12,7 +12,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
         |
         v   python3 -B scripts/nousfx_sync.py [--tools claude,agy]
 ~/.claude/CLAUDE.md                generated, header holds a hash of the sources and names them by path
-~/.claude/settings.json            review gate, drift warning and deny list (other settings kept)
+~/.claude/settings.json            review gate, drift warning, deny list and auto-mode allow rules (other settings kept)
 ~/.claude/hooks/                   review-gate.py, pr_create_parser.py and nousfx-drift.py
 ~/.gemini/config/plugins/nousfx/   (agy) hooks.json, and hooks/ with agy_gate.py and its own copy of the gate
 ```
@@ -135,6 +135,20 @@ exclude = ["//**/*.key", "Edit(//**/pubspec.lock)"]
 - An entry must match a rule in the table exactly. One that matches nothing (a typo, or `**/.env.example`) stops the run before anything is written, and the message lists the rules.
 - A rule cannot carve one file out of a pattern. To allow `.env.example` but not `.env`, I exclude `//**/.env*` and add my own narrower rules by hand, for example `Read(//**/.env)` and `Read(//**/.env.local)`.
 - After I change `deny.toml`, `--check` shows drift until I run sync.
+
+## Auto-mode allow rules
+
+After a PR merges, the shared rules tell the agent to delete the branch it made, locally and on origin. Auto mode blocks both commands as Git Destructive unless an allow rule names them, so sync writes two rules to `autoMode.allow` in `~/.claude/settings.json` (`scripts/nousfx_automode.py`, NFX-117):
+
+- `Bash(git branch -D cesar/*)`
+- `Bash(git push origin --delete cesar/*)`
+
+They name only my `cesar/` ticket branches, one branch per command. Auto mode reads them as guidance for its classifier, not as an exact pattern, so a command that also names another branch is not promised to pass or to be blocked.
+
+- Sync owns only these two. `"$defaults"` (the built-in allow list) and my own entries, such as `Bash(adb:*)`, stay where they are. If I wrote one of the two by hand, sync treats it as its own.
+- With no `autoMode.allow` yet, sync creates it as `["$defaults", ...the two]`, so the built-in rules are not lost. A list I wrote without `"$defaults"` stays without it.
+- Sync never touches `autoMode.environment` or any other `autoMode` key. Those trust lines are machine-specific, so they stay out of the harness (README, `docs/RUNBOOK.md`).
+- A second run changes nothing, `--check` reports a missing rule as drift, and `--restore` puts back the old `settings.json`.
 
 ## Skills
 

@@ -8,7 +8,8 @@
 Writes under <home>/.claude (tool "claude", the default):
   CLAUDE.md                  neutral rules + Claude overlay + local.md + local.claude.md, with a header
   settings.json              the review gate registered as a PreToolUse hook, and the deny list for secret
-                             files and lockfiles in permissions.deny (nousfx_deny.py; other settings kept)
+                             files and lockfiles in permissions.deny (nousfx_deny.py), and the cesar/* branch
+                             deletes in autoMode.allow (nousfx_automode.py); other settings kept
   hooks/review-gate.py       the gate hook and its parser, copied from the repo
   hooks/pr_create_parser.py
   agents/*.md                from harness/agents (roles) and harness/models.toml (role -> model)
@@ -48,6 +49,7 @@ import time
 
 import nousfx_agents
 import nousfx_agy
+import nousfx_automode
 import nousfx_deny
 import nousfx_mcp
 import nousfx_outside
@@ -213,7 +215,8 @@ def replace_owned(entries, marker, entry):
 
 def merge_settings(current, gate_path, win, drift=None, deny=None, where="settings.json"):
     """Register the review gate and, when `drift` is (script, repo, tools), the session-start drift warning.
-    `deny` is the list of deny rules sync owns (None: leave permissions as they are)."""
+    `deny` is the list of deny rules sync owns (None: leave permissions as they are). The auto-mode allow rules
+    are always merged."""
     cfg = json.loads(current) if current else {}
     if not isinstance(cfg, dict):
         raise SyncError(f"{where} is not a JSON object; fix it first", 2)
@@ -230,6 +233,7 @@ def merge_settings(current, gate_path, win, drift=None, deny=None, where="settin
     if deny is not None:
         nousfx_deny.merge(cfg, deny, SyncError, where)
         nousfx_deny.merge(cfg, nousfx_deny.ASK_RULES, SyncError, where, section="ask")
+    nousfx_automode.merge(cfg, SyncError, where)
     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
 
 

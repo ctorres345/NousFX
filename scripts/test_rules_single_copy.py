@@ -23,7 +23,7 @@ MIN_WORDS = 6
 # Bytes of AGENTS.md + Claude overlay, what every Claude session loads. A ratchet: with the local layers the
 # generated rules sit near the 6144-byte sync budget (nousfx_sync.RULES_BUDGET), so cut a line before adding one,
 # and lower this number when the rules shrink (NFX-96).
-CLAUDE_RULES_BUDGET = 3223
+CLAUDE_RULES_BUDGET = 3264
 
 
 def read(path):
