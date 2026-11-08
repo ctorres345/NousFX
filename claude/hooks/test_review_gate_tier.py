@@ -50,7 +50,8 @@ class TierCheck(Base):
         r = self.gate(gate, "--mark", "--findings", "0", "--tier", "0")
         self.assertEqual(r.returncode, 2)
         self.assertIn("Tier 3", r.stderr)
-        self.assertIn("--tier-override", r.stderr)
+        self.assertIn("ask the user", r.stderr)
+        self.assertNotIn('--tier-override "', r.stderr)  # NFX-101: no ready-made override command
         self.assertEqual(self.attest(gate).returncode, 2)  # nothing recorded
 
     def test_a_refusal_removes_an_older_good_mark(self):

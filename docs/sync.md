@@ -92,11 +92,14 @@ Claude's file tools may not read or edit secret files, and may not edit lockfile
 | `*.key` (also Keynote files) | `Read(//**/*.key)`, `Edit(//**/*.key)` | read and edit |
 | SSH keys: `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*` (also their `.pub`) | `Read(//**/id_rsa*)`, `Edit(//**/id_rsa*)`, and the same for each | read and edit |
 | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `pubspec.lock`, `Podfile.lock`, `gradle.lockfile`, `gradle/dependency-locks/*.lockfile` | `Edit(//**/<name>)` | edit only, reading is fine |
+| Review gate files: `claude-review-ok`, `claude-review-stamp-key`, `claude-review-check-pass`, `claude-branch-ok`, in any git dir (`.git/`, a worktree's, a submodule's) | `Read(//**/<name>)`, `Edit(//**/<name>)` | read and edit; `deny.toml` cannot exclude them (NFX-101) |
 
 How the rules read:
 - `//` means "from the root of the disk", so a rule matches anywhere, not only inside the folder the session started in. A bare `**/.env*` would only cover that folder. On Windows, Claude Code turns `C:\Users\me` into `/c/Users/me` before it matches, so `//**/` covers every drive. The rules are the same text on both machines.
 - `Read` also covers Grep and Glob (Claude Code calls this best effort). `Edit` covers every built-in tool that changes a file: Write, MultiEdit and NotebookEdit. A `Write(...)` rule would never match, so there is none.
 - A deny rule wins over every allow, in every settings file. A project cannot undo it.
+
+Sync also writes `ask` rules to `permissions.ask`, for the Bash and the Windows PowerShell tool: `Bash(*review-gate.py*--skip*)`, `Bash(*review-gate.py*--tier-override*)` and `Bash(*review-gate.py*--allow-branch*)` (no spaces around the flag, so a quoted `'--skip'` matches too), and the same three as `PowerShell(...)`. Each waiver of the review gate then asks you first, also in auto and bypass mode. Best effort: the rules match the command text, so `python3 -c`, a copy of the script, `eval`, a variable holding the flag, quotes inside it (`--sk''ip`) or a glob for the path get past them (docs/review-gate.md). A command that only mentions both strings, such as a commit message or `--body` about the gate, also asks; in an unattended run that counts as a no, so put such text in a file (`-F`, `--body-file`). Your own `ask` rules are kept.
 
 What it does not stop (the Bash gap):
 

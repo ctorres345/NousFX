@@ -3,6 +3,7 @@
 ## 1.1.0 (unreleased)
 
 ### Review gate
+- An agent can no longer waive its own review as easily. Sync denies Claude's file tools the gate's marker, pass stamp, stamp key and branch-name exception (by name, in any git dir; `deny.toml` cannot drop these), adds `ask` rules for `review-gate.py --skip`, `--tier-override` and `--allow-branch`, and the gate's messages say to ask me instead of printing a waiver command (NFX-101).
 - `gh pr create` (and a create-PR MCP tool) now also needs a `Review-Gate: <HEAD tree>` line in the PR body. No body, `--fill`, a stale hash, a body built at run time or a body file without the line blocks, and the message prints the exact lines to paste. `attest` refuses with "commit or clean first" when the working tree differs from HEAD (NFX-85).
 - The tests no longer run twice before a PR. review-loop's last test run is `review-gate.py run-check --stamp`, which writes a signed pass stamp for the tree; `--mark` on the same tree, branch and command uses it instead of running the check again. Any changed file still forces a run. `scripts/run_checks.py` runs the suites in parallel (`-j N`, `-j 1` for one by one). A root `HANDOFF.md` is gitignored, and `via.example.json` lists `obsidian.argon_log` (NFX-97).
 
