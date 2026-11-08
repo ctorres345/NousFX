@@ -1,7 +1,7 @@
-"""Find the `gh pr create` calls in a shell command and the directory each runs in.
+"""Find the `gh pr create` calls in a shell command, the directory each runs in, and its PR body.
 
-Shared by the review gate and the Via gate, which carry identical copies of this file.
-create_dirs() parses the shell text instead of matching it, so quoted text and heredocs that only
+create_calls() gives each create's directory and arguments; pr_body() reads the body flags from them.
+create_calls() parses the shell text instead of matching it, so quoted text and heredocs that only
 mention the command pass, while wrappers (`if`, `timeout`, `eval`, `bash -c`, `$(...)`) are seen.
 It is a guardrail against mistakes, not a sandbox. Known limits: script files, `gh api`, shell
 functions, `find -exec`, `cmd /c`, `iex`, `trap` and `ssh host "..."` are not looked into.
@@ -347,13 +347,25 @@ def mentions_create(text):
     return False
 
 
-def create_dirs(command, cwd, ps=False):
-    """The directory each `gh pr create` in command runs in. None: it cannot be worked out."""
+HIDDEN = "hidden"  # create_calls: a create that may hide in shell code the parser cannot read
+
+
+def count_creates(text):
+    """How many parts of the raw text (split at ; & | and newlines) mention a create, as mentions_create
+    reads them."""
+    return sum(mentions_create(part) for part in re.split(r"[;&|\n]", text.replace("\\\n", " ")))
+
+
+def create_calls(command, cwd, ps=False):
+    """(directory, args) for each `gh pr create` in command. The directory is None when it cannot be worked
+    out; args (the Words after `gh`) is HIDDEN for shell code the parser cannot read (`eval "$X"`,
+    `bash -c "$X"`, a pipe into a shell) and None for an unknown program (`"$EDITOR" x`), each only when the
+    raw text mentions a create."""
     found = []
 
-    def opaque(cwd):
+    def opaque(cwd, args=None):
         if mentions_create(command):
-            found.append(cwd)
+            found.append((cwd, args))
 
     def walk(events, cwd):
         stack = []
@@ -405,10 +417,10 @@ def create_dirs(command, cwd, ps=False):
         name, args = command_name(words[0].text), words[1:]
         if name == "gh":
             if is_pr_create(args):
-                found.append(cwd)
+                found.append((cwd, args))
         elif name == "eval":
             if any(a.dynamic for a in args):
-                opaque(cwd)
+                opaque(cwd, HIDDEN)
             return walk(parse(" ".join(a.text for a in args), ps), cwd)
         elif name in SHELLS:
             for k, a in enumerate(args):
@@ -417,11 +429,11 @@ def create_dirs(command, cwd, ps=False):
                     is_ps = name in ("pwsh", "powershell")  # takes the rest as the script; others one word
                     script = script if is_ps else script[:1]
                     if any(w.dynamic for w in script):
-                        opaque(cwd)
+                        opaque(cwd, HIDDEN)
                     walk(parse(" ".join(w.text for w in script), is_ps), cwd)
                     return cwd
             if all(a.text.startswith("-") for a in args) or any(SHELL_S_FLAG.match(a.text) for a in args):
-                opaque(cwd)  # reads its script from stdin
+                opaque(cwd, HIDDEN)  # reads its script from stdin
         elif name in ("popd", "pop-location"):
             return None
         elif name in CD_COMMANDS:
@@ -430,7 +442,7 @@ def create_dirs(command, cwd, ps=False):
             if "/" not in words[0].text:
                 opaque(cwd)
             if is_pr_create(args):
-                found.append(cwd)
+                found.append((cwd, args))  # `$GH pr create`: the program is unknown, its args are not
             carried_shell(args, cwd)
         elif name not in PRINTERS:
             carried_shell(args, cwd)
@@ -445,6 +457,94 @@ def create_dirs(command, cwd, ps=False):
 
     walk(parse(command, ps), cwd)
     return found
+
+
+BODY_FLAGS = {"--body": "text", "-b": "text", "--body-file": "file", "-F": "file"}
+FILL_FLAGS = {"--fill", "-f", "--fill-first", "--fill-verbose"}
+VALUE_FLAGS = {"-t", "--title", "-B", "--base", "-H", "--head", "-R", "--repo", "-a", "--assignee", "-l", "--label",
+               "-m", "--milestone", "-p", "--project", "-r", "--reviewer", "-T", "--template"}
+# The body can still change after the hook runs: in the browser, in $EDITOR, or from a recover file.
+INTERACTIVE_FLAGS = {"-w", "--web", "-e", "--editor", "--recover"}
+
+
+BOOL_SHORT = set("df")  # gh pr create's shorthands that take no value (w and e: INTERACTIVE_FLAGS)
+VALUE_SHORT = {f[1] for f in VALUE_FLAGS if len(f) == 2}
+
+
+def body_flag(text):
+    """(kind, value text or None) for a body flag word (`--body`, `--body=x`, `-b`, `-bx`, `-b=x`, and the
+    same for --body-file and -F), else (None, None). A None value means the value is the next word.
+    A cluster of shorthands is walked as gh's flag parser does: `-db x` is `-d -b x`. A cluster ending in
+    another flag that takes a value gives ("value", rest or None); one with a letter gh would refuse, or one
+    the parser cannot place, gives ("unknown", None)."""
+    name, eq, rest = text.partition("=")
+    if text.startswith("--") and eq and name in BODY_FLAGS:
+        return BODY_FLAGS[name], rest
+    if text in BODY_FLAGS:
+        return BODY_FLAGS[text], None
+    if text.startswith("-") and not text.startswith("--") and len(text) > 2:
+        for k, ch in enumerate(text[1:], 1):
+            tail = text[k + 1:]
+            tail = tail[1:] if tail.startswith("=") else tail
+            if ch in ("b", "F"):
+                return BODY_FLAGS["-" + ch], tail or None
+            if ch in VALUE_SHORT:
+                return "value", tail or None
+            if ch in ("w", "e"):
+                return "interactive", None
+            if ch not in BOOL_SHORT:
+                return "unknown", None
+        return None, None  # only switches (`-dw`)
+    return None, None
+
+
+def pr_body(args):
+    """Where a create's PR body comes from: {"kind": K} plus "value" (a Word) for text and file.
+
+    K: "text" (--body/-b), "file" (--body-file/-F), "stdin" (--body-file -), "fill" (--fill and no body flag),
+    "none" (no body flag), or "unknown" (args is None, or an argument that expands at run time outside a flag's
+    value, since it could become another body flag). gh reads --body-file after --body and keeps it, so a body file wins; among flags of one kind the last wins.
+    The value of another flag (`--title '-bx'`) is skipped, as gh's flag parser gives it to that flag.
+    """
+    if args is None:
+        return {"kind": "unknown"}
+    last, fill, dynamic, interactive = {}, False, False, False
+    k = 0
+    while k < len(args):
+        word = args[k]
+        kind, value = body_flag(word.text)
+        if kind == "interactive" or word.text in INTERACTIVE_FLAGS or word.text.startswith("--recover="):
+            interactive = True
+            k += word.text == "--recover"  # its file
+        elif kind == "unknown":
+            dynamic = True  # a cluster gh would read in a way the parser does not follow
+        elif kind == "value":
+            k += value is None  # another flag's value, in this word or the next
+        elif kind:
+            if value is None and k + 1 < len(args):
+                k += 1
+                value = args[k]
+            elif value is not None:
+                value = Word(value, word.dynamic)
+            if value is None:
+                last.pop(kind, None)  # a body flag with no value: gh refuses it
+            elif kind == "file" and value.text == "-" and not value.dynamic:
+                last[kind] = {"kind": "stdin"}
+            else:
+                last[kind] = {"kind": kind, "value": value}
+        elif word.text in FILL_FLAGS:
+            fill = True
+        elif word.text in VALUE_FLAGS:
+            k += 1  # its value, whatever it looks like
+        elif word.dynamic and not (word.text.startswith("-") and "=" in word.text
+                                   and not re.search(r"[$`]", word.text.partition("=")[0])):  # `--label=$L`
+            dynamic = True  # `$EXTRA` could expand to another body flag at run time
+        k += 1
+    if interactive:
+        return {"kind": "interactive"}
+    if dynamic:
+        return {"kind": "unknown"}
+    return last.get("file") or last.get("text") or {"kind": "fill" if fill else "none"}
 
 
 def git_toplevel(cwd):

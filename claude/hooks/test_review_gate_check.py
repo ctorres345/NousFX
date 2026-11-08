@@ -19,6 +19,26 @@ PRE_PUSH = os.path.join(os.path.dirname(HERE), "githooks", "pre-push")
 BLOCKED, ALLOWED = 2, 0
 
 
+def attested_body(root):
+    """Write <root>/pr-body.md with a `Review-Gate:` line for HEAD's tree of every repo directly under root
+    (NFX-85: a create needs one) and return its path."""
+    lines = []
+    for name in sorted(os.listdir(root)):
+        r = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=os.path.join(root, name),
+                           capture_output=True, text=True) if os.path.isdir(os.path.join(root, name, ".git")) else None
+        if r and r.returncode == 0:
+            lines.append("Review-Gate: " + r.stdout.strip())
+    path = os.path.join(root, "pr-body.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("## Summary\n\n" + "\n".join(lines) + "\n")
+    return path
+
+
+def with_body(command, root):
+    """command with every literal `gh pr create` given --body-file of attested_body(root)."""
+    return command.replace("gh pr create", f"gh pr create --body-file {attested_body(root)}")
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="gate-check-test-"))
@@ -46,7 +66,7 @@ class Base(unittest.TestCase):
                               capture_output=True, text=True)
 
     def check_create(self, cwd=None):
-        return self.check("--cwd", cwd or self.repo, "--command", "gh pr create").returncode
+        return self.check("--cwd", cwd or self.repo, "--command", with_body("gh pr create", self.tmp)).returncode
 
 
 class Check(Base):
@@ -157,9 +177,9 @@ class Check(Base):
         self.assertEqual(self.check("--cwd", self.tmp, "--command", f"cd {self.repo} && gh pr create",
                                     flag).returncode, BLOCKED)
         self.mark("--findings", "0")
-        self.assertEqual(self.check("--cwd", self.tmp, "--command", f"cd {self.repo} && gh pr create",
+        self.assertEqual(self.check("--cwd", self.tmp, "--command", with_body(f"cd {self.repo} && gh pr create", self.tmp),
                                     flag).returncode, ALLOWED)
-        self.assertEqual(self.check("--cwd", self.repo, "--command", "gh pr create", flag).returncode, ALLOWED)
+        self.assertEqual(self.check("--cwd", self.repo, "--command", with_body("gh pr create", self.tmp), flag).returncode, ALLOWED)
 
     def test_allow_non_repo_still_fails_closed_on_bad_input(self):
         flag = "--allow-non-repo"
@@ -180,7 +200,7 @@ class Check(Base):
         for command in ("GIT_DIR=/x/.git GIT_WORK_TREE=/x gh pr create", "env GIT_DIR=/x/.git gh pr create",
                         "export GIT_DIR=/x/.git; gh pr create", "GIT_WORK_TREE=/x gh pr create --fill"):
             self.assertEqual(self.check("--cwd", self.repo, "--command", command).returncode, BLOCKED, command)
-        for command in ("GIT_DIR=/x/.git git log", "git status", "gh pr create"):
+        for command in ("GIT_DIR=/x/.git git log", "git status", with_body("gh pr create", self.tmp)):
             self.assertEqual(self.check("--cwd", self.repo, "--command", command).returncode, ALLOWED, command)
 
     def test_allow_non_repo_blocks_an_mcp_create_outside_a_repo(self):
@@ -203,7 +223,11 @@ class Check(Base):
         args = ("--cwd", self.repo, "--command", "x", "--tool", "mcp__github__create_pull_request")
         self.assertEqual(self.check(*args).returncode, BLOCKED)
         self.mark("--findings", "0")
-        self.assertEqual(self.check(*args).returncode, ALLOWED)
+        r = self.check(*args)
+        self.assertEqual(r.returncode, BLOCKED)  # no --body-file: the MCP call has no body (NFX-85)
+        self.assertIn("passes no PR body", r.stderr)
+        self.assertEqual(self.check(*args, "--body-file", attested_body(self.tmp)).returncode, ALLOWED)
+        self.assertEqual(self.check(*args, "--body-file", os.path.join(self.tmp, "nope")).returncode, BLOCKED)
 
     def test_missing_parser_module_fails_closed(self):
         d = os.path.join(self.tmp, "hooks")

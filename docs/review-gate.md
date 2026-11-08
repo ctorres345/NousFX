@@ -72,7 +72,7 @@ agy run_command ──► hooks.json ──► agy_gate.py ──► review-gate
 
 - `harness/agy/agy_gate.py` is a PreToolUse hook on `run_command`. Sync writes it with `hooks.json` and its own copy of the gate into the nousfx plugin folder, so it needs nothing from `~/.claude`.
 - It reads `toolCall.args.CommandLine`, every folder in `workspacePaths` and any folder-like argument (`Cwd`, `WorkingDirectory` ...), and asks the plain `check` entry once per folder. The one call I saw had no folder argument, so I check every folder I can find.
-- The matcher is `run_command|.*create_pull_request`. A create-PR tool is checked in each folder like a PR create command. I have not seen how agy names an MCP tool, so that part is untested.
+- The matcher is `run_command|.*create_pull_request`. A create-PR tool is checked in each folder like a PR create command, with its `body` (or `Body`) argument passed as `check --body-file` (NFX-85). I have not seen how agy names an MCP tool or its arguments, so that part is untested.
 - On Windows it tries both the bash and the PowerShell parser (`--tool Bash`, `--tool PowerShell`) and blocks if either finds a create.
 - To block, it prints `{"decision":"deny","reason":...}` with the gate's own message. To allow, it prints nothing, so agy's normal permission prompt still applies. An explicit `allow` might skip that prompt.
 - It runs the gate with no `GIT_*` variable in the hook's own environment, so an inherited `GIT_DIR` cannot hide the repo. A workspace root that no longer exists is skipped; with none left, it denies. Only whole argument names count as a folder (`Cwd`, `WorkDir`, `Folder`, `Path` ...), so `IsDirect` is ignored. A folder argument that does not exist is a deny only when the command could open a PR.
@@ -126,6 +126,30 @@ PR body (env var, file) ──► Review-Tier: lines ───┘
 
 **Who can override (NFX-95).** The workflow passes `github.event.pull_request.author_association` as `verify-tier --author-association`. Anyone who opens a PR can write an override line, so only `OWNER` and `MEMBER` count; `COLLABORATOR`, `CONTRIBUTOR`, `NONE` and the rest fail a below-tier line that carries one, and so does a missing or empty value. `MEMBER` is any member of the org that owns the repo, read-only ones included; on a personal-account repo like this one only `OWNER` applies. An org member with private membership may arrive as `CONTRIBUTOR` and fail; make the membership public. A line at or above the computed tier needs no override and passes for anyone. This narrows overrides only: any author can still drop the line (the known hole) or write a higher tier than the review ran, since both are self-asserted. Requiring the line from non-members would not help (they could write `Review-Tier: 3`) and would fail their skip attestations, which carry no tier. A base gate older than NFX-95 ignores the flag; the workflow prints a warning then. It is the PR author's association, not the editor's: someone else editing the body of an owner's PR keeps the owner's. The workflow file comes from the PR, so a PR that edits it can change what it passes; the CODEOWNERS caveat above applies.
 
+## PR body check (NFX-85)
+
+The local gate now asks the CI question too, before the PR opens: does the PR body hold a `Review-Gate:` line for HEAD's tree?
+
+```
+gh pr create ──► review check (mark, branch, findings, tests) ──► body check ──► allow
+                                                                   │ no line, stale hash, unreadable body
+                                                                   └──► block, print the attest lines to paste
+```
+
+- It runs after the review check, for every create in the command, in the folder that create runs in. Outside a repo there is nothing to judge, as before.
+- Where it reads the body: `--body`, `-b`, `--body=`, `-bTEXT`, `--body-file`, `-F`, `--body-file=` (relative to the create's folder), and the `body` field of a create-PR MCP tool. A body file wins over `--body`, as in gh; among flags of one kind the last wins. The value of another flag (`--title '-bx'`) is skipped. The plain `check` entry takes `--body-file F` for an MCP tool's body; the agy adapter writes the tool's `body` (or `Body`) argument there.
+- The line must name HEAD's tree, and the review mark must be for that tree. A mark on uncommitted changes does not cover HEAD: commit them, then attest.
+- A heredoc inside `--body "$(cat <<'EOF' ... EOF)"` works: the gate reads the literal text, and the hash is literal. Any other body built at run time (`--body "$BODY"`, `-F "$F"`, `$ARGS`) blocks unless its literal text already holds the line.
+- It blocks: no body, `--fill` (and `-f`, `--fill-first`, `--fill-verbose`) without a body, `--web`, `--editor` or `--recover` (even with a body: it can change after the hook runs), `--body-file -` (stdin), a missing body file, shell code the parser cannot read next to any create (`eval "$X"`, `bash -c "$X"`, a pipe into a shell), since it may hide another create, an argument built at run time outside a flag's value (`--body '<line>' $EXTRA`), a body file that is not a regular file, a line inside a sentence, and a line whose hash is not HEAD's tree. CI also accepts the line in the last commit message; the local gate reads only the body, so `--fill` is not enough here.
+- The block message prints the exact lines for HEAD. An untracked body file in the repo does not hide them: the PR only needs HEAD reviewed, so the message adds that `attest` itself wants a clean tree. When there are no lines for HEAD, it prints why instead (for example, "commit or clean first").
+- CRLF line ends count as line ends. An unknown program next to a readable create (`"$EDITOR" notes.txt; gh pr create -b ...`) gets the review check, and only the readable create's body is judged.
+- `attest` now needs a clean tree: the working tree must equal HEAD (CI compares `HEAD^{tree}` only), and the mark must be for that tree. Otherwise it exits 2 with "commit or clean first" and the HEAD tree. Untracked files that `.gitignore` does not cover count.
+- The pre-push hook is unchanged: a push has no PR body.
+- Clustered shorthands are read as gh reads them (`-db TEXT` is `-d -b TEXT`); a cluster with a letter the parser does not know blocks. A body file the same command also names (`cat > b.md <<EOF ... gh pr create -F b.md`) blocks, because the hook reads it before the command runs: write it in a separate call. An unknown program (`$R`) counts as explained only one for one by readable creates.
+- Not read, so blocked: `--body-file - <<EOF` (stdin). Not seen: an unquoted `$T` that splits into more flags.
+- Limits: the hash is HEAD's tree at the time of the create. A push gh makes afterwards, or a create that names another head branch (`--head`, an MCP tool's `head`), is not compared. CI is still the real check.
+- Hermes (unattended runs) gets this only if it runs the Claude PreToolUse hook or the plain `check` entry before it opens a PR; git hooks alone never see a PR body. I have not confirmed which one hermes uses.
+
 ## Attestation: how CI knows a review happened
 
 Review marks live in the git dir and are never committed, so CI cannot see them. Instead:
@@ -137,8 +161,8 @@ CI: git rev-parse HEAD^{tree} == hash in the line? ◄────────�
 ```
 
 1. Finish the code and run the review loop. It records the mark.
-2. Run `python3 -B claude/hooks/review-gate.py attest`. It prints the `Review-Gate:` line (plus a `Review-Tier:` line when the mark has a tier) and exits 0 only when a clean mark (or a recorded skip) covers the current code. Otherwise it exits 2 and prints nothing.
-3. Paste the lines into the PR body, each on its own line. A commit trailer on the last commit works too.
+2. Commit everything, then run `python3 -B claude/hooks/review-gate.py attest`. It prints the `Review-Gate:` line (plus a `Review-Tier:` line when the mark has a tier) and exits 0 only when the working tree equals HEAD and a clean mark (or a recorded skip) covers it. Otherwise it exits 2 and prints nothing on stdout.
+3. Paste the lines into the PR body, each on its own line. The local gate blocks `gh pr create` without them (PR body check above). For CI, a commit trailer on the last commit works too.
 4. Any later change to the tree (a new commit, an amended file) changes the hash. Run the review again, run `attest` again, edit the body.
 
 Line formats:

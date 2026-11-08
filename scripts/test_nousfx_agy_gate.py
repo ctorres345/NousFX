@@ -29,6 +29,13 @@ def payload(command, workspaces, name="run_command", **args):
     return {"toolCall": {"name": name, "args": {"CommandLine": command, **args}}, "workspacePaths": workspaces}
 
 
+def body_line(repo):
+    """The `Review-Gate:` line for HEAD's tree in repo (NFX-85: a create needs it in the PR body)."""
+    tree = subprocess.run(["git", "rev-parse", "HEAD^{tree}"], cwd=repo, capture_output=True, text=True,
+                          env=CLEAN_ENV).stdout.strip()
+    return "Review-Gate: " + tree
+
+
 def load_adapter(path):
     spec = importlib.util.spec_from_file_location("agy_gate_under_test", path)
     mod = importlib.util.module_from_spec(spec)
@@ -102,7 +109,8 @@ class Gate(Base):
 
     def test_allowed_after_review(self):
         self.mark()
-        self.assertSilent(payload("gh pr create --fill", [self.repo]))
+        self.assertDeny(payload("gh pr create --fill", [self.repo]))  # no Review-Gate line in a body (NFX-85)
+        self.assertSilent(payload(f"gh pr create --body '{body_line(self.repo)}'", [self.repo]))
 
     def test_blocked_on_wrong_branch(self):
         self.mark()
@@ -126,7 +134,7 @@ class Gate(Base):
         other = os.path.join(self.tmp, "other")
         os.makedirs(other)
         self.init_repo(other, "cesar/DEM-2")
-        r = self.run_adapter(payload("gh pr create", [self.repo, other]))  # the second repo has no review
+        r = self.run_adapter(payload(f"gh pr create -b '{body_line(self.repo)}'", [self.repo, other]))  # the second repo has no review
         self.assertIn("no review recorded", json.loads(r.stdout)["reason"])
 
     def test_a_folder_argument_is_checked_too(self):
@@ -140,8 +148,9 @@ class Gate(Base):
         self.assertDeny(payload("gh pr create", [plain], Cwd=unreviewed))
         self.assertDeny(payload("gh pr create", [self.repo], Cwd=unreviewed))
         self.assertDeny(payload("gh pr create", [self.tmp], WorkingDirectory="unreviewed"))  # relative to the workspace
-        self.assertSilent(payload("gh pr create", [self.repo], Cwd=self.repo))
-        self.assertSilent(payload("gh pr create", [self.repo], Cwd=""))  # empty means "not given"
+        create = f"gh pr create -b '{body_line(self.repo)}'"
+        self.assertSilent(payload(create, [self.repo], Cwd=self.repo))
+        self.assertSilent(payload(create, [self.repo], Cwd=""))  # empty means "not given"
 
     def test_unrelated_argument_names_are_not_folders(self):
         for key, value in (("IsDirect", True), ("RedirectOutput", "out.txt"), ("Direction", 3), ("IsDaemon", False)):
@@ -179,7 +188,12 @@ class Gate(Base):
         call = {"toolCall": {"name": "mcp_github_create_pull_request", "args": {}}, "workspacePaths": [self.repo]}
         self.assertDeny(call)
         self.mark()
-        self.assertSilent(call)
+        self.assertDeny(call)  # no body, so no Review-Gate line (NFX-85)
+        for key in ("body", "Body"):
+            call["toolCall"]["args"] = {key: "## Summary\n" + body_line(self.repo) + "\n"}
+            self.assertSilent(call)
+        call["toolCall"]["args"] = {"body": "no line"}
+        self.assertDeny(call)
 
     def test_any_name_holding_run_command_is_a_shell_call(self):
         self.assertDeny(payload("gh pr create", [self.repo], name="x_run_command_2"))

@@ -9,6 +9,11 @@ outside a git repo. An error while checking a create blocks.
 Detection lives in pr_create_parser.py next to this file (its docstring has the known limits).
 If that module is missing, any command mentioning `gh` and `pr` blocks.
 
+Body check (NFX-85): once the review check passes, a create also needs a `Review-Gate: <HEAD tree>` line in
+its PR body (--body, -b, --body-file, -F, a heredoc inside --body "$(cat <<EOF ...)", or the `body` field
+of a create-PR MCP tool). No body, --fill, a stale hash, a body built at run time or a file without the line
+blocks, and the message prints the exact lines to paste (the output of `attest`).
+
 Branch check: the branch must be named cesar/<JIRA-KEY> (for example cesar/MOB-23). If the
 user approves another name for this PR, `review-gate.py --allow-branch "reason"` records an
 exception for the current branch (stored in the git dir, never committed).
@@ -55,7 +60,7 @@ SCRIPT = os.path.abspath(__file__).replace("\\", "/")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # found even under python3 -P
 sys.dont_write_bytecode = True  # a __pycache__ in a project's .claude/hooks would change the tree hash
 try:
-    from pr_create_parser import CD_MENTION, create_dirs, mentions_create
+    from pr_create_parser import CD_MENTION, HIDDEN, count_creates, create_calls, mentions_create, pr_body
     PARSER_ERROR = None
 except Exception as e:  # missing or broken: a crash exits 1, which lets the call through
     PARSER_ERROR = e
@@ -490,6 +495,20 @@ def branch_blocked(cwd, branch=None):
     return BRANCH_BLOCK.format(branch=branch, script=SCRIPT)
 
 
+def in_repo(cwd):
+    """False when cwd is no folder, git is missing, or git says it is not a repo: nothing to judge.
+    Any other git failure raises."""
+    try:
+        git(["rev-parse", "--git-dir"], cwd, {**os.environ, "LC_ALL": "C"})
+        return True
+    except OSError:
+        return False
+    except RuntimeError as e:
+        if "not a git repository" in str(e):
+            return False
+        raise
+
+
 def check_repo(cwd, tree=None, branch=None):
     """Exit code for a create running in cwd. With tree and branch, judge that tree and branch
     instead of the working tree and the checked-out branch (the pre-push hook does this per ref)."""
@@ -498,14 +517,8 @@ def check_repo(cwd, tree=None, branch=None):
         print(CD_BLOCK, file=sys.stderr)
         return 2
     try:
-        try:
-            git(["rev-parse", "--git-dir"], cwd, {**os.environ, "LC_ALL": "C"})
-        except OSError:
-            return 0  # no such folder, or no git: nothing to judge
-        except RuntimeError as e:
-            if "not a git repository" in str(e):
-                return 0
-            raise
+        if not in_repo(cwd):
+            return 0
         branch = branch or current_branch(cwd)
         msg = branch_blocked(cwd, branch)
         if msg:
@@ -563,7 +576,7 @@ def option(argv, name):
 
 
 def check(argv):
-    """Plain entry for tools without Claude hooks: `check --cwd DIR --command "..." [--tool Bash|PowerShell|<mcp tool name>] [--allow-non-repo]`.
+    """Plain entry for tools without Claude hooks: `check --cwd DIR --command "..." [--tool Bash|PowerShell|<mcp tool name>] [--body-file F] [--allow-non-repo]`.
 
     Same allow (0) and block (2) codes as the hook. Unlike the hook, bad input blocks: a missing
     option, a missing folder or a folder that is not a git repo all exit 2.
@@ -574,6 +587,7 @@ def check(argv):
         print('Blocked: usage: review-gate.py check --cwd DIR --command "gh pr create"', file=sys.stderr)
         return 2
     tree, branch, tool = option(argv, "--tree"), option(argv, "--branch"), option(argv, "--tool") or "Bash"
+    body_file = option(argv, "--body-file")  # a create-PR MCP tool's PR body, written to a file by the adapter
     # --allow-non-repo (agy sends no per-command folder): a workspace that is not a repo is judged by the
     # command alone, so a create that cd's into a repo is still checked there. Only for git's own answer
     # "not a git repository": a missing git, a missing folder or a pushed commit (--tree) still block.
@@ -592,41 +606,69 @@ def check(argv):
             print("Blocked: --tree needs a tree hash and --branch a branch name, together.", file=sys.stderr)
             return 2
         return check_repo(cwd, tree, branch)
-    return evaluate(tool, command, cwd)
+    body = None
+    if body_file:
+        try:
+            with open(body_file, encoding="utf-8", errors="replace") as f:
+                body = f.read()
+        except OSError as e:
+            print(f"Blocked: cannot read --body-file {body_file}: {e}", file=sys.stderr)
+            return 2
+    return evaluate(tool, command, cwd, body)
 
 
 ATTEST_LINE = re.compile(r"^[ \t]*Review-Gate:[ \t]+([0-9a-f]{40}|[0-9a-f]{64})(?:[ \t]+skipped:[ \t]*(.*?))?[ \t]*$",
                          re.I | re.M)
 
 
-def attest(cwd):
-    """Print `Review-Gate: <tree>` (plus ` skipped: <reason>`) when a valid mark covers this code.
+NO_ATTESTATION = (OSError, KeyError, ValueError, RuntimeError)  # what attestation() raises when there is none
 
-    Same validity rule as check_repo: the mark's tree is the working tree or HEAD, it was recorded on
-    the checked-out branch, and the review is clean (0 open findings) or skipped with a reason.
-    Otherwise exit 2 with nothing on stdout.
+
+class Dirty(ValueError):
+    """The working tree differs from HEAD, so no line for HEAD's tree can be attested yet."""
+
+    def __init__(self, head):
+        super().__init__("the working tree differs from HEAD (CI compares HEAD^{tree} only): commit or clean "
+                         f"first. HEAD tree: {head}")
+
+
+def attested_trees(text):
+    """The tree hashes of every `Review-Gate:` line in text, lowercase, in order. CRLF counts as a line end,
+    as it does in CI, which reads the body from a file in text mode."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return [m.group(1).lower() for m in ATTEST_LINE.finditer(text)]
+
+
+def attestation(cwd, clean=True):
+    """The lines `attest` prints, as a list. ValueError (or OSError, KeyError, RuntimeError) when there is none.
+
+    Same validity rule as check_repo, plus a clean tree (NFX-85): the working tree equals HEAD and the mark's
+    tree is that tree, it was recorded on the checked-out branch, and the review is clean (0 open findings)
+    or skipped with a reason. clean=False drops only the working-tree rule: the lines for a reviewed HEAD
+    while, say, an untracked body file sits in the tree.
     """
-    try:
-        with open(git_path("claude-review-ok", cwd), encoding="utf-8") as f:
-            marker = json.load(f)
-        tree = marker["tree"]
-        if not covers(cwd, tree):
-            raise ValueError("the review mark is for other code")
-        branch = current_branch(cwd)
-        if branch == "HEAD":
-            raise ValueError("HEAD is detached; check out the branch the mark was recorded on")
-        if not marker.get("branch") or marker.get("branch") != branch:
-            raise ValueError("the review mark was recorded on another branch, or names none")
-        skipped = " ".join(str(marker.get("skipped") or "").split())
-        if not skipped and marker.get("findings_open") != 0:
-            raise ValueError("the review has open findings or none was recorded")
-        if not skipped and not has_check_pass(marker):
-            raise ValueError("the mark has no passing check result")
-    except (OSError, KeyError, ValueError, RuntimeError) as e:
-        print(f"No attestation: no valid review for the current code ({e}). Run the review loop first.",
-              file=sys.stderr)
-        return 2
-    print(f"Review-Gate: {tree}" + (f" skipped: {skipped}" if skipped else ""))
+    with open(git_path("claude-review-ok", cwd), encoding="utf-8") as f:
+        marker = json.load(f)
+    tree = marker["tree"]
+    head = head_tree(cwd)
+    if not head:
+        raise ValueError("HEAD has no commit")
+    dirty = worktree_tree(cwd) != head
+    if dirty and (clean or tree != head):
+        raise Dirty(head)
+    if tree != head:
+        raise ValueError("the review mark is for other code")
+    branch = current_branch(cwd)
+    if branch == "HEAD":
+        raise ValueError("HEAD is detached; check out the branch the mark was recorded on")
+    if not marker.get("branch") or marker.get("branch") != branch:
+        raise ValueError("the review mark was recorded on another branch, or names none")
+    skipped = " ".join(str(marker.get("skipped") or "").split())
+    if not skipped and marker.get("findings_open") != 0:
+        raise ValueError("the review has open findings or none was recorded")
+    if not skipped and not has_check_pass(marker):
+        raise ValueError("the mark has no passing check result")
+    lines = [f"Review-Gate: {tree}" + (f" skipped: {skipped}" if skipped else "")]
     tier = marker.get("tier")
     if isinstance(tier, int) and not isinstance(tier, bool) and 0 <= tier <= 3:
         reasons = " ".join(str(marker.get("tier_reasons") or "").split())
@@ -635,7 +677,19 @@ def attest(cwd):
         computed = marker.get("tier_computed")
         if override and isinstance(computed, int) and not isinstance(computed, bool) and computed > tier:
             line += f" override: computed {computed}, {override}"
-        print(line)
+        lines.append(line)
+    return lines
+
+
+def attest(cwd):
+    """Print the `attestation` lines and exit 0, else exit 2 with nothing on stdout."""
+    try:
+        lines = attestation(cwd)
+    except NO_ATTESTATION as e:
+        hint = "" if isinstance(e, Dirty) else " Run the review loop first."
+        print(f"No attestation: no valid review for the current code ({e}).{hint}", file=sys.stderr)
+        return 2
+    print("\n".join(lines))
     return 0
 
 
@@ -656,7 +710,7 @@ def verify_attestation(argv):
             print(f"Blocked: cannot read {path}: {e}", file=sys.stderr)
             return 2
         for m in ATTEST_LINE.finditer(text):
-            if m.group(1).lower() == tree.strip().lower():
+            if m.group(1).lower() == tree.strip().lower():  # the skip reason needs the match, not attested_trees
                 if m.group(2):
                     print(f"skipped: {m.group(2)}")
                 print(f"Review attestation found for tree {tree}.")
@@ -782,17 +836,118 @@ def gate():
     try:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
         tool = str(payload.get("tool_name") or "")
-        command = (payload.get("tool_input") or {}).get("command", "")
+        tool_input = payload.get("tool_input") or {}
+        command = tool_input.get("command", "")
+        body = tool_input.get("body")  # a create-PR MCP tool's PR body
         cwd = payload.get("cwd") or os.getcwd()
     except Exception:
         return 0  # not a call we can read: never break unrelated work
-    return evaluate(tool, command, cwd)
+    return evaluate(tool, command, cwd, body)
 
 
-def evaluate(tool, command, cwd):
-    """Exit code for one tool call. The single decision path for the hook and for `check`."""
+BODY_BLOCK = """\
+Blocked: {why}
+CI compares that line with HEAD's tree, so a PR opened without it fails there. {fix}
+"""
+
+BODY_FIX = """Put these lines in the PR body, each on its own line (output of `review-gate.py attest`):
+{lines}
+Then pass the body with --body "..." or --body-file FILE (a heredoc inside --body "$(cat <<'EOF' ... EOF)" works too)."""
+
+BODY_NO_LINES = """The gate cannot print the lines to paste: {error}
+Fix that, run python3 "{script}" attest, and put its lines in the PR body."""
+
+BODY_WHY = {
+    "none": "this PR create passes no PR body, so it has no `Review-Gate: <HEAD tree>` line.",
+    "missing": "the PR body has no `Review-Gate: <HEAD tree>` line on a line of its own.",
+    "dynamic": "the PR body has no literal `Review-Gate: <HEAD tree>` line (the body is built at run time, "
+               "so the gate reads only its literal text).",
+    "fill": "this PR create uses --fill with no --body or --body-file; the gate reads only an explicit body, "
+            "so it has no `Review-Gate: <HEAD tree>` line.",
+    "interactive": "this PR create can change its body after the gate has read it (--web, --editor or "
+                   "--recover). Pass the body with --body or --body-file and drop that flag.",
+    "written": "this command also writes or reads the body file the create uses, but the gate reads it before "
+               "the command runs. Write the body file in a separate call, then run the create.",
+    "stdin": "this PR create reads its body from stdin (--body-file -), which the gate cannot read.",
+    "unknown": "the gate cannot read this PR create's body (it runs through a variable, a pipe into a shell or "
+               "an argument built at run time).",
+}
+
+
+def written(source, command):
+    """source, or kind "written" when the command names its body file more than once (`cat > b.md <<EOF ...
+    && gh pr create -F b.md`): the hook runs before the command, so it would judge the file's old contents."""
+    word = source.get("value")
+    if source["kind"] != "file" or not word or not word.text:
+        return source
+    uses = re.findall(r"(?<![\w./~-])" + re.escape(word.text) + r"(?![\w./-])", command)
+    return {"kind": "written"} if len(uses) > 1 else source
+
+
+def body_text(source, cwd):
+    """(text, why): the PR body text and the reason to give when it has no line for HEAD, or (None, reason)
+    when the gate cannot read a body."""
+    kind, word = source["kind"], source.get("value")
+    if kind == "mcp":
+        return (word, BODY_WHY["missing"]) if isinstance(word, str) else (None, BODY_WHY["none"])
+    if kind == "text":
+        return word.text, BODY_WHY["dynamic" if word.dynamic else "missing"]
+    if kind == "file":
+        if word.dynamic:
+            return None, f"the gate cannot read the body file `{word.text}`: its path is built at run time."
+        path = os.path.join(cwd, os.path.expanduser(word.text))
+        try:
+            if not os.path.isfile(path):  # a FIFO or a device would hang the hook
+                raise OSError(f"not a regular file: {path}")
+            with open(path, encoding="utf-8", errors="replace") as f:
+                return f.read(), BODY_WHY["missing"]
+        except OSError as e:
+            return None, (f"the gate cannot read the body file {word.text} ({e.strerror or e}). "
+                          "Write it before the PR create runs.")
+    return None, BODY_WHY.get(kind, BODY_WHY["unknown"])
+
+
+def marked_tree(cwd):
+    """The tree the review mark was recorded for, or None."""
+    try:
+        with open(git_path("claude-review-ok", cwd), encoding="utf-8") as f:
+            tree = json.load(f).get("tree")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return tree if isinstance(tree, str) else None
+
+
+def body_blocked(cwd, source):
+    """Message when the PR body has no `Review-Gate:` line for HEAD's tree, else None. Runs after check_repo,
+    so outside a repo (where check_repo allows) there is nothing to judge either."""
+    if not in_repo(cwd):
+        return None
+    text, why = body_text(source, cwd)
+    if text is not None:
+        hashes, head = attested_trees(text), head_tree(cwd)
+        if head and head in hashes:
+            if marked_tree(cwd) == head:
+                return None
+            why = ("the PR body names HEAD's tree, but the review mark is for other code (the uncommitted "
+                   "working tree): HEAD itself was not reviewed. Commit the reviewed changes, then attest again.")
+        elif hashes:
+            why = (f"the PR body's `Review-Gate:` line names tree {hashes[-1][:10]}, but HEAD's tree is "
+                   f"{(head or 'unknown')[:10]}: the code changed after the attest.")
+    try:
+        fix = BODY_FIX.format(lines="\n".join("    " + x for x in attestation(cwd, clean=False)))
+        if worktree_tree(cwd) != head_tree(cwd):
+            fix += ("\nThe working tree differs from HEAD; that is fine for the PR (CI checks HEAD), but "
+                    "`review-gate.py attest` itself wants it clean: commit or clean first.")
+    except NO_ATTESTATION as e:
+        fix = BODY_NO_LINES.format(error=e, script=SCRIPT)
+    return BODY_BLOCK.format(why=why, fix=fix)
+
+
+def evaluate(tool, command, cwd, body=None):
+    """Exit code for one tool call. The single decision path for the hook and for `check`.
+    body: the PR body of a create-PR MCP tool (shell commands carry theirs in the command)."""
     if MCP_PR_CREATE.search(tool):
-        dirs = [cwd]
+        calls = [(cwd, {"kind": "mcp", "value": body})]
     elif PARSER_ERROR:
         if not re.search(r"\bgh\b.*\bpr\b", re.sub(r"[\"'\\`]", "", str(command)), re.S | re.I):
             return 0  # quotes are dropped first, so `g""h "pr" cre'ate'` is still caught
@@ -800,18 +955,38 @@ def evaluate(tool, command, cwd):
         return 2
     else:
         try:
-            dirs = create_dirs(command, cwd, tool.lower() == "powershell")
+            found = create_calls(command, cwd, tool.lower() == "powershell")
+            # Every create gets the review check. Shell code the parser cannot read (`eval "$X"`) may hide
+            # another create, so its body counts as unreadable. An unknown program (`"$EDITOR" x`) is suspected
+            # only from the raw text, which a readable create in the same command explains: its body is
+            # judged only when there is no readable create to judge instead.
+            # A readable create explains a mention only one for one: `$R` next to a `--dry-run` create may be
+            # the real one.
+            readable = sum(args not in (None, HIDDEN) for _, args in found)
+            explained = readable >= count_creates(command)
+            calls = [(d, None if args is None and explained else {"kind": "unknown"} if args in (None, HIDDEN)
+                      else written(pr_body(args), command)) for d, args in found]
         except Exception:
             if not (isinstance(command, str) and mentions_create(command)):
                 return 0
-            dirs = [None if CD_MENTION.search(command) else cwd]  # the parse lost track of any cd
-    if dirs and not MCP_PR_CREATE.search(tool) and isinstance(command, str) and GIT_REPO_VARS.search(command):
+            calls = [(None if CD_MENTION.search(command) else cwd, {"kind": "unknown"})]  # the parse lost any cd
+    if calls and not MCP_PR_CREATE.search(tool) and isinstance(command, str) and GIT_REPO_VARS.search(command):
         print(GIT_VARS_BLOCK, file=sys.stderr)
         return 2
-    for d in dict.fromkeys(dirs):
+    for d in dict.fromkeys(d for d, _ in calls):
         code = check_repo(d)
         if code:
             return code
+    for d, source in calls:  # every repo has a valid review: now each create's body must attest HEAD
+        if source is None:
+            continue
+        try:
+            msg = body_blocked(d, source)
+        except Exception as e:  # this is a create, so a body the gate cannot check must not let it through
+            msg = ERROR_BLOCK.format(error=e, script=SCRIPT)
+        if msg:
+            print(msg, file=sys.stderr)
+            return 2
     return 0
 
 

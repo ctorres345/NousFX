@@ -12,6 +12,9 @@ import tempfile
 import time
 import unittest
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_review_gate_check import attested_body, with_body  # noqa: E402
+
 GATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "review-gate.py")
 BLOCKED, ALLOWED = 2, 0
 
@@ -104,6 +107,10 @@ RUNS_CREATE = [
     "echo \"oops; gh pr create",
 ]
 
+# With a review, each of these gets a readable body from run_gate, so it must pass.
+READABLE_BODY = ["gh pr create", "git push && gh pr create", "bash -c 'gh pr create'", 'eval "gh pr create"',
+                 "timeout 60 gh pr create", "if gh pr create; then echo ok; fi", "url=$(gh pr create)"]
+
 # None of these runs `gh pr create`, so with no review recorded it must pass.
 ONLY_MENTIONS = [
     "git status",
@@ -193,13 +200,18 @@ class Base(unittest.TestCase):
         return subprocess.run([sys.executable, GATE, "--mark", *args], cwd=cwd or self.repo,
                               capture_output=True, text=True)
 
-    def run_gate(self, command=None, cwd=None, tool="Bash", env=None, gate=GATE):
+    def run_gate(self, command=None, cwd=None, tool="Bash", env=None, gate=GATE, body=True, full=False):
+        """Exit code of the hook. body: give every literal `gh pr create` (and an MCP create) a PR body with a
+        valid `Review-Gate:` line for each repo here (NFX-85), so the test judges the review check alone."""
         payload = {"tool_name": tool, "cwd": cwd or self.repo, "tool_input": {}}
         if command is not None:
-            payload["tool_input"]["command"] = command
-        return subprocess.run([sys.executable, gate], input=json.dumps(payload).encode(),
-                              capture_output=True, env={**os.environ, **(env or {})},
-                              cwd=self.tmp).returncode
+            payload["tool_input"]["command"] = with_body(command, self.tmp) if body else command
+        if body and isinstance(tool, str) and "create_pull_request" in tool:
+            with open(attested_body(self.tmp), encoding="utf-8") as f:
+                payload["tool_input"]["body"] = f.read()
+        r = subprocess.run([sys.executable, gate], input=json.dumps(payload).encode(),
+                           capture_output=True, env={**os.environ, **(env or {})}, cwd=self.tmp)
+        return r if full else r.returncode
 
 
 class Detection(Base):
@@ -214,8 +226,21 @@ class Detection(Base):
                 self.assertEqual(self.run_gate(command), ALLOWED)
 
     def test_reviewed_code_passes_every_form(self):
+        """With a review, every form gets past the review check. A form whose body the gate can read passes;
+        the rest stop at the body check (NFX-85), never at the review check."""
         self.mark("--findings", "0")
         for command in RUNS_CREATE:
+            with self.subTest(command=command):
+                r = self.run_gate(command, full=True)
+                if r.returncode != ALLOWED:
+                    self.assertEqual(r.returncode, BLOCKED)
+                    self.assertIn(b"Review-Gate:", r.stderr)
+                    self.assertNotIn(b"no review recorded", r.stderr)
+                    self.assertTrue(command not in READABLE_BODY, "should have passed")
+
+    def test_body_forms_the_gate_reads_pass(self):
+        self.mark("--findings", "0")
+        for command in READABLE_BODY:
             with self.subTest(command=command):
                 self.assertEqual(self.run_gate(command), ALLOWED)
 

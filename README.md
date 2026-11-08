@@ -117,7 +117,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/skills/prototype-fidelity/` | Rules for work based on an approved prototype: tickets, implementing, review, PR |
 | `claude/skills/project-setup/` | Sets up or audits a repo with the shared workflow |
 | `claude/hooks/review-gate.py` | PreToolUse hook that blocks `gh pr create` until a review with 0 open high or med (confidence 60+) findings (or an approved `--mark --skip`) is recorded. `--mark --findings <count>` records one; `--mark` alone is refused |
-| `claude/hooks/pr_create_parser.py` | Shell parser the gate uses to find `gh pr create` and the directory it runs in. Keep it next to the gate: without it the gate blocks any command that mentions `gh` and `pr` |
+| `claude/hooks/pr_create_parser.py` | Shell parser the gate uses to find `gh pr create`, the directory it runs in, and its PR body flags. Keep it next to the gate: without it the gate blocks any command that mentions `gh` and `pr` |
 | `claude/hooks/test_review_gate.py` | Gate test suite: `python3 claude/hooks/test_review_gate.py` |
 | `claude/templates/pull_request_template.md` | Standard PR body. Copy it to `.github/` per repo |
 | `install.sh`, `install.ps1` | Mac and Windows wrappers: dry run of `scripts/nousfx_sync.py`, ask, then the real run |
