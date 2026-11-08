@@ -2,7 +2,8 @@
   "version": 1,
   "integrations": {},
   "obsidian": {
-    "vault_path": null
+    "vault_path": null,
+    "argon_log": "Argon UI review log.md"
   },
   "figma": {
     "state": "missing"

@@ -9,6 +9,7 @@ samples/**/.dart_tool/
 
 # Personal state
 .claude/handoff.md
+/HANDOFF.md
 .claude/proposed-local*.md
 .claude/worktrees/
 .claude/checkpoints/

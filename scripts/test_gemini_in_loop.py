@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """NFX-64: review-loop runs the Gemini checks (Argon on UI changes, a code check at Tier 3)."""
+import json
 import os
 import re
 import unittest
@@ -86,6 +87,12 @@ class GeminiInLoop(unittest.TestCase):
     def test_the_argon_log_goes_to_the_configured_vault_or_nowhere(self):
         self.assertIn("obsidian.vault_path", GEMINI)
         self.assertIn("With no vault set, skip the log.", GEMINI)
+
+    def test_the_example_config_names_the_argon_log_default(self):
+        """NFX-97: the key and default the loop reads are in via.example.json."""
+        example = json.loads(read("plugins", "via", "assets", "via.example.json"))
+        self.assertEqual(example["obsidian"]["argon_log"], "Argon UI review log.md")
+        self.assertIn("default `Argon UI review log.md`", GEMINI)
 
 
 if __name__ == "__main__":
