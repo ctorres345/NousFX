@@ -348,17 +348,48 @@ class Project(Fixture):
 
     def test_project_second_run_and_restore(self):
         self.ok("--project", self.proj, "--tools", "claude,agy")
+        rec = os.path.join(self.proj, ".nousfx", "mcp-owned.json")
+        self.assertIn("p", jload(rec)["claude"][".mcp.json"])
+        self.assertFalse(os.path.exists(os.path.join(self.state, "mcp-owned.json")))
+        self.assertTrue(os.stat(rec).st_mode & 0o077)  # a repo file, not a private one
         before = self.snapshot()
         self.assertIn("nothing to change", self.ok("--project", self.proj, "--tools", "claude,agy").stdout)
         self.assertEqual(self.snapshot(), before)
         self.ok("--restore")
         self.assertFalse(os.path.exists(os.path.join(self.proj, ".mcp.json")))
+        self.assertFalse(os.path.exists(rec))
         self.assertFalse(os.path.exists(os.path.join(self.proj, ".agents", "plugins", "nousfx", "mcp_config.json")))
 
     def test_project_without_a_check_command_gets_a_note(self):
         out = self.ok("--project", self.proj, "--tools", "claude,agy").stdout
         self.assertIn("no check command", out)
         self.assertIn(".nousfx/project.toml", out)
+
+    def test_a_fresh_checkout_of_a_synced_project_checks_clean(self):
+        self.ok("--project", self.proj, "--tools", "claude")
+        clone = os.path.join(self.tmp, "clone")
+        shutil.copytree(self.proj, clone)
+        shutil.rmtree(self.state)
+        r = self.sync("--project", clone, "--tools", "claude", "--check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_restore_after_migration_puts_both_records_back(self):
+        self.ok("--project", self.proj, "--tools", "claude")
+        rec = os.path.join(self.proj, ".nousfx", "mcp-owned.json")
+        mcp = os.path.join(self.proj, ".mcp.json")
+        legacy = jload(rec)["claude"][".mcp.json"]
+        os.remove(rec)
+        state_rec = os.path.join(self.state, "mcp-owned.json")
+        write(state_rec, json.dumps({"claude": {mcp: legacy}}))
+        write(os.path.join(self.proj, ".nousfx", "mcp.toml"),
+              '[servers.p]\ntools = ["claude"]\nurl = "https://p2.example.com/mcp"\n')
+        self.ok("--project", self.proj, "--tools", "claude")
+        self.assertEqual(jload(mcp)["mcpServers"]["p"]["url"], "https://p2.example.com/mcp")
+        self.assertEqual(jload(state_rec)["claude"], {})
+        self.ok("--restore")
+        self.assertEqual(jload(mcp)["mcpServers"]["p"]["url"], "https://p.example.com/mcp")
+        self.assertEqual(jload(state_rec)["claude"], {mcp: legacy})
+        self.assertFalse(os.path.exists(rec))
 
     def test_project_with_a_check_command_gets_no_note(self):
         write(os.path.join(self.proj, ".nousfx", "project.toml"), '[check]\ncommand = "npm test"\n')

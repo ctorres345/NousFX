@@ -222,7 +222,7 @@ harness/AGENTS.md + agy.overlay.md + local.md + local.agy.md
 | `CLAUDE.md` | Writes a stub with `@AGENTS.md` only when the repo has none. A file that already imports `AGENTS.md` is never touched. |
 | `.githooks/pre-push` | The advisory pre-push gate (`claude/githooks/pre-push`) with a generator line. Hand edits are drift. |
 | `.agents/skills` | A link to `../.claude/skills`, only when the repo has that folder and nothing at the link path. |
-| `.mcp.json`, `.agents/plugins/nousfx/` | MCP files from `.nousfx/mcp.toml` (see MCP). |
+| `.mcp.json`, `.nousfx/mcp-owned.json`, `.agents/plugins/nousfx/` | MCP files from `.nousfx/mcp.toml`, and the record of which `.mcp.json` servers sync added; commit them together (see MCP). |
 | `.claude/hooks/review-gate.py`, `pr_create_parser.py`, `.claude/agents/<name>.md`, `.claude/skills/review-loop/` (`SKILL.md`, `scripts/tier.py`) | Copies `project-setup` installed for cloud sessions. Refreshed from their NousFX sources (agents rendered as for `~/.claude/agents`) only when the repo already has them; never created. A stale copy is drift, and a real run replaces it (backed up) even when edited by hand. An agent NousFX does not ship is left alone. |
 | `.claude/settings.json` | Never written (merged by hand from project-setup's `assets/settings.json`). Sync prints a note when its review-gate hook runs the repo copy without checking for `$HOME/.claude/hooks/review-gate.py`. |
 | `.nousfx/project.toml` | Never written. Sync prints a note when it has no `[check] command`, because the review gate cannot record a review without one (see `docs/review-gate.md`). |
@@ -257,4 +257,5 @@ url = "https://mcp.atlassian.com/v1/mcp"
 - A backup of `~/.claude.json` keeps only its `mcpServers` part, and the backup folder is private (mode 0700). `--restore` puts back only the servers sync changed, with the JSON reformatted.
 - I run sync with no Claude Code session open. A session that is already running can rewrite `~/.claude.json` from its own state later and drop sync's servers. `--check` then reports drift, and a normal run adds them back.
 - With `--project DIR`, only `DIR/.nousfx/mcp.toml` is read, and the servers go to `DIR/.mcp.json` (Claude) and `DIR/.agents/plugins/nousfx/mcp_config.json` (agy). Global servers never go there.
+- In project mode the ownership record is `DIR/.nousfx/mcp-owned.json` (keyed `.mcp.json`), not the one in `~/.config/nousfx`. I commit it with `.mcp.json`, so a fresh worktree, clone or cloud checkout knows which committed servers sync added (NFX-99). The first run after this change moves the old entry for that folder out of `~/.config/nousfx/mcp-owned.json`. A committed `.mcp.json` with no record anywhere is still "not mine".
 - `agy mcp list` shows only the global file, not plugin servers, so I check a plugin server by running agy and asking for it.
