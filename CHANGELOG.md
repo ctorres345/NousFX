@@ -8,6 +8,7 @@
 
 ### Sync and install
 - Project mode keeps its MCP ownership record in the repo (`.nousfx/mcp-owned.json`, committed with `.mcp.json`), so a fresh worktree, clone or cloud checkout no longer stops with "not mine" on its own committed servers. The first run moves the old entry out of `~/.config/nousfx/mcp-owned.json`, and `--restore` handles both records (NFX-99).
+- Project MCP record edge cases: an old state entry merges into an existing repo record, an empty record still takes the migration, a repo record without hashes is refused, `--restore` keeps `.mcp.json`'s mode, and an unusable global record no longer blocks a project that has its own (NFX-100).
 - `nousfx_sync.py --project` checks the repo's copies of the gate, agents and review-loop: `--check` reports a stale one as drift and a real run refreshes it, never adding one. project-setup no longer points review-loop at the repo's gate copy; that copy is only the cloud fallback, and the project hook now skips it when `~/.claude/hooks/review-gate.py` exists; existing repos merge that hook again, and `--project` prints a note until they do (NFX-98).
 - Sync writes a deny list to `~/.claude/settings.json`: Claude's file tools may not read or edit `.env*`, `*.pem`, `*.key` and SSH keys (`id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`), or edit lockfiles. My own deny rules and settings are kept, and `~/.config/nousfx/deny.toml` leaves a rule out (NFX-74).
 

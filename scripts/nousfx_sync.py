@@ -397,7 +397,8 @@ def undo_merged(path, saved_path, names):
     if text is None:
         os.remove(path)
     elif text != live:
-        write_atomic(path, text)
+        # a project .mcp.json is a repo file and keeps its mode; ~/.claude.json stays private, as sync writes it
+        write_atomic(path, text, repo_file_mode(path) if os.path.basename(path) == nousfx_mcp.PROJECT_CLAUDE_REL else None)
 
 
 def restore(state):
@@ -412,15 +413,18 @@ def restore(state):
     made = json.loads(read_or_none(os.path.join(root, "written.json")) or "{}")
     def recorded(path):
         """Names sync added to a merged file, from each record as it is now and as the backup saved it."""
-        names = set()
-        for record, key in nousfx_mcp.record_keys(state, path):
+        names, repo_found = set(), False
+        for record, key in reversed(nousfx_mcp.record_keys(state, path)):  # a project's repo record first
             saved = manifest.get(record)
             now = read_or_none(record)
             then = read_or_none(os.path.join(root, saved)) if saved else None
             for text in (now, then):
                 try:
                     names |= set(nousfx_mcp.owned_names(text, key))
+                    repo_found |= key == nousfx_mcp.PROJECT_CLAUDE_REL and bool(text and text.strip())
                 except ValueError:
+                    if repo_found:  # as in sync: a project with its own record does not need the state record
+                        continue
                     raise SyncError(f"{record} is not usable, so sync cannot tell which servers it added to "
                                     f"{path}. Nothing was changed. Fix or remove that servers entry by hand, "
                                     "then run --restore again.")
