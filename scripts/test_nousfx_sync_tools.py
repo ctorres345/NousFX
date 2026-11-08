@@ -391,6 +391,40 @@ class Project(Fixture):
         self.assertEqual(jload(state_rec)["claude"], {mcp: legacy})
         self.assertFalse(os.path.exists(rec))
 
+    def test_restore_keeps_the_repo_mode_of_mcp_json(self):  # NFX-100
+        self.ok("--project", self.proj, "--tools", "claude")
+        mcp = os.path.join(self.proj, ".mcp.json")
+        os.chmod(mcp, 0o644)
+        write(os.path.join(self.proj, ".nousfx", "mcp.toml"),
+              '[servers.p]\ntools = ["claude"]\nurl = "https://p2.example.com/mcp"\n')
+        self.ok("--project", self.proj, "--tools", "claude")
+        self.ok("--restore")
+        self.assertEqual(jload(mcp)["mcpServers"]["p"]["url"], "https://p.example.com/mcp")
+        self.assertEqual(os.stat(mcp).st_mode & 0o777, 0o644)
+
+    def test_restore_refuses_a_repo_record_without_hashes(self):  # NFX-100
+        self.ok("--project", self.proj, "--tools", "claude")
+        write(os.path.join(self.proj, ".nousfx", "mcp.toml"),
+              '[servers.p]\ntools = ["claude"]\nurl = "https://p2.example.com/mcp"\n')
+        self.ok("--project", self.proj, "--tools", "claude")
+        mcp = os.path.join(self.proj, ".mcp.json")
+        before = open(mcp, encoding="utf-8").read()
+        write(os.path.join(self.proj, ".nousfx", "mcp-owned.json"), json.dumps({"claude": {".mcp.json": ["p"]}}))
+        r = self.sync("--restore")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("is not usable", r.stdout + r.stderr)
+        self.assertEqual(open(mcp, encoding="utf-8").read(), before)
+
+    def test_restore_works_with_a_corrupt_state_record_when_the_repo_has_one(self):  # NFX-100
+        self.ok("--project", self.proj, "--tools", "claude")
+        write(os.path.join(self.state, "mcp-owned.json"), "{not json")
+        write(os.path.join(self.proj, ".nousfx", "mcp.toml"),
+              '[servers.p]\ntools = ["claude"]\nurl = "https://p2.example.com/mcp"\n')
+        self.ok("--project", self.proj, "--tools", "claude")
+        self.ok("--restore")
+        self.assertEqual(jload(os.path.join(self.proj, ".mcp.json"))["mcpServers"]["p"]["url"],
+                         "https://p.example.com/mcp")
+
     def test_project_with_a_check_command_gets_no_note(self):
         write(os.path.join(self.proj, ".nousfx", "project.toml"), '[check]\ncommand = "npm test"\n')
         out = self.ok("--project", self.proj, "--tools", "claude,agy").stdout

@@ -185,7 +185,7 @@ def _owned_map(value):
 
 def _record_claude(record_text):
     """The record's per-file owned maps, validated. {} when there is no record; ValueError if unusable."""
-    if not record_text:
+    if not record_text or not record_text.strip():
         return {}
     try:
         claude = json.loads(record_text).get("claude", {})
@@ -208,8 +208,12 @@ def servers_slice(text):
 
 def owned_names(record_text, key):
     """Names the ownership record lists under `key` (see record_keys). Empty if there is no record; ValueError
-    if there is one and it is unusable (restore must not guess which servers sync added)."""
-    return list(_record_claude(record_text).get(key, {}))
+    if there is one and it is unusable (restore must not guess which servers sync added). A repo record (key
+    ".mcp.json") must have hashes: a cloned repo must not claim a server the user added."""
+    owned = _record_claude(record_text).get(key, {})
+    if key == PROJECT_CLAUDE_REL and any(h is None for h in owned.values()):
+        raise ValueError("repo record without hashes")
+    return list(owned)
 
 
 def project_record(project):
@@ -227,8 +231,11 @@ def record_keys(state, path):
 
 
 def _load_record(rec_path, SyncError):
-    """(old text, record dict, its "claude" maps) for one ownership record; an absent record is empty."""
+    """(old text, record dict, its "claude" maps) for one ownership record; an absent or blank record is empty
+    (old text None)."""
     rec_old = _read(rec_path)
+    if rec_old is not None and not rec_old.strip():
+        rec_old = None
     try:
         record = json.loads(rec_old) if rec_old else {}
         maps = _record_claude(rec_old)
@@ -294,14 +301,23 @@ def plan_mcp(repo, home, state, tools, SyncError, patterns, project=None):
         rec_old, record, claude = _load_record(rec_path, SyncError)
         owned = claude.get(key, {})
         records = [(rec_path, rec_old, record)]
-        if project:  # before NFX-99 the state record held this file by absolute path: move it into the repo
+        if project:
+            if any(h is None for h in owned.values()):  # a repo record never predates hashes
+                raise SyncError(f"mcp: {rec_path} lists servers without hashes, so sync cannot tell its own "
+                                "entries from yours. Delete that file only if you know what sync owns.", code=2)
+            # before NFX-99 the state record held this file by absolute path: move it into the repo
             st_path = os.path.join(state, OWNED_NAME)
-            st_old, st_record, st_claude = _load_record(st_path, SyncError)
-            legacy = st_claude.pop(path, None)
-            if legacy is not None:
-                if rec_old is None:
-                    owned = legacy
-                records.append((st_path, st_old, st_record))
+            try:
+                st_old, st_record, st_claude = _load_record(st_path, SyncError)
+            except SyncError:
+                if rec_old is None:  # nothing else says what sync owns here
+                    raise
+                # the repo record is enough; leave the unusable state record alone
+            else:
+                legacy = st_claude.pop(path, None)
+                if legacy is not None:  # the state record is mine (home folder), so its unhashed entries are fine
+                    owned = {**legacy, **owned}  # the repo record wins on a name both list
+                    records.append((st_path, st_old, st_record))
         entries = {n: _shape(e, "claude") for n, e in servers.items() if "claude" in e["tools"]}
         text, names = _merge_claude(path, entries, owned, SyncError, hint) if entries or owned else (None, {})
         if text is not None:

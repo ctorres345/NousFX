@@ -270,6 +270,12 @@ class ProjectRecord(Base):
         os.makedirs(self.state)
         return other
 
+    def add_server(self, name, entry):
+        with open(self.mcp, encoding="utf-8") as f:
+            data = json.load(f)
+        data["mcpServers"][name] = entry
+        put(self.mcp, json.dumps(data))
+
     def changed(self, result):
         return {p: t for p, t in result.items() if not os.path.exists(p) or open(p, encoding="utf-8").read() != t}
 
@@ -317,6 +323,48 @@ class ProjectRecord(Base):
         self.assertEqual(r[self.mcp], open(self.mcp, encoding="utf-8").read())  # .mcp.json already right
         self.apply(r)
         self.assertEqual(self.changed(self.plan(tools=("claude",), project=self.proj)), {})
+
+    def test_a_state_entry_merges_into_an_existing_repo_record(self):  # NFX-100
+        self.synced()
+        x = {"type": "http", "url": "https://x.example.com"}
+        self.add_server("x", x)
+        put(self.owned, json.dumps({"claude": {self.mcp: {"x": M._entry_hash(x)}}}))
+        r = self.plan(tools=("claude",), project=self.proj)
+        self.assertNotIn("x", json.loads(r[self.mcp])["mcpServers"])  # owned through the old entry, so removed
+        self.assertEqual(json.loads(r[self.owned])["claude"], {})
+
+    def test_an_empty_repo_record_still_takes_the_migration(self):  # NFX-100
+        self.synced()
+        rec = M.project_record(self.proj)
+        legacy = json.loads(open(rec, encoding="utf-8").read())["claude"][".mcp.json"]
+        put(rec, "  \n")
+        put(self.owned, json.dumps({"claude": {self.mcp: legacy}}))
+        r = self.plan(tools=("claude",), project=self.proj)
+        self.assertEqual(json.loads(r[rec])["claude"], {".mcp.json": legacy})
+
+    def test_a_repo_record_without_hashes_is_refused(self):  # NFX-100
+        self.synced()
+        self.add_server("y", {"type": "http", "url": "https://y.example.com"})
+        put(M.project_record(self.proj), json.dumps({"claude": {".mcp.json": ["p", "y"]}}))
+        with self.assertRaises(SyncError) as c:
+            self.plan(tools=("claude",), project=self.proj)
+        self.assertEqual(c.exception.code, 2)
+        self.assertIn("without hashes", str(c.exception))
+
+    def test_a_corrupt_state_record_does_not_block_a_project_with_its_own_record(self):  # NFX-100
+        self.synced()
+        put(self.owned, "{not json")
+        self.assertEqual(self.changed(self.plan(tools=("claude",), project=self.proj)), {})
+        os.remove(M.project_record(self.proj))
+        with self.assertRaises(SyncError) as c:
+            self.plan(tools=("claude",), project=self.proj)
+        self.assertEqual(c.exception.code, 2)
+
+    def test_owned_names_refuses_a_repo_record_without_hashes(self):  # NFX-100
+        rec = json.dumps({"claude": {".mcp.json": ["p"], "/abs/.mcp.json": ["p"]}})
+        with self.assertRaises(ValueError):
+            M.owned_names(rec, ".mcp.json")
+        self.assertEqual(M.owned_names(rec, "/abs/.mcp.json"), ["p"])  # the state record's old form is fine
 
     def test_record_keys_cover_both_records_for_a_project_file(self):
         self.assertEqual(M.record_keys(self.state, "/r/.mcp.json"),
