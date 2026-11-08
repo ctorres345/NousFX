@@ -97,7 +97,7 @@ class FirstRun(Base):
     def test_posix_hook_command_is_isolated_and_skips_bytecode(self):
         self.sync()
         hook = json.loads(read(self.settings))["hooks"]["PreToolUse"][0]["hooks"][0]
-        self.assertEqual(hook["command"], f'python3 -I -B "{self.hook}"')
+        self.assertEqual(hook["command"], f'python3 -I -B "{self.hook}" --budget 55')
 
     def test_shadowed_stdlib_cannot_open_the_gate(self):
         """The installed command ignores PYTHONPATH: a json.py that exits 0 must not allow a PR create."""

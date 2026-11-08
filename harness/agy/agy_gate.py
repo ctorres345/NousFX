@@ -34,7 +34,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 GATE = os.path.join(HERE, "review-gate.py")
 PARSER = os.path.join(HERE, "pr_create_parser.py")
-TOTAL_SECONDS = 25  # one deadline for every check; hooks.json allows 30
+TOTAL_SECONDS = 25  # one deadline for every check when hooks.json passes no --budget (an old one allows 30)
 # An argument naming the folder a command runs in (whole names only: IsDirect and RedirectOutput are not folders)
 FOLDER_KEY = re.compile(r"cwd|(work(ing)?_?)?(dir(ectory)?|folder)|location|path", re.I)
 MCP_CREATE = re.compile(r"create_pull_request", re.I)
@@ -117,6 +117,15 @@ def read_call():
     return (shells_for(os.name) if shell else (name,)), command, folders, body
 
 
+def total_seconds(argv):
+    """The --budget hooks.json passes (sync keeps it below the hook's timeout), else TOTAL_SECONDS."""
+    try:
+        value = float(argv[argv.index("--budget") + 1])
+    except (ValueError, IndexError):
+        return TOTAL_SECONDS
+    return value if 0 < value < float("inf") else TOTAL_SECONDS
+
+
 def first_block(tools, command, folders, total=TOTAL_SECONDS, body=None):
     """The gate's reason for the first check that blocks, or None. One deadline covers all checks.
     body: a create-PR tool's PR body, handed to the gate as --body-file."""
@@ -137,9 +146,10 @@ def run_checks(tools, command, folders, total, extra):
             if left <= 0:
                 return f"Blocked: the review gate took longer than {total} s."
             try:
+                gate_budget = f"{max(0.5, left - 1):.2f}"  # a second less, so the gate itself says it ran out
                 r = subprocess.run([sys.executable, "-I", "-B", GATE, "check", "--cwd", folder, "--command", command,
-                                    "--tool", tool, "--allow-non-repo", *extra], capture_output=True, text=True, timeout=left,
-                                   env=CLEAN_ENV)
+                                    "--tool", tool, "--allow-non-repo", "--budget", gate_budget, *extra],
+                                   capture_output=True, text=True, timeout=left, env=CLEAN_ENV)
             except (OSError, subprocess.SubprocessError) as e:
                 return f"Blocked: the review gate did not answer ({type(e).__name__})."
             if r.returncode != 0:
@@ -159,7 +169,7 @@ def main(argv):
     if call is None:
         return 0
     tools, command, folders, body = call
-    reason = first_block(tools, command, folders, body=body)
+    reason = first_block(tools, command, folders, total_seconds(argv), body)
     return deny(reason) if reason else 0
 
 

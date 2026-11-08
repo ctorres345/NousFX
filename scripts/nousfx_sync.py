@@ -55,6 +55,7 @@ import nousfx_project
 import nousfx_skills
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+GATE_BUDGET, GATE_TIMEOUT = nousfx_agy.GATE_BUDGET, nousfx_agy.GATE_TIMEOUT  # one budget for every gate hook
 HOOK_FILES = nousfx_agy.GATE_FILES  # the gate and its parser: the same pair goes to Claude and to agy
 DRIFT_HOOK = "nousfx-drift.py"  # Claude only: agy has no session-start event, so its rules carry a line instead
 CLAUDE_HOOK_FILES = HOOK_FILES + (DRIFT_HOOK,)
@@ -219,7 +220,7 @@ def merge_settings(current, gate_path, win, drift=None, deny=None, where="settin
     py = interpreter(win)
     hooks = cfg.setdefault("hooks", {})
     # -I: PYTHONPATH must not shadow stdlib in the hooks
-    gate = owned_hook(f'{py} -I -B "{gate_path}"', 30, win)
+    gate = owned_hook(f'{py} -I -B "{gate_path}" --budget {GATE_BUDGET}', GATE_TIMEOUT, win)
     replace_owned(hooks.setdefault("PreToolUse", []), "review-gate.py", {"matcher": MATCHER, "hooks": [gate]})
     if drift:
         script, repo, tools = drift

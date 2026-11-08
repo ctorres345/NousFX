@@ -10,8 +10,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/review-gate.py\"; [ -f \"$HOME/.claude/hooks/review-gate.py\" ] || [ ! -f \"$f\" ] || python3 \"$f\"",
-            "timeout": 30
+            "command": "f=\"$CLAUDE_PROJECT_DIR/.claude/hooks/review-gate.py\"; [ -f \"$HOME/.claude/hooks/review-gate.py\" ] || [ ! -f \"$f\" ] || python3 \"$f\" --budget 55",
+            "timeout": 60
           }
         ]
       }

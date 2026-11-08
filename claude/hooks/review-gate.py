@@ -66,10 +66,12 @@ SCRIPT = os.path.abspath(__file__).replace("\\", "/")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # found even under python3 -P
 sys.dont_write_bytecode = True  # a __pycache__ in a project's .claude/hooks would change the tree hash
 try:
-    from pr_create_parser import CD_MENTION, HIDDEN, count_creates, create_calls, mentions_create, pr_body
+    import pr_create_parser
+    from pr_create_parser import (API, CD_MENTION, HIDDEN, count_creates, create_calls, mentions_api_create,
+                                  mentions_create, pr_body)
     PARSER_ERROR = None
 except Exception as e:  # missing or broken: a crash exits 1, which lets the call through
-    PARSER_ERROR = e
+    PARSER_ERROR, pr_create_parser = e, None
 
 try:
     import tomllib
@@ -168,6 +170,54 @@ Fix the problem and try again.
 - Skipping is the user's call: ask the user. Do not record a skip yourself.
 """
 
+PAYLOAD_BLOCK = """\
+Blocked: the review gate could not read this tool call ({error}), and the tool can open a PR.
+Run the command again as a plain string.
+"""
+
+API_BLOCK = """\
+Blocked: this command creates a PR through the GitHub API (`gh api`, `curl` or `wget` to
+`repos/<owner>/<repo>/pulls`, or a `createPullRequest` mutation). The gate cannot check a PR made that way.
+- Open it with `gh pr create --body-file FILE`, with the lines `review-gate.py attest` prints in the body.
+- Only reading? `gh api` sends -f/-F fields as a POST: add `--method GET`. For curl or wget, drop the data flags.
+"""
+
+DEFAULT_BUDGET = 25  # seconds, when the hook command has no --budget: an old hook config allows 30
+TIMED_OUT = "gate timed out; retry or review at Tier 3"
+DEADLINE = None  # time.monotonic() by which a hook run must answer; None outside one (no budget)
+TREES = None  # during evaluate(): each folder's worktree_tree and head_tree, computed once
+
+
+class GateTimeout(Exception):
+    """The gate ran out of its budget. Not a RuntimeError, so no caller reads it as git's answer."""
+
+
+def budget(argv):
+    """Seconds from `--budget N`, or DEFAULT_BUDGET when it is missing or not a positive number."""
+    try:
+        value = float(option(argv, "--budget"))
+    except (TypeError, ValueError):
+        return DEFAULT_BUDGET
+    return value if 0 < value < float("inf") else DEFAULT_BUDGET
+
+
+def start_budget(seconds):
+    """From now on, every git call (here and in the parser) must finish within seconds in total."""
+    global DEADLINE
+    DEADLINE = time.monotonic() + seconds
+    if pr_create_parser is not None:
+        pr_create_parser.DEADLINE = DEADLINE
+
+
+def once(fn, cwd):
+    """fn(cwd) (worktree_tree or head_tree), computed once per evaluate(): hashing a big tree is slow."""
+    if TREES is None:
+        return fn(cwd)
+    key = (fn, os.path.realpath(cwd))
+    if key not in TREES:
+        TREES[key] = fn(cwd)
+    return TREES[key]
+
 PARSER_BLOCK = """\
 Blocked: the review gate cannot load pr_create_parser.py next to {script}: {error}
 Until it loads, every command mentioning `gh` and `pr` is blocked, and --mark --skip does not help.
@@ -184,8 +234,17 @@ Blocked: branch "{branch}" is not named cesar/<JIRA-KEY> (for example cesar/MOB-
 
 
 def git(args, cwd, env=None):
-    r = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True,
-                       text=True, timeout=30)
+    """git's stdout. RuntimeError when git fails, GateTimeout when it does not answer in time."""
+    timeout = 30
+    if DEADLINE is not None:
+        timeout = min(30, DEADLINE - time.monotonic())
+        if timeout <= 0:
+            raise GateTimeout(TIMED_OUT)
+    try:
+        r = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True,
+                           text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise GateTimeout(TIMED_OUT) from None
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip())
     return r.stdout.strip()
@@ -222,8 +281,9 @@ def worktree_tree(cwd):
         git(["add", "-A"], cwd, env)
         return git(["write-tree"], cwd, env)
     finally:
-        if os.path.exists(tmp):
-            os.remove(tmp)
+        for path in (tmp, tmp + ".lock"):  # git leaves the lock when the budget kills it mid-add
+            if os.path.exists(path):
+                os.remove(path)
 
 
 def head_tree(cwd):
@@ -650,7 +710,7 @@ def has_check_pass(marker):
 def covers(cwd, tree):
     """True when tree is HEAD's tree or the working tree. Both are always computed on purpose: a git
     failure on either one must block, so no short-circuit when HEAD already matches."""
-    return tree in {worktree_tree(cwd), head_tree(cwd)}
+    return tree in {once(worktree_tree, cwd), once(head_tree, cwd)}
 
 
 def option(argv, name):
@@ -659,7 +719,7 @@ def option(argv, name):
 
 
 def check(argv):
-    """Plain entry for tools without Claude hooks: `check --cwd DIR --command "..." [--tool Bash|PowerShell|<mcp tool name>] [--body-file F] [--allow-non-repo]`.
+    """Plain entry for tools without Claude hooks: `check --cwd DIR --command "..." [--tool Bash|PowerShell|<mcp tool name>] [--body-file F] [--allow-non-repo] [--budget SECONDS]`.
 
     Same allow (0) and block (2) codes as the hook. Unlike the hook, bad input blocks: a missing
     option, a missing folder or a folder that is not a git repo all exit 2.
@@ -670,6 +730,8 @@ def check(argv):
         print('Blocked: usage: review-gate.py check --cwd DIR --command "gh pr create"', file=sys.stderr)
         return 2
     tree, branch, tool = option(argv, "--tree"), option(argv, "--branch"), option(argv, "--tool") or "Bash"
+    if option(argv, "--budget"):  # an adapter's hook (agy) passes the time it has left
+        start_budget(budget(argv))
     body_file = option(argv, "--body-file")  # a create-PR MCP tool's PR body, written to a file by the adapter
     # --allow-non-repo (agy sends no per-command folder): a workspace that is not a repo is judged by the
     # command alone, so a create that cd's into a repo is still checked there. Only for git's own answer
@@ -677,7 +739,7 @@ def check(argv):
     lenient = "--allow-non-repo" in argv and os.path.isdir(cwd) and not (tree or branch)
     try:
         git(["rev-parse", "--git-dir"], cwd, {**os.environ, "LC_ALL": "C"})
-    except (OSError, RuntimeError) as e:
+    except (OSError, RuntimeError, GateTimeout) as e:
         if not (lenient and isinstance(e, RuntimeError) and "not a git repository" in str(e)):
             print(ERROR_BLOCK.format(error=e, script=SCRIPT), file=sys.stderr)
             return 2
@@ -733,10 +795,10 @@ def attestation(cwd, clean=True):
     with open(git_path("claude-review-ok", cwd), encoding="utf-8") as f:
         marker = json.load(f)
     tree = marker["tree"]
-    head = head_tree(cwd)
+    head = once(head_tree, cwd)
     if not head:
         raise ValueError("HEAD has no commit")
-    dirty = worktree_tree(cwd) != head
+    dirty = once(worktree_tree, cwd) != head
     if dirty and (clean or tree != head):
         raise Dirty(head)
     if tree != head:
@@ -952,17 +1014,30 @@ def run_check_ref(argv):
     return 0
 
 
-def gate():
-    """Claude PreToolUse hook: parse the payload, then ask evaluate()."""
+def can_create(tool):
+    """Whether a tool of this name can open a PR (the hook matcher sends only these, plus look-alikes)."""
+    return tool.lower() in ("bash", "powershell") or bool(MCP_PR_CREATE.search(tool))
+
+
+def gate(argv):
+    """Claude PreToolUse hook: parse the payload, then ask evaluate(). A hook that times out lets the call
+    through, so the gate keeps to the budget the hook command passes (`--budget N`, below its timeout)."""
+    start_budget(budget(argv))
+    tool = None
     try:
         payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
-        tool = str(payload.get("tool_name") or "")
+        tool = payload.get("tool_name")
         tool_input = payload.get("tool_input") or {}
         command = tool_input.get("command", "")
         body = tool_input.get("body")  # a create-PR MCP tool's PR body
         cwd = payload.get("cwd") or os.getcwd()
-    except Exception:
-        return 0  # not a call we can read: never break unrelated work
+        if not all(isinstance(x, str) for x in (tool, command, cwd)):
+            raise TypeError("tool_name, cwd and tool_input.command must be strings")
+    except Exception as e:
+        if isinstance(tool, str) and not can_create(tool):
+            return 0  # a tool that cannot open a PR: never break unrelated work
+        print(PAYLOAD_BLOCK.format(error=f"{type(e).__name__}: {e}"), file=sys.stderr)
+        return 2
     return evaluate(tool, command, cwd, body)
 
 
@@ -1045,7 +1120,7 @@ def body_blocked(cwd, source):
         return None
     text, why = body_text(source, cwd)
     if text is not None:
-        hashes, head = attested_trees(text), head_tree(cwd)
+        hashes, head = attested_trees(text), once(head_tree, cwd)
         if head and head in hashes:
             if marked_tree(cwd) == head:
                 return None
@@ -1056,7 +1131,7 @@ def body_blocked(cwd, source):
                    f"{(head or 'unknown')[:10]}: the code changed after the attest.")
     try:
         fix = BODY_FIX.format(lines="\n".join("    " + x for x in attestation(cwd, clean=False)))
-        if worktree_tree(cwd) != head_tree(cwd):
+        if once(worktree_tree, cwd) != once(head_tree, cwd):
             fix += ("\nThe working tree differs from HEAD; that is fine for the PR (CI checks HEAD), but "
                     "`review-gate.py attest` itself wants it clean: commit or clean first.")
     except NO_ATTESTATION as e:
@@ -1067,6 +1142,15 @@ def body_blocked(cwd, source):
 def evaluate(tool, command, cwd, body=None):
     """Exit code for one tool call. The single decision path for the hook and for `check`.
     body: the PR body of a create-PR MCP tool (shell commands carry theirs in the command)."""
+    global TREES
+    TREES = {}
+    try:
+        return decide(tool, command, cwd, body)
+    finally:
+        TREES = None
+
+
+def decide(tool, command, cwd, body):
     if MCP_PR_CREATE.search(tool):
         calls = [(cwd, {"kind": "mcp", "value": body})]
     elif PARSER_ERROR:
@@ -1077,6 +1161,9 @@ def evaluate(tool, command, cwd, body=None):
     else:
         try:
             found = create_calls(command, cwd, tool.lower() == "powershell")
+            if any(args == API for _, args in found):  # names its repo itself: blocks in any folder
+                print(API_BLOCK, file=sys.stderr)
+                return 2
             # Every create gets the review check. Shell code the parser cannot read (`eval "$X"`) may hide
             # another create, so its body counts as unreadable. An unknown program (`"$EDITOR" x`) is suspected
             # only from the raw text, which a readable create in the same command explains: its body is
@@ -1088,6 +1175,9 @@ def evaluate(tool, command, cwd, body=None):
             calls = [(d, None if args is None and explained else {"kind": "unknown"} if args in (None, HIDDEN)
                       else written(pr_body(args), command)) for d, args in found]
         except Exception:
+            if isinstance(command, str) and mentions_api_create(command):
+                print(API_BLOCK, file=sys.stderr)
+                return 2
             if not (isinstance(command, str) and mentions_create(command)):
                 return 0
             calls = [(None if CD_MENTION.search(command) else cwd, {"kind": "unknown"})]  # the parse lost any cd
@@ -1124,4 +1214,4 @@ if __name__ == "__main__":
         sys.exit(verify_tier(sys.argv))
     if "--allow-branch" in sys.argv:
         sys.exit(allow_branch(sys.argv))
-    sys.exit(mark(sys.argv) if "--mark" in sys.argv else gate())
+    sys.exit(mark(sys.argv) if "--mark" in sys.argv else gate(sys.argv))

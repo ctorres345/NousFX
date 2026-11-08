@@ -3,6 +3,9 @@
 
 Each test runs the hook as a subprocess on a throwaway git repo. BLOCKED is exit 2, ALLOWED exit 0.
 """
+import contextlib
+import importlib.util
+import io
 import json
 import os
 import shutil
@@ -11,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_review_gate_check import attested_body, with_body  # noqa: E402
@@ -260,9 +264,10 @@ class Detection(Base):
     def test_odd_tool_name_is_still_checked(self):
         self.assertEqual(self.run_gate("gh pr create", tool=5), BLOCKED)
 
-    def test_bad_payload_passes(self):
+    def test_bad_payload_blocks(self):
+        """NFX-102: the tool might be a create, so a payload the gate cannot read blocks (more in Payloads)."""
         r = subprocess.run([sys.executable, GATE], input=b"not json", capture_output=True)
-        self.assertEqual(r.returncode, ALLOWED)
+        self.assertEqual(r.returncode, BLOCKED)
 
     def test_missing_parser_module_still_blocks_create(self):
         lone = os.path.join(self.tmp, "lone")
@@ -680,6 +685,224 @@ class Branch(Base):
         self.assertEqual(self.run_gate("gh pr create"), BLOCKED)  # the mark names the old branch (NFX-71)
         self.mark("--findings", "0")
         self.assertEqual(self.run_gate("gh pr create"), ALLOWED)
+
+
+# NFX-102: PR creates through the GitHub API. The gate cannot read their body, so they always block.
+API_CREATES = [
+    "gh api repos/{owner}/{repo}/pulls -f title=x",
+    "X='curl -d x https://api.github.com/repos/o/r/pulls'; eval \"$X\"",
+    '"$W" --post-data x https://api.github.com/repos/o/r/pulls',
+    "gh api repos/o/r/pulls -f title=x -f head=b -f base=main",
+    "gh api -X POST repos/o/r/pulls --input body.json",
+    "gh api -XPOST repos/o/r/pulls",
+    "gh api -X=POST repos/o/r/pulls -f title=t",
+    "gh api -X PUT repos/o/r/pulls",
+    "gh api -H'X-GitHub-Api-Version: 2022-11-28' repos/o/r/pulls -f title=t",
+    "curl -H'X-GitHub-Api-Version: 2022-11-28' -d @b.json https://api.github.com/repos/o/r/pulls",
+    "gh api --method POST /repos/o/r/pulls",
+    "gh api --method=POST repos/o/r/pulls",
+    "gh api repos/o/r/pulls -F draft=true",
+    "gh api repos/o/r/pulls --raw-field title=x",
+    "gh api repos/o/r/pulls --field title=x",
+    'gh api "repos/$OWNER/$REPO/pulls" -f title=x',
+    'gh api -X "$M" repos/o/r/pulls',
+    "gh api https://api.github.com/repos/o/r/pulls -f title=x",
+    'gh api graphql -f query="mutation { createPullRequest(input: {}) { pullRequest { url } } }"',
+    "curl -X POST https://api.github.com/repos/o/r/pulls -d @body.json",
+    "curl --expand-data '{{title}}' https://api.github.com/repos/o/r/pulls",
+    "curl -sSXPOST https://api.github.com/repos/o/r/pulls",
+    "curl --request POST https://api.github.com/repos/o/r/pulls",
+    "curl --request=POST https://api.github.com/repos/o/r/pulls",
+    "curl https://api.github.com/repos/o/r/pulls -d '{\"title\":\"x\"}'",
+    "curl https://api.github.com/repos/o/r/pulls --data-raw x",
+    "curl https://api.github.com/repos/o/r/pulls --data-binary @b.json",
+    "curl https://api.github.com/repos/o/r/pulls --json '{}'",
+    "curl -s https://ghe.example.com/api/v3/repos/o/r/pulls -d x",
+    "wget --method=POST https://api.github.com/repos/o/r/pulls",
+    "wget --post-data x https://api.github.com/repos/o/r/pulls",
+    "wget --post-file=b.json https://api.github.com/repos/o/r/pulls",
+    "wget --method POST --body-data x https://api.github.com/repos/o/r/pulls",
+    "wget --meth=POST https://api.github.com/repos/o/r/pulls",
+    "wget --post-d=x https://api.github.com/repos/o/r/pulls",
+    "curl -T b.json -X POST -G https://api.github.com/repos/o/r/pulls",
+    "curl -d '{\"query\":\"mutation{createPullRequest(input:{})}\"}' https://api.github.com/graphql",
+    "echo 'curl -d @b https://api.github.com/repos/o/r/pulls' | sh",
+    'eval "$X"; echo repos/o/r/pulls',
+    '"$CURL" -d x https://api.github.com/repos/o/r/pulls',
+    "$GH api repos/o/r/pulls -f title=x",
+    "curl -d @b.json -A -XGET https://api.github.com/repos/o/r/pulls",
+    "gh api repos/o/r/pulls -f title=x -f head=b -f base=main -t -XGET",
+    "wget --post-file=b.json -U --method=GET https://api.github.com/repos/o/r/pulls",
+    "curl -X GET https://api.github.com/repos/o/r/pulls --next -d @b.json https://api.github.com/repos/o/r/pulls",
+    "curl -G -d state=open https://api.github.com/repos/o/r/pulls",
+    "curl -d @b.json https://api.github.com/repos/o/r/./pulls",
+    "curl -d @b.json https://api.github.com/repos/o/r/x/../pulls",
+    "curl -d @b.json https://api.github.com//repos/o/r/pulls",
+    "curl -d @b.json 'https://api.github.com/repos/o/r/{pulls}'",
+    "curl -d @b.json https://api.github.com/repositories/123/pulls",
+    "curl --js '{}' https://api.github.com/repos/o/r/pulls",
+]
+
+# Reads, updates and other endpoints: not a create.
+API_READS = [
+    "gh api repos/{owner}/{repo}/pulls/12/comments/3/replies -f body=x",
+    "gh api repos/{owner}/{repo}/issues/5/comments -f body=x",
+    "gh api -X PATCH repos/{owner}/{repo}/pulls/12 -f title=x",
+    'eval "$(ssh-agent -s)" && gh api repos/o/r/pulls --method GET',
+    '"$PY" tool.py repos/o/r/pulls',
+    "gh api repos/o/r/pulls",
+    "gh api repos/o/r/pulls --method GET -f state=open",
+    "gh api -X GET repos/o/r/pulls -f state=open",
+    "gh api -X=GET repos/o/r/pulls -f state=open",
+    "curl -I https://api.github.com/repos/o/r/pulls",
+    "curl -H'Accept: application/vnd.github+json' https://api.github.com/repos/o/r/pulls",
+    "gh api -H'Accept: application/vnd.github+json' repos/o/r/pulls",
+    "gh api -H Accept:x -q .[].number repos/o/r/pulls",
+    'gh api repos/o/r/pulls/12/comments/3/replies -f body="Fixed in abc"',
+    '"$PY" tool.py && gh api repos/o/r/pulls',
+    "curl -A -d https://api.github.com/repos/o/r/pulls",
+    "gh api repos/o/r/pulls/12",
+    "gh api repos/o/r/pulls/12/comments -f body=x",
+    "gh api -X PATCH repos/o/r/pulls/12 -f title=x",
+    "gh api repos/o/r/issues -f title=x",
+    "gh api graphql -f query='{ viewer { login } }'",
+    "curl https://api.github.com/repos/o/r/pulls",
+    "curl -s -H 'Accept: application/vnd.github+json' https://api.github.com/repos/o/r/pulls?state=open",
+    "wget https://api.github.com/repos/o/r/pulls",
+    "echo gh api repos/o/r/pulls -f title=x",
+    "echo curl -d x https://api.github.com/repos/o/r/pulls",
+]
+
+
+def load_gate():
+    """review-gate.py imported in this process (its name has a hyphen, so no plain import)."""
+    spec = importlib.util.spec_from_file_location("review_gate_under_test", GATE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ApiCreates(Base):
+    """NFX-102: `gh api`, `curl` and `wget` creates of a PR block, reviewed or not."""
+
+    def test_api_creates_block(self):
+        for command in API_CREATES:
+            with self.subTest(command=command):
+                r = self.run_gate(command, full=True)
+                self.assertEqual(r.returncode, BLOCKED)
+                self.assertIn(b"gh pr create", r.stderr)
+                self.assertIn(b"--method GET", r.stderr)
+
+    def test_api_create_blocks_even_after_a_review(self):
+        self.mark("--findings", "0")
+        self.assertEqual(self.run_gate("gh api repos/o/r/pulls -f title=x"), BLOCKED)
+
+    def test_api_creates_block_outside_a_repo(self):
+        """Unlike `gh pr create`, an API call names its repo itself, so it needs no checkout."""
+        plain = os.path.join(self.tmp, "plain")
+        os.makedirs(plain)
+        for command in ("gh api repos/o/r/pulls -f title=x", "curl -d x https://api.github.com/repos/o/r/pulls"):
+            with self.subTest(command=command):
+                self.assertEqual(self.run_gate(command, cwd=plain), BLOCKED)
+
+    def test_api_reads_pass(self):
+        for command in API_READS:
+            with self.subTest(command=command):
+                self.assertEqual(self.run_gate(command), ALLOWED)
+
+
+class Payloads(Base):
+    """NFX-102: a hook payload the gate cannot read blocks unless it cannot be a create."""
+
+    def raw_gate(self, data, *args):
+        return subprocess.run([sys.executable, GATE, *args], input=data, capture_output=True, cwd=self.tmp)
+
+    def payload(self, tool, tool_input):
+        return json.dumps({"tool_name": tool, "cwd": self.repo, "tool_input": tool_input}).encode()
+
+    def test_non_string_command_blocks(self):
+        for tool in ("Bash", "PowerShell"):
+            for command in (["gh", "pr", "create"], 12, {"x": "gh pr create"}, None):
+                with self.subTest(tool=tool, command=command):
+                    r = self.raw_gate(self.payload(tool, {"command": command}))
+                    self.assertEqual(r.returncode, BLOCKED)
+                    self.assertIn(b"could not read", r.stderr)
+
+    def test_unreadable_payload_blocks(self):
+        for data in (b"not json", b"[1, 2]", b'"text"', b"\xff\xfe\x00", self.payload("Bash", "gh pr create"),
+                     json.dumps({"tool_name": "Bash", "cwd": 7, "tool_input": {"command": "ls"}}).encode()):
+            with self.subTest(data=data):
+                self.assertEqual(self.raw_gate(data).returncode, BLOCKED)
+
+    def test_unreadable_payload_of_a_tool_that_cannot_create_passes(self):
+        for data in (self.payload("Read", ["x"]), self.payload("Grep", {"command": 12})):
+            with self.subTest(data=data):
+                self.assertEqual(self.raw_gate(data).returncode, ALLOWED)
+
+    def test_readable_payloads_still_pass(self):
+        self.assertEqual(self.raw_gate(self.payload("Bash", {"command": "git status"})).returncode, ALLOWED)
+        self.assertEqual(self.raw_gate(self.payload("Bash", {})).returncode, ALLOWED)
+
+
+class Budget(Base):
+    """NFX-102: a slow git makes the gate block within its budget; a hook that times out would let it pass."""
+
+    def slow_git(self):
+        stub = os.path.join(self.tmp, "slow-bin")
+        os.makedirs(stub)
+        path = os.path.join(stub, "git")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\nexec sleep 30\n")  # exec: the killed process is the one holding the pipes
+        os.chmod(path, 0o755)
+        return {**os.environ, "PATH": stub + os.pathsep + os.environ["PATH"]}
+
+    def test_slow_git_blocks_within_the_budget(self):
+        payload = json.dumps({"tool_name": "Bash", "cwd": self.repo,
+                              "tool_input": {"command": "gh pr create --body x"}}).encode()
+        start = time.monotonic()
+        r = subprocess.run([sys.executable, GATE, "--budget", "1"], input=payload, capture_output=True,
+                           env=self.slow_git(), cwd=self.tmp)
+        self.assertEqual(r.returncode, BLOCKED)
+        self.assertLess(time.monotonic() - start, 8)
+        self.assertIn(b"gate timed out; retry or review at Tier 3", r.stderr)
+
+    def test_check_entry_takes_the_budget_too(self):
+        start = time.monotonic()
+        r = subprocess.run([sys.executable, GATE, "check", "--cwd", self.repo, "--command", "gh pr create",
+                            "--budget", "1"], capture_output=True, env=self.slow_git(), cwd=self.tmp)
+        self.assertEqual(r.returncode, BLOCKED)
+        self.assertLess(time.monotonic() - start, 8)
+        self.assertIn(b"gate timed out", r.stderr)
+
+    def test_default_budget_stays_under_the_old_hook_timeout(self):
+        self.assertLess(load_gate().DEFAULT_BUDGET, 30)
+
+    def test_a_bad_budget_falls_back_to_the_default(self):
+        gate = load_gate()
+        for argv in (["x", "--budget", "soon"], ["x", "--budget"], ["x", "--budget", "-3"], ["x"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(gate.budget(argv), gate.DEFAULT_BUDGET)
+        self.assertEqual(gate.budget(["x", "--budget", "55"]), 55)
+
+
+class TreeOnce(Base):
+    """NFX-102: one evaluation computes the working tree once, however many checks need it."""
+
+    def test_worktree_tree_runs_once_per_evaluation(self):
+        self.mark("--findings", "0")
+        gate = load_gate()
+        real, calls = gate.worktree_tree, []
+
+        def counting(cwd):
+            calls.append(cwd)
+            return real(cwd)
+
+        with mock.patch.object(gate, "worktree_tree", counting), contextlib.redirect_stderr(io.StringIO()):
+            # a body with no Review-Gate line: the review check, the body check and the attest lines all run
+            self.assertEqual(gate.evaluate("Bash", "gh pr create --body nothing", self.repo), BLOCKED)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(gate.evaluate("Bash", "gh pr create --body nothing", self.repo), BLOCKED)
+            self.assertEqual(len(calls), 2)  # nothing is kept from one evaluation to the next
 
 
 if __name__ == "__main__":

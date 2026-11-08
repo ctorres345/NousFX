@@ -115,18 +115,18 @@ class Hooks(Base):
         (hook,) = entry["hooks"]
         self.assertEqual(hook["type"], "command")
         adapter = os.path.join(base, "hooks", "agy_gate.py")
-        self.assertTrue(hook["command"].startswith(f'python3 -I -B "{adapter}" --expect '), hook["command"])
+        self.assertTrue(hook["command"].startswith(f'python3 -I -B "{adapter}" --budget 55 --expect '), hook["command"])
         hashes = hook["command"].rsplit(" ", 1)[1].split(",")
         plan = self.plan()
         self.assertEqual(hashes, [agy.sha256(plan[os.path.join(base, "hooks", n)])
                                   for n in ("agy_gate.py", "review-gate.py", "pr_create_parser.py")])
-        self.assertGreaterEqual(hook["timeout"], 30)
+        self.assertEqual(hook["timeout"], 60)
 
     def test_command_uses_the_given_interpreter_and_path(self):
         out = self.plan(python="python", native=lambda p: p.replace(os.sep, "/") + ".x")
         cfg = json.loads(out[os.path.join(agy.plugin_dir(self.home), "hooks.json")])
         command = cfg[next(iter(cfg))]["PreToolUse"][0]["hooks"][0]["command"]
-        self.assertTrue(command.startswith('python -I -B "') and 'agy_gate.py.x" --expect ' in command, command)
+        self.assertTrue(command.startswith('python -I -B "') and 'agy_gate.py.x" --budget 55 --expect ' in command, command)
 
     def test_hook_files_are_copies_of_the_sources(self):
         out = self.plan()

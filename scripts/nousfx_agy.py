@@ -20,6 +20,8 @@ PLUGIN_REL = os.path.join(".gemini", "config", "plugins", "nousfx")
 MAX_BYTES = 24000
 GATE_FILES = ("review-gate.py", "pr_create_parser.py")  # copied from claude/hooks next to the adapter
 ADAPTER = "agy_gate.py"  # copied from harness/agy
+GATE_BUDGET = 55  # seconds the gate may take; it blocks when they run out (NFX-102)
+GATE_TIMEOUT = GATE_BUDGET + 5  # the hook's own limit: a hook that times out lets the call through
 MATCHER = "run_command|.*create_pull_request"  # shell calls and any create-PR tool (regex on the tool name)
 
 CLAUDE_ONLY_TERMS = (
@@ -126,8 +128,8 @@ def sha256(text):
 def hooks_text(adapter_path, python, hashes):
     """hooks.json: run the adapter before every shell command. -I keeps PYTHONPATH from shadowing the stdlib.
     hashes (adapter, gate, parser) go into the command: the adapter denies when a file no longer matches."""
-    hook = {"type": "command", "command": f'{python} -I -B "{adapter_path}" --expect {",".join(hashes)}',
-            "timeout": 30}
+    hook = {"type": "command", "timeout": GATE_TIMEOUT,
+            "command": f'{python} -I -B "{adapter_path}" --budget {GATE_BUDGET} --expect {",".join(hashes)}'}
     return json.dumps({"nousfx-review-gate": {"PreToolUse": [{"matcher": MATCHER, "hooks": [hook]}]}},
                       indent=2) + "\n"
 

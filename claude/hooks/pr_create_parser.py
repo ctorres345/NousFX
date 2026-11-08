@@ -3,13 +3,20 @@
 create_calls() gives each create's directory and arguments; pr_body() reads the body flags from them.
 create_calls() parses the shell text instead of matching it, so quoted text and heredocs that only
 mention the command pass, while wrappers (`if`, `timeout`, `eval`, `bash -c`, `$(...)`) are seen.
-It is a guardrail against mistakes, not a sandbox. Known limits: script files, `gh api`, shell
-functions, `find -exec`, `cmd /c`, `iex`, `trap` and `ssh host "..."` are not looked into.
+It is a guardrail against mistakes, not a sandbox. PR creates through the GitHub API are found too:
+`gh api`, `curl` and `wget` to `repos/<owner>/<repo>/pulls` that send data or POST, and a `gh api graphql`
+`createPullRequest` mutation (NFX-102). Known limits: script files, `gh alias`, `python -c` and SDK calls
+(requests, PyGithub), other HTTP clients (`Invoke-RestMethod`, httpie, and `curl` where PowerShell 5.1
+aliases it to `Invoke-WebRequest`), an API URL or GraphQL query built at run time or read from a file
+(`-F query=@q.graphql`, `--input`), shell functions, `find -exec`, `cmd /c`,
+`iex`, `trap` and `ssh host "..."` are not looked into.
 """
 import collections
 import os
+import posixpath
 import re
 import subprocess
+import time
 
 Word = collections.namedtuple("Word", "text dynamic")  # dynamic: holds a $ or backtick expansion
 
@@ -18,6 +25,7 @@ WRAPPERS = {"env", "command", "builtin", "exec", "time", "nohup", "timeout", "gt
             "sudo", "doas", "xargs", "stdbuf", "setsid", "caffeinate", "unbuffer", "flock", "watch",
             "noglob", "nocorrect", "direnv", "op", "uv", "mise"}
 PRINTERS = {"echo", "printf"}
+HTTP_CLIENTS = {"curl", "wget"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish", "pwsh", "powershell"}
 CD_COMMANDS = {"cd", "pushd", "popd", "chdir", "set-location", "sl", "pop-location"}
 BRANCH_KEYWORDS = {"then", "elif", "else", "do"}
@@ -348,6 +356,92 @@ def mentions_create(text):
 
 
 HIDDEN = "hidden"  # create_calls: a create that may hide in shell code the parser cannot read
+API = "api"  # create_calls: a PR create through the GitHub API, whose body the gate cannot read
+DEADLINE = None  # time.monotonic() by which git must answer; the gate sets it from its --budget
+
+API_MENTION = re.compile(r"(?:repos|repositories)/\S*?pull|createPullRequest")  # raw text: loose on purpose
+PULLS_PATH = re.compile(r"/(?:repos/[^/]+/[^/]+|repositories/[^/]+)/pulls/?")
+Client = collections.namedtuple("Client", "method_short method_long data_short data_long value_short value_long abbrev")
+REQUESTS = {  # how each client sets its method and sends data. value_short/value_long: the other flags that take
+    # a value (gh's whole list, so a GET in a flag's value is never read as a flag); abbrev: the client takes a
+    # long flag's unambiguous prefix (`--meth=POST`)
+    "gh": Client("X", ("--method",), "fF", ("--field", "--raw-field", "--input"), "Hpqt",
+                 ("--header", "--preview", "--jq", "--template", "--hostname", "--cache"), False),
+    "curl": Client("X", ("--request",), "dFT", ("--data", "--json", "--form", "--upload-file", "--expand-data"),
+                   "AbcCDeEHKmortuUwxyYzQ", (), True),
+    "wget": Client("", ("--method",), "", ("--post-data", "--post-file", "--body-data", "--body-file"), "", (),
+                   True),
+}
+
+
+def mentions_api_create(text):
+    """Raw-text check, as mentions_create, for code the parser cannot read: a pulls endpoint or a GraphQL create."""
+    return bool(API_MENTION.search(text))
+
+
+def is_pulls(text):
+    """Whether a URL or endpoint names a PR collection (`repos/o/r/pulls`, `repositories/<id>/pulls`), after the
+    dot segments and doubled slashes curl and wget resolve. A curl glob (`{pulls}`, `pull[s-s]`) counts; gh's
+    own placeholders (`{owner}`, `{repo}`, `{branch}`) are plain segments."""
+    m = re.search(r"(?:^|/)(?:repos|repositories)/", text)
+    if not m:
+        return False
+    path = re.split(r"[?#]", text[m.start():].lstrip("/"), maxsplit=1)[0]
+    path = re.sub(r"\{(?:owner|repo|branch)\}", "x", path)
+    if re.search(r"[{\[]", path):
+        return True
+    return bool(PULLS_PATH.fullmatch(posixpath.normpath("/" + path)))
+
+
+def long_flag(flag, names, abbrev):
+    """Whether flag (`--x`, before any `=`) is one of names, or with abbrev a prefix of one."""
+    return any(flag == n or (abbrev and len(flag) >= 4 and n.startswith(flag)) for n in names)
+
+
+def request(name, args):
+    """(methods, sends_data) for a gh api, curl or wget request: every method Word it sets and whether it sends
+    data. A value flag's next word is skipped, so it is never read as a flag."""
+    c = REQUESTS[name]
+    methods, data = [], False
+    k = 0
+    while k < len(args):
+        w = args[k]
+        t, following, takes_next = w.text, (args[k + 1] if k + 1 < len(args) else None), False
+        if t.startswith("--"):
+            flag, eq, value = t.partition("=")
+            if long_flag(flag, c.method_long, c.abbrev):
+                methods.append(Word(value, w.dynamic) if eq else following)
+                takes_next = not eq
+            elif flag.startswith(c.data_long) or long_flag(flag, c.data_long, c.abbrev):
+                data, takes_next = True, not eq
+            elif long_flag(flag, c.value_long, False):
+                takes_next = not eq
+        elif t.startswith("-") and len(t) > 1:  # a short flag or a cluster (`-sSXPOST`)
+            for i, ch in enumerate(t[1:], 1):
+                rest = t[i + 1:].removeprefix("=")  # gh's flag parser takes `-X=POST` as POST
+                if c.method_short and ch == c.method_short:
+                    methods.append(Word(rest, w.dynamic) if rest else following)
+                elif ch in c.data_short:
+                    data = True
+                elif ch not in c.value_short:
+                    continue
+                takes_next = not rest  # the rest of the word, or the next word, is this flag's value
+                break
+        k += 1 + takes_next
+    return [m for m in methods if m is not None], data
+
+
+def api_create(name, args):
+    """Whether gh api (args after `api`), curl or wget creates a PR. Fail closed: any method but GET or HEAD
+    (one set at run time too) counts, and so does data, except gh's fields with an explicit GET (a query)."""
+    if any("createPullRequest" in a.text for a in args):  # GraphQL mutation
+        return True
+    if not any(is_pulls(a.text) for a in args):
+        return False
+    methods, data = request(name, args)
+    if any(m.dynamic or m.text.upper() not in ("GET", "HEAD") for m in methods):
+        return True  # curl's --next groups each set their own: any one that creates counts
+    return data and not (name == "gh" and methods)
 
 
 def count_creates(text):
@@ -360,12 +454,22 @@ def create_calls(command, cwd, ps=False):
     """(directory, args) for each `gh pr create` in command. The directory is None when it cannot be worked
     out; args (the Words after `gh`) is HIDDEN for shell code the parser cannot read (`eval "$X"`,
     `bash -c "$X"`, a pipe into a shell) and None for an unknown program (`"$EDITOR" x`), each only when the
-    raw text mentions a create."""
+    raw text mentions a create. args is API for a create through the GitHub API (`gh api`, curl, wget)."""
     found = []
+    hidden = []  # directories of shell code the parser cannot read
+    read_mentions = [0]  # API mentions inside calls the parser read as API reads
 
     def opaque(cwd, args=None):
+        if args == HIDDEN:
+            hidden.append(cwd)
         if mentions_create(command):
             found.append((cwd, args))
+
+    def api_call(cwd, name, args):
+        if api_create(name, args):
+            found.append((cwd, API))
+        else:
+            read_mentions[0] += sum(len(API_MENTION.findall(a.text)) for a in args)
 
     def walk(events, cwd):
         stack = []
@@ -412,12 +516,16 @@ def create_calls(command, cwd, ps=False):
             # A cd counts only as the wrapped command itself: in `time make cd` it is an argument.
             first = next((k for k, w in enumerate(rest) if not w.text.startswith("-")), None)
             words = next((rest[k:] for k, w in enumerate(rest)
-                          if w.dynamic or command_name(w.text) in {"gh", "eval"} | SHELLS
+                          if w.dynamic or command_name(w.text) in {"gh", "eval"} | SHELLS | HTTP_CLIENTS
                           or (k == first and command_name(w.text) in CD_COMMANDS)), [])
         name, args = command_name(words[0].text), words[1:]
         if name == "gh":
             if is_pr_create(args):
                 found.append((cwd, args))
+            elif args and args[0].text == "api":
+                api_call(cwd, name, args[1:])
+        elif name in HTTP_CLIENTS:
+            api_call(cwd, name, args)
         elif name == "eval":
             if any(a.dynamic for a in args):
                 opaque(cwd, HIDDEN)
@@ -441,6 +549,10 @@ def create_calls(command, cwd, ps=False):
         elif words[0].dynamic:  # `$CMD ...`: unknown command. `$VENV/bin/x` names a program.
             if "/" not in words[0].text:
                 opaque(cwd)
+            # `"$CURL" -d x .../pulls`: the program is unknown, so read its args as each client would
+            if (api_create("gh", args[1:]) if args and args[0].text == "api"
+                    else any(api_create(client, args) for client in REQUESTS)):
+                found.append((cwd, API))
             if is_pr_create(args):
                 found.append((cwd, args))  # `$GH pr create`: the program is unknown, its args are not
             carried_shell(args, cwd)
@@ -456,6 +568,10 @@ def create_calls(command, cwd, ps=False):
                 return
 
     walk(parse(command, ps), cwd)
+    # Code the parser cannot read may build an API create from text anywhere in the command (`X='curl -d x
+    # .../pulls'; eval "$X"`). Mentions the parser already read as API reads do not count.
+    if hidden and len(API_MENTION.findall(command)) > read_mentions[0]:
+        found.append((hidden[0], API))
     return found
 
 
@@ -548,8 +664,9 @@ def pr_body(args):
 
 
 def git_toplevel(cwd):
+    timeout = 30 if DEADLINE is None else max(0.01, min(30, DEADLINE - time.monotonic()))
     r = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True,
-                       text=True, timeout=30)
+                       text=True, timeout=timeout)
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip())
     return r.stdout.strip()

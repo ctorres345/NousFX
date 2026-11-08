@@ -277,8 +277,11 @@ class SingleCodePath(Base):
                     f"json.dump(sys.argv[1:], open({record!r}, 'w'))\n")
         self.assertSilent(payload("gh pr create --fill", [self.repo]))
         with open(record, encoding="utf-8") as f:
-            self.assertEqual(json.load(f), ["check", "--cwd", self.repo, "--command", "gh pr create --fill",
-                                            "--tool", "Bash", "--allow-non-repo"])
+            args = json.load(f)
+        self.assertEqual(args[:-2], ["check", "--cwd", self.repo, "--command", "gh pr create --fill",
+                                     "--tool", "Bash", "--allow-non-repo"])
+        self.assertEqual(args[-2], "--budget")  # what is left of the adapter's deadline, less a second
+        self.assertTrue(0 < float(args[-1]) < 25, args[-1])
 
 
 if __name__ == "__main__":

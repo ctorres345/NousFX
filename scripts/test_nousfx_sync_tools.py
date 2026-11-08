@@ -6,11 +6,13 @@ Same seam as test_nousfx_sync.py: the CLI as a subprocess against a temp home, s
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import unittest
 
 import nousfx_agy
+import nousfx_sync
 from test_nousfx_sync import ROOT, Base, read, write
 
 def jload(path):
@@ -771,6 +773,32 @@ class ProjectSetupSkill(Base):
         doc = read(os.path.join(ROOT, "docs", "review-gate.md"))
         self.assertIn("only a fallback for cloud sessions", doc)
         self.assertIn("never adds one", doc)
+
+
+class GateBudget(unittest.TestCase):
+    """NFX-102: every installed gate hook passes --budget, and its timeout leaves room for the gate to block."""
+
+    def assert_agrees(self, hook):
+        m = re.search(r"--budget (\d+)", hook["command"])
+        self.assertTrue(m, hook["command"])
+        budget = int(m.group(1))
+        self.assertEqual(budget, nousfx_sync.GATE_BUDGET)
+        self.assertEqual(hook["timeout"], nousfx_sync.GATE_TIMEOUT)
+        self.assertGreater(hook["timeout"], budget)
+
+    def test_home_hook(self):
+        for win in (False, True):
+            with self.subTest(win=win):
+                cfg = json.loads(nousfx_sync.merge_settings("", "/h/.claude/hooks/review-gate.py", win))
+                self.assert_agrees(cfg["hooks"]["PreToolUse"][0]["hooks"][0])
+
+    def test_project_asset(self):
+        cfg = jload(os.path.join(ROOT, "claude", "skills", "project-setup", "assets", "settings.json"))
+        self.assert_agrees(cfg["hooks"]["PreToolUse"][0]["hooks"][0])
+
+    def test_agy_hook(self):
+        cfg = json.loads(nousfx_agy.hooks_text("/a/agy_gate.py", "python3", ["a" * 64] * 3))
+        self.assert_agrees(cfg["nousfx-review-gate"]["PreToolUse"][0]["hooks"][0])
 
 
 if __name__ == "__main__":
