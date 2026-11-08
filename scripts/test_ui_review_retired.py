@@ -15,12 +15,19 @@ def read(path):
 
 
 def grep(pattern):
-    r = subprocess.run(["git", "grep", "-l", "-i", "-E", pattern], cwd=ROOT, capture_output=True, text=True)
+    # --untracked: a new file is searched before it is committed (NFX-96). The pathspecs keep tool state out
+    # (.claude/ settings, worktrees and drafts, graphify-out/) whatever this machine's exclude files say.
+    r = subprocess.run(["git", "grep", "--untracked", "-l", "-i", "-E", pattern, "--", ".", ":(exclude).claude", ":(exclude)graphify-out"], cwd=ROOT, capture_output=True, text=True)
     assert r.returncode in (0, 1), r.stderr  # 1 is "no match"; anything else means the search did not run
     return set(r.stdout.split())
 
 
 class Retired(unittest.TestCase):
+    def test_tool_state_folders_hold_no_tracked_files(self):
+        # The grep skips them, so anything tracked there would go unchecked.
+        r = subprocess.run(["git", "ls-files", ".claude", "graphify-out"], cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(r.stdout.split(), [])
+
     def test_only_the_stub_and_the_changelog_name_the_old_skill(self):
         self.assertEqual(grep(OLD) - {STUB, "CHANGELOG.md"}, set())
 
