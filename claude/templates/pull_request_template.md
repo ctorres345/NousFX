@@ -1,5 +1,5 @@
 ## Ticket
-<!-- Jira key and link, e.g. MOB-23. Branch is cesar/<KEY>. -->
+<!-- Jira key and link, e.g. MOB-23. Branch is <prefix>/<KEY>. -->
 
 ## What and why
 <!-- One or two sentences: the change and the reason. -->

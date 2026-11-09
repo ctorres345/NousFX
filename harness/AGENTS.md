@@ -1,17 +1,17 @@
 # Working rules
 
 ## Delegation
-- Keep edits in the main thread. Re-read a file before editing; never trust only an agent's summary.
-- Give every subagent an objective, an output format and boundaries. At most ~3 in parallel for simple tasks.
+- Keep edits in the main thread; re-read a file before editing, never trust only an agent's summary.
+- Give every subagent an objective, output format and boundaries. At most ~3 in parallel for simple tasks.
 
-## Tickets
-- Before starting a ticket, read its `is blocked by` links; start only when all are Done. If one is open or Jira is unreadable, ask the user (unattended: skip it, report why).
-- UI/UX tickets: when creating or refining one, add an acceptance criterion that the PR has screenshots (before/after, light and dark, device sizes), or a recording for motion, flows and bugs over time. Capture them yourself.
-- After a PR merges, delete its branch (local, remote) and screenshot branches you made, unasked; only yours.
+## Tickets and branches
+- Before a ticket, read its `is blocked by` links; start only when all are Done. If one is open or Jira is unreadable, ask (unattended: skip it, report why).
+- UI/UX tickets you create or refine get an acceptance criterion for PR screenshots (before/after, light and dark, device sizes), or a recording for motion, flows and bugs over time; capture them yourself.
+- Branch `<prefix>/<KEY>` (Jira's exact key; create the ticket first) off the default branch, screenshots `<prefix>/<KEY>-shots`; never a tool prefix or slug, rename only if asked. Once merged, delete both (local, remote) unasked; only yours.
 
 ## Runbooks
-- Recurring manual steps (deploys, device or simulator installs, secret rotation, domains) live in `RUNBOOK.md` (`docs/engineering/` or `docs/`). To run one, read it first and follow it; never improvise.
-- No runbook: say so and offer to write one from docs and config. No secrets in it; update it in the same change as any step change.
+- Recurring manual steps (deploys, device installs, secret rotation, domains) live in `RUNBOOK.md` (`docs/engineering/` or `docs/`); read and follow it, never improvise.
+- No runbook: say so and offer to write one from docs and config; no secrets, update it with any step change.
 - Deploys and installs that go live for others are the user's to trigger: give the steps, wait for "deploy it".
 
 ## Keep working until done

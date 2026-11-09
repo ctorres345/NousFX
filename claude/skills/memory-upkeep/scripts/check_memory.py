@@ -121,7 +121,7 @@ class Repo:
 
     @functools.lru_cache(maxsize=None)
     def has_branch(self, name):
-        if name.endswith("/"):  # a branch prefix such as `cesar/`
+        if name.endswith("/"):  # a branch prefix such as `ana/`
             return bool(git(self.path, "for-each-ref", "--count=1", f"refs/heads/{name}", f"refs/remotes/origin/{name}")[1])
         return any(git(self.path, "rev-parse", "--verify", "--quiet", ref)[0] == 0
                    for ref in (f"refs/heads/{name}", f"refs/remotes/origin/{name}", f"refs/remotes/{name}"))

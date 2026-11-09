@@ -9,6 +9,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
 ~/.config/nousfx/local.md          mine alone, never committed, tool-neutral (copy harness/local.md.example)
 ~/.config/nousfx/local.claude.md   mine, Claude only (optional)
 ~/.config/nousfx/local.agy.md      mine, agy only (optional)
+~/.config/nousfx/local.toml        my settings, not rules: the branch prefix (optional, see below)
         |
         v   python3 -B scripts/nousfx_sync.py [--tools claude,agy]
 ~/.claude/CLAUDE.md                generated, header holds a hash of the sources and names them by path
@@ -136,19 +137,36 @@ exclude = ["//**/*.key", "Edit(//**/pubspec.lock)"]
 - A rule cannot carve one file out of a pattern. To allow `.env.example` but not `.env`, I exclude `//**/.env*` and add my own narrower rules by hand, for example `Read(//**/.env)` and `Read(//**/.env.local)`.
 - After I change `deny.toml`, `--check` shows drift until I run sync.
 
+## Branch prefix
+
+Ticket branches are `<prefix>/<KEY>`, for example `ana/NFX-12`. The prefix is mine alone, so it lives in `~/.config/nousfx/local.toml`, never in the repo (copy `harness/local.toml.example`):
+
+```toml
+[branch]
+prefix = "cesar"
+```
+
+- Sync puts it in place of `<prefix>` in `harness/AGENTS.md`, so the generated rules name my real branches. The auto-mode allow entry below uses it too (`scripts/nousfx_prefix.py`, NFX-118).
+- Without the setting, sync takes my git `user.name`, lowercases it, drops accents, turns each other run of characters into `-` and trims the ends ("Cesar Torres" is `cesar-torres`). It prints a note naming the result and never blocks. With nothing usable left, the prefix is `me`.
+- A value I set must be lowercase letters, digits and dashes, and not start with a dash (git would read `-d/NFX-1` as an option). Anything else (`Cesar/`, `a b`, `-d`) stops sync with code 2 before anything is written.
+- The rules header hashes `local.toml` and names it, so `--check` reports a prefix change as drift until I run sync.
+- project-setup asks for the prefix when `local.toml` has none and writes it there.
+- The review gate and CI still check my own prefix until NFX-119.
+
 ## Auto-mode allow rules
 
-After a PR merges, the shared rules tell the agent to delete the branch it made, locally and on origin. Auto mode blocks both commands as Git Destructive unless an allow rule names them, so sync writes two rules to `autoMode.allow` in `~/.claude/settings.json` (`scripts/nousfx_automode.py`, NFX-117):
+After a PR merges, the shared rules tell the agent to delete its ticket branch and screenshot branch, locally and on origin. Auto mode blocks both commands as Git Destructive unless an allow entry describes them, so sync writes one prose entry to `autoMode.allow` in `~/.claude/settings.json` (`scripts/nousfx_automode.py`, NFX-117, NFX-118). With the prefix `ana`:
 
-- `Bash(git branch -D cesar/*)`
-- `Bash(git push origin --delete cesar/*)`
+> Deleting my merged ticket branches is routine cleanup: `git branch -D` or `git push origin --delete` on exactly one branch named `ana/<KEY>` or `ana/<KEY>-shots`, where <KEY> is a ticket key matching [A-Z][A-Z0-9]+-[0-9]+ (such as ABC-123). Allowed once a `gh pr view` or `gh pr list` result in this session shows that branch's PR as MERGED, or I named that branch or its key as merged in this session. `-D` is the only force form allowed, because squash merges look unmerged to git: no `--force`, `-f` or `:branch` refspec deletes. The local and the remote delete of that one branch may be chained with && and nothing else, against the current repo's origin. Never other branches, globs or wildcards.
 
-They name only my `cesar/` ticket branches, one branch per command. Auto mode reads them as guidance for its classifier, not as an exact pattern, so a command that also names another branch is not promised to pass or to be blocked.
+Auto mode reads it as guidance for its classifier, not as an exact pattern, so a command that also names another branch is not promised to pass or to be blocked.
 
-- Sync owns only these two. `"$defaults"` (the built-in allow list) and my own entries, such as `Bash(adb:*)`, stay where they are. If I wrote one of the two by hand, sync treats it as its own.
-- With no `autoMode.allow` yet, sync creates it as `["$defaults", ...the two]`, so the built-in rules are not lost. A list I wrote without `"$defaults"` stays without it.
+- The entry starts with a fixed sentence, and the prefix comes only after it. Sync owns every entry that starts with that sentence, so a prefix change replaces the old entry instead of adding a second one.
+- Sync also owns the two NFX-117 `Bash(...)` entries for `git branch -D` and `git push origin --delete` on my old hard-coded prefix (`LEGACY` in `scripts/nousfx_automode.py`), hand-added copies too, and replaces them with the prose entry in the same place.
+- `"$defaults"` (the built-in allow list) and my own entries, such as `Bash(adb:*)`, stay where they are.
+- With no `autoMode.allow` yet, sync creates it as `["$defaults", <the entry>]`, so the built-in rules are not lost. A list I wrote without `"$defaults"` stays without it.
 - Sync never touches `autoMode.environment` or any other `autoMode` key. Those trust lines are machine-specific, so they stay out of the harness (README, `docs/RUNBOOK.md`).
-- A second run changes nothing, `--check` reports a missing rule as drift, and `--restore` puts back the old `settings.json`.
+- A second run changes nothing, `--check` reports a missing or stale entry as drift, and `--restore` puts back the old `settings.json`.
 
 ## Skills
 

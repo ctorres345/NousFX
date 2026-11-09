@@ -8,8 +8,9 @@
 Writes under <home>/.claude (tool "claude", the default):
   CLAUDE.md                  neutral rules + Claude overlay + local.md + local.claude.md, with a header
   settings.json              the review gate registered as a PreToolUse hook, and the deny list for secret
-                             files and lockfiles in permissions.deny (nousfx_deny.py), and the cesar/* branch
-                             deletes in autoMode.allow (nousfx_automode.py); other settings kept
+                             files and lockfiles in permissions.deny (nousfx_deny.py), and the allow entry
+                             for deleting <prefix>/* branches in autoMode.allow (nousfx_automode.py,
+                             nousfx_prefix.py); other settings kept
   hooks/review-gate.py       the gate hook and its parser, copied from the repo
   hooks/pr_create_parser.py
   agents/*.md                from harness/agents (roles) and harness/models.toml (role -> model)
@@ -25,7 +26,8 @@ fetches the missing ones into <state-home>/outside-skills/ and links them like N
 reported, left out, and makes the run exit 1 once the rest is applied.
 
 Sources: <repo>/harness/AGENTS.md, the tool's overlay under <repo>/harness/overlays/ and the optional,
-never committed <state-home>/local.md (every tool), local.claude.md, local.agy.md. The home comes from
+never committed <state-home>/local.md (every tool), local.claude.md, local.agy.md, and the branch prefix
+from <state-home>/local.toml, put in place of <prefix> in AGENTS.md. The home comes from
 the user record, never from the HOME variable. The state home defaults to <home>/.config/nousfx.
 
 Rules budget: every run except --check --summary warns on stderr when a tool's rules body (header excluded)
@@ -53,6 +55,7 @@ import nousfx_automode
 import nousfx_deny
 import nousfx_mcp
 import nousfx_outside
+import nousfx_prefix
 import nousfx_project
 import nousfx_skills
 
@@ -129,9 +132,10 @@ def warn_local(state, tools):
               f"terms ({names}). Move those lines to local.claude.md.", file=sys.stderr)
 
 
-def build_rules(repo, state, home=None):
-    # The header holds a hash of the sources, not the repo commit, so --check flags real changes only.
-    return nousfx_agy.assemble_rules(nousfx_agy.rule_sources(repo, state, "claude"), SyncError, home=home)
+def build_rules(repo, state, home=None, prefix=None):
+    # The header holds a hash of the sources and local.toml, not the repo commit, so --check flags real changes only.
+    return nousfx_agy.assemble_rules(nousfx_agy.rule_sources(repo, state, "claude"), SyncError,
+                                     nousfx_prefix.edit(state, SyncError, prefix), home, nousfx_prefix.path(state))
 
 
 def rules_budget(state):
@@ -213,10 +217,10 @@ def replace_owned(entries, marker, entry):
     entries.insert(min(at, len(entries)), entry)
 
 
-def merge_settings(current, gate_path, win, drift=None, deny=None, where="settings.json"):
+def merge_settings(current, gate_path, win, drift=None, deny=None, where="settings.json", *, prefix):
     """Register the review gate and, when `drift` is (script, repo, tools), the session-start drift warning.
-    `deny` is the list of deny rules sync owns (None: leave permissions as they are). The auto-mode allow rules
-    are always merged."""
+    `deny` is the list of deny rules sync owns (None: leave permissions as they are). The auto-mode allow entry
+    for the `prefix` branches is always merged."""
     cfg = json.loads(current) if current else {}
     if not isinstance(cfg, dict):
         raise SyncError(f"{where} is not a JSON object; fix it first", 2)
@@ -233,17 +237,17 @@ def merge_settings(current, gate_path, win, drift=None, deny=None, where="settin
     if deny is not None:
         nousfx_deny.merge(cfg, deny, SyncError, where)
         nousfx_deny.merge(cfg, nousfx_deny.ASK_RULES, SyncError, where, section="ask")
-    nousfx_automode.merge(cfg, SyncError, where)
+    nousfx_automode.merge(cfg, SyncError, where, prefix)
     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
 
 
-def claude_files(repo, home, state, platform, tools):
+def claude_files(repo, home, state, platform, tools, prefix):
     claude = os.path.join(home, ".claude")
     win = is_windows(platform)
     native = native_for(win)
     gate_cmd = native(os.path.join(claude, "hooks", "review-gate.py"))
     drift_cmd = native(os.path.join(claude, "hooks", DRIFT_HOOK))
-    wanted = {os.path.join(claude, "CLAUDE.md"): build_rules(repo, state, home)}
+    wanted = {os.path.join(claude, "CLAUDE.md"): build_rules(repo, state, home, prefix)}
     wanted.update(nousfx_agents.plan_agents(repo, claude, SyncError))
     for name in CLAUDE_HOOK_FILES:
         src = os.path.join(repo, "claude", "hooks", name)
@@ -255,7 +259,8 @@ def claude_files(repo, home, state, platform, tools):
     deny = nousfx_deny.wanted_rules(nousfx_deny.load_excludes(state, SyncError))
     try:
         wanted[settings] = merge_settings(read_or_none(settings), gate_cmd, win,
-                                          (drift_cmd, native(repo), sorted(tools, key=TOOLS.index)), deny, settings)
+                                          (drift_cmd, native(repo), sorted(tools, key=TOOLS.index)), deny, settings,
+                                          prefix=prefix)
     except ValueError as e:
         raise SyncError(f"{settings} is not valid JSON ({e}); fix it first", 2)
     return wanted
@@ -273,9 +278,10 @@ def merged_files(home, project=None):
     return mcp_merged_files(home, project) | (set() if project else {os.path.join(home, ".claude", "settings.json")})
 
 
-def plan(repo, home, state, platform, tools=("claude",), project=None, yes_replace=(), extras=None):
+def plan(repo, home, state, platform, tools=("claude",), project=None, yes_replace=(), extras=None, prefix=None):
     """Map of absolute path -> expected text for every file sync owns. In project mode `extras` (a dict)
-    receives the ProjectPlan under "project": links to make and notes to print."""
+    receives the ProjectPlan under "project": links to make and notes to print. `prefix` is the branch prefix
+    (nousfx_prefix.resolve when None; project mode does not use it)."""
     tools = set(tools)
     if project:  # project mode writes only that project's files, never global ones
         wanted = nousfx_mcp.plan_mcp(repo, home, state, tools, SyncError, SECRET_PATTERNS, project)
@@ -290,10 +296,12 @@ def plan(repo, home, state, platform, tools=("claude",), project=None, yes_repla
         elif "agy" in tools:
             wanted = {p: t for p, t in wanted.items() if not p.startswith(plugin + os.sep)}
     else:
-        wanted = claude_files(repo, home, state, platform, tools) if "claude" in tools else {}
+        prefix = prefix or nousfx_prefix.resolve(state, SyncError)[0]
+        wanted = claude_files(repo, home, state, platform, tools, prefix) if "claude" in tools else {}
         if "agy" in tools:
             win = is_windows(platform)
-            wanted.update(nousfx_agy.plan_agy(repo, home, state, SyncError, interpreter(win), native_for(win)))
+            wanted.update(nousfx_agy.plan_agy(repo, home, state, SyncError, interpreter(win), native_for(win),
+                                              prefix))
         wanted.update(nousfx_mcp.plan_mcp(repo, home, state, tools, SyncError, SECRET_PATTERNS))
     # Folders the user may legitimately link (dotfiles) are not checked; sync's own files and folders are.
     skip = {os.path.join(home, ".claude"), home, state} | ({project} if project else set())
@@ -561,8 +569,12 @@ def main(argv=None):
             return restore(state) or 0
         outside = {} if project else nousfx_outside.load(repo, nousfx_skills.sources(repo), SyncError)
         seen_before = {p: read_or_none(p) for p in mcp_merged_files(home, project)}  # before plan() reads them
-        extras = {}
-        wanted = plan(repo, home, state, args.platform, tools, project, args.yes_replace, extras)
+        extras, prefix = {}, None
+        if not project:  # an explicit bad prefix stops here, before anything is written
+            prefix, note = nousfx_prefix.resolve(state, SyncError)
+            if note and not (args.check and args.summary):
+                print(note, file=sys.stderr)
+        wanted = plan(repo, home, state, args.platform, tools, project, args.yes_replace, extras, prefix)
         pp = extras.get("project") or nousfx_project.ProjectPlan()
         # Merged files hold the user's own content, so only what sync generates is scanned.
         merged = merged_files(home, project)

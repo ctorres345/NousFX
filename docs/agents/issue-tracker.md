@@ -15,7 +15,7 @@ Tickets live in Jira project `NFX` on cjthdev.atlassian.net (cloudId `3b0b1388-2
 
 ## Rules
 
-- Branch for a ticket: `cesar/NFX-<n>` from `main`. The PR names the key.
+- Branch for a ticket: `<prefix>/NFX-<n>` from `main` (the prefix is set in `~/.config/nousfx/local.toml`, docs/sync.md). The PR names the key.
 - UI/UX tickets (for example Via's prototype template) need an acceptance criterion that the PR includes screenshots (before/after, light and dark where theming applies, relevant sizes), or a screen recording for motion or flows.
 - Write and check tickets with [`ticket-template.md`](ticket-template.md).
 - The shared harness lives in `claude/` (and `plugins/` once the plugin tickets land); commit it. Keep personal state out of git: handoffs, personal paths, API keys and anything holding a secret. Personal settings go in files under `~/.claude/` (Via will use `~/.claude/via.json`).
