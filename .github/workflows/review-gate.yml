@@ -7,10 +7,13 @@ name: review-gate
 # PR head, so a failing test fails this job even when the PR body holds a valid line.
 # Before that check, the base branch's tier.py recomputes the review tier on the diff, and the job fails when
 # the body's Review-Tier line is lower (NFX-70).
+# First, the base branch's gate checks the PR branch's shape, <prefix>/<JIRA-KEY> (NFX-119). The
+# `branch-exception` label skips that step when the PR author is OWNER or MEMBER; adding or removing a label
+# re-runs the job. The repo owner creates the label (gh label create branch-exception).
 # Marking this check "required" in the repo settings is a manual step.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -23,6 +26,33 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+      - name: Check the branch name with the base branch's gate
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          EXCEPTION_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'branch-exception') }}
+        run: |
+          # NFX-119 branch check
+          set -eu
+          if [ "$EXCEPTION_LABEL" = "true" ]; then
+            case "$AUTHOR_ASSOCIATION" in
+              OWNER|MEMBER)
+                echo "Branch check skipped: the branch-exception label is set and the PR author is $AUTHOR_ASSOCIATION."
+                exit 0 ;;
+              *) echo "::warning::The branch-exception label counts only for a PR author who is OWNER or MEMBER (this one: ${AUTHOR_ASSOCIATION:-unknown}), so the branch is checked." ;;
+            esac
+          fi
+          gate="$RUNNER_TEMP/branch-gate.py"
+          if ! git show "origin/$BASE_REF:claude/hooks/review-gate.py" > "$gate" 2>/dev/null \
+             || ! grep -q 'sys.argv\[1:2\] == \["check-branch"\]' "$gate"; then
+            echo "::warning::The gate on '$BASE_REF' has no check-branch yet, so the branch name is not checked."
+            exit 0
+          fi
+          python3 -B "$gate" check-branch "$HEAD_REF" </dev/null 2>&1 || {
+            echo "::error::The branch name check failed (message above)."
+            exit 1
+          }
       - name: Verify the review attestation with the base branch's gate
         env:
           BASE_REF: ${{ github.base_ref }}

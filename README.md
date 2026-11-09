@@ -86,7 +86,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | Too big for one session | `/wayfinder` | You | A map of child tickets worked one at a time |
 
 ### 3. Build a ticket
-- The branch is always `cesar/<TICKET-KEY>` (for example `cesar/NFX-12`), cut from the default branch. The gate currently hard-codes my `cesar/` prefix, so to use your own name, edit `BRANCH_OK` in `claude/hooks/review-gate.py`.
+- The branch is always `cesar/<TICKET-KEY>` (for example `cesar/NFX-12`), cut from the default branch. The gate reads your prefix from `[branch] prefix` in `~/.config/nousfx/local.toml`; set it there to use your own name.
 - Claude reads the ticket's `is blocked by` links first and only starts when all of its blockers are Done.
 - `tdd` is used when test-first fits, and `prototype` for UI or state questions that a throwaway build answers faster.
 - UI tickets: the prototype is the spec. The ticket lists concrete values (colors, sizes, radii, states), and the PR includes screenshots.
@@ -145,7 +145,7 @@ Via skips any missing design skill and lists it under "Skipped". Sync installs m
 
 ## The PR review gate
 - Blocks `gh pr create` (including wrappers such as `bash -c`, `eval` and `$(...)`) and create-pull-request MCP tools unless all three hold:
-  - the branch is named `cesar/<JIRA-KEY>` (change `BRANCH_OK` for your own prefix). `review-gate.py --allow-branch "reason"` records an approved exception.
+  - the branch is named `cesar/<JIRA-KEY>` (your prefix from `~/.config/nousfx/local.toml`; CI checks the shape `<prefix>/<KEY>`). `review-gate.py --allow-branch "reason"` records an approved exception.
   - a review marker matches the code: a git tree hash of the working tree or `HEAD`.
   - that review has 0 open high or med (confidence 60+) findings (`--mark --findings <count>`), or you approved a skip (`--mark --skip "<reason>"`).
 - The marker lives in the git dir, so it is never committed.

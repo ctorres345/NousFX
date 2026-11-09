@@ -195,7 +195,7 @@ def self_test(base, SyncError):
             return r.returncode, (out.get("decision"), out.get("reason", "")) if out else None
         blocked, allowed = run("gh pr create"), run("git status")
     denied_by_branch_rule = (blocked[0] == 0 and isinstance(blocked[1], tuple) and blocked[1][0] == "deny"
-                             and "is not named cesar/" in blocked[1][1])
+                             and "/<JIRA-KEY>" in blocked[1][1])
     if not denied_by_branch_rule or allowed != (0, None):
         raise SyncError(f"agy gate self-test failed: PR create gave {blocked} (want a deny for the branch name), "
                         f"harmless command gave {allowed} (want (0, None)). Fix the adapter source and run "

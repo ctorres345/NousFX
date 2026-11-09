@@ -489,7 +489,7 @@ def self_test(hook_path):
             return subprocess.run([sys.executable, "-I", "-B", hook_path, "check", "--cwd", d, "--command", command],
                                   capture_output=True, text=True, timeout=60, env=env)
         blocked, allowed = run("gh pr create"), run("git status")
-    if blocked.returncode != 2 or "is not named cesar/" not in blocked.stderr or allowed.returncode != 0:
+    if blocked.returncode != 2 or "/<JIRA-KEY>" not in blocked.stderr or allowed.returncode != 0:
         raise SyncError(f"hook self-test failed: PR create exited {blocked.returncode} (want 2 with the branch-name "
                         f"message), harmless command exited {allowed.returncode} (want 0). Fix the hook source and run "
                         f"sync again; --restore undoes the files a run wrote.")
