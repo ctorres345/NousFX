@@ -72,6 +72,30 @@ RUNS_CREATE = [
     "echo 'gh pr create' | sh",
     'CMD="gh pr create"; $CMD',
     "$GH pr create",
+    'SUB="pr create"; $GH $SUB',
+    "$GH $SUB --title 'new pr'",
+    "$GH pr $SUB",  # pr is already matched, so the expansion counts
+    'SUB="p""r create"; $GH $SUB --body x',  # the words are read with quotes and escapes removed
+    'SUB=p\\r\\ create; $GH $SUB',
+    "$GH $(cat args.txt)",  # a command substitution's output is unknown, so it counts
+    "$GH `base64 -d < a`",
+    "GH=gh; SUB=$(cat a); $GH $SUB",  # the text names gh
+    '"$(command -v gh)" $SUB',
+    "SUB=$(cat args.txt); $X $SUB",  # the variable holds a command's output
+    "read -r SUB < a; $X $SUB",
+    "source ./env.sh; $X $SUB",
+    "$X ${ cat a; }",  # bash 5.3 command substitution
+    "${GH:-/usr/local/bin/gh} pr create --title t --body b",  # the file name is not plain text
+    "$(echo /usr/bin/gh) pr create",
+    'printf -v SUB %s "$(cat f)"; $X $SUB',  # nothing follows the variable to show it is not gh
+    "O=$(cat f); SUB=$O; $X $SUB",
+    "  source env.sh; $X $SUB --title t",
+    "SUB=$'pr\\x20create'; $X $SUB",
+    "$X $SUB create --title t",  # create after the variable could finish `pr create`
+    'X="sh -c"; CMD=$(cat f); $X "$CMD" name',  # a shell in the text: the plain word may be $0
+    "$X $A {,}",  # words that may vanish (brace expansion, globs) prove nothing
+    "$X $A no*",
+    "$EMU $EMU_ARGS -avd Pixel_7 -no-window",  # known false block: only flags follow, so it may be gh
     "gh pr $SUB",
     "gh $ARGS",
     "case x in x) gh pr create;; esac",
@@ -151,6 +175,11 @@ ONLY_MENTIONS = [
     '"$P/x" && gh pr view 1 && echo new',
     '"$VENV/bin/python" x.py --grep "gh pr create"',
     "echo $'it\\'s gh pr create'",
+    # A program and its args both in variables (adb scripts): no pr/create words, so not a create (ANI-102).
+    'A=adb; D="-s X"; $A $D shell input keyevent 4',
+    '"$ADB" $DEV exec-out screencap -p > a.png; $ADB $DEV shell input tap 1 2',
+    # A program path whose file name is in the text is not gh, whatever its args hold.
+    "S=/tmp/x; APK=$(ls *.apk | head -1); $S/inst.sh $APK",
 ]
 
 
