@@ -1,6 +1,6 @@
 # Runbook
 
-The steps I repeat by hand for NousFX. Each one changes my own machine only; nothing here goes live for anyone else. If a step changes, update this file in the same PR.
+The steps I repeat by hand for NousFX. Each one changes my own machine only, except [Cut a release](#cut-a-release), which pushes a tag to GitHub and releases a Jira version. If a step changes, update this file in the same PR.
 
 | When | Section |
 |---|---|
@@ -11,6 +11,7 @@ The steps I repeat by hand for NousFX. Each one changes my own machine only; not
 | Installing or updating Via | [Install or update Via](#install-or-update-via) |
 | Something broke after a sync | [Roll back a sync](#roll-back-a-sync) |
 | About once a week | [Check token usage](#check-token-usage) |
+| Every ticket in a Jira version is Done | [Cut a release](#cut-a-release) |
 
 ## How it fits together
 
@@ -254,3 +255,34 @@ python3 -I scripts/usage-report.py --days 14
 ```
 
 Look at average context per session and Fable cost. The baseline from 2026-10-19 was about $277 over 14 days, with cache reads at 60–66% of it.
+
+## Cut a release
+
+A release is a Jira version (`v1.1`), a dated `CHANGELOG.md` heading (`## 1.1.0 (2026-11-09)`) and a git tag (`v1.1.0`). I trigger it; an agent prepares the PR and the commands.
+
+Each command below uses the version in two forms; set them once in the shell, for example `V=1.2.0` (CHANGELOG and tag) and the Jira name `v1.2`.
+
+1. Every ticket in the version is Done. This JQL, with the Jira name filled in, must return nothing:
+
+   ```text
+   project = NFX AND fixVersion = "v1.2" AND statusCategory != Done
+   ```
+
+2. `main` passes the suites. The `review-gate / check` job runs only on PRs, never on `main`, so run them in a throwaway worktree of `origin/main`:
+
+   ```bash
+   git fetch origin && W=$(mktemp -d) && git worktree add -q --detach "$W" origin/main && (cd "$W" && python3 -B scripts/run_checks.py); rc=$?; git worktree remove --force "$W"; echo "checks exit: $rc"
+   ```
+
+   It must end with `checks exit: 0`.
+
+3. Date the heading in a PR on a ticket branch (`cesar/<KEY>`). Change `## X.Y.Z (unreleased)` to `## X.Y.Z (YYYY-MM-DD)`, with today's date. Use exactly that form: `test_the_stub_is_gone_once_1_2_0_is_cut` in `scripts/test_ui_review_retired.py` counts a `## X.Y.Z` heading without "unreleased" as released, and from 1.2.0 on it fails while the retired stub is still there (NFX-127); `## v1.2.0` or `## [1.2.0]` would slip past it. Before the PR, `grep -n "^## " CHANGELOG.md` shows every heading in that form. For 1.2.0, the same PR deletes the retired stub's folder and its tests in `scripts/test_ui_review_retired.py` (NFX-127), or the check fails. Then I merge the PR.
+4. Tag that PR's merge commit, not whatever `main` holds now (later PRs may have merged), and push the tag. With `V` and `N` (the PR number, `N=73`) set, in one shell; it stops if the PR has no merge commit or that commit lacks the dated heading:
+
+   ```bash
+   SHA=$(gh pr view "$N" --json mergeCommit --jq .mergeCommit.oid) && [ -n "$SHA" ] && [ "$SHA" != null ] && git fetch origin && git show "$SHA:CHANGELOG.md" | grep -Eq "^## $V \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$" && git tag -a "v$V" -m "NousFX $V" "$SHA" && git push origin "v$V"
+   ```
+
+   Backfill only: when one PR dated two versions (NFX-128 dated 1.0.0 and 1.1.0 together), the older tag goes on the commit that finished that version, which I pick. Its CHANGELOG still says unreleased, so it gets no heading check: `git tag -a v1.0.0 -m "NousFX 1.0.0" <commit> && git push origin v1.0.0`.
+
+5. Mark the version released in Jira with today's date (Releases, the version, Release; or the agent through the Atlassian MCP after I say so).

@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0 (unreleased)
+## 1.1.0 (2026-11-09)
 
 ### Review gate
 - The branch rule follows my prefix. The gate reads `[branch] prefix` from `~/.config/nousfx/local.toml` and allows only `<prefix>/<KEY>`; with no usable prefix (cloud, CI, a fresh install, a broken file, Python < 3.11) it checks the shape `[a-z0-9-]+/<KEY>` and never blocks on the config. CI runs the base gate's new `check-branch` on the PR branch; the `branch-exception` label skips it for an OWNER or MEMBER author, and a base gate without `check-branch` only warns. The jira-sync audit counts any `<prefix>/<KEY>` branch (not `-shots`) and names it. The shared rules say exceptions are my call (NFX-119).
@@ -27,7 +27,7 @@
 - The old `ui-review` skill is retired: a one-line stub points to Via until 1.2.0, which removes it. In Claude Code the stub is hidden from the model's skill list and answers only when I type `/ui-review` (NFX-116). The rules now run `/via spec` at kickoff and `/via check` before the PR on UI work, and `/via audit` on review requests. `argon_review.py` moved to `gemini-review/scripts/`, and the Argon log goes to the vault set in `via.json` (`obsidian.vault_path`, `obsidian.argon_log`), or nowhere (NFX-18).
 - Via has an eval set: `plugins/via/evals/cases.json` pairs sample prompts with the expected behavior (routing, the second-opinion fallback without Gemini, unattended runs, never committing), and `python3 -B plugins/via/scripts/via_eval.py` checks each case and reports pass or fail. `run_checks.py` runs it (NFX-19).
 
-## 1.0.0 (unreleased)
+## 1.0.0 (2026-11-09)
 
 The daily-use harness: Claude Code and agy on Mac and Windows, one sync command, a gate that runs the tests, trimmed rules, and a review loop that scales with risk. Proven on Animus.
 
