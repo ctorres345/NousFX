@@ -6,7 +6,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from audit import audit, commit_keys, next_up
+from audit import audit, commit_keys, next_up, repo_evidence
 
 READY = ("## Goal\nx\n## Scope\nx\n## Acceptance criteria\nx\n## Environment\nx\n"
          "## Review\nx\n## Human gates\nNone\n## Blocked by\nNone\n")
@@ -21,7 +21,7 @@ def issue(key, cat="new", labels=("env-none",), blocked_by=(), text="", kind="Ta
 
 
 def evidence(**kw):
-    base = {"commits": {}, "branches": set(), "prs": {}, "gaps": [], "mentioned": {}}
+    base = {"commits": {}, "branches": {}, "prs": {}, "gaps": [], "mentioned": {}}
     base.update(kw)
     return base
 
@@ -61,7 +61,7 @@ class Checks(unittest.TestCase):
         self.assertIn("merged-open:DEM-1", ids([issue("DEM-1")], evidence(prs={"DEM-1": [pr("MERGED")]})))
         self.assertIn("merged-open:DEM-1", ids([issue("DEM-1")], evidence(commits={"DEM-1": ["abc"]})))
         self.assertIn("open-pr-todo:DEM-1", ids([issue("DEM-1")], evidence(prs={"DEM-1": [pr("OPEN")]})))
-        self.assertIn("branch-no-pr:DEM-1", ids([issue("DEM-1")], evidence(branches={"DEM-1"})))
+        self.assertIn("branch-no-pr:DEM-1", ids([issue("DEM-1")], evidence(branches={"DEM-1": "origin/cesar/DEM-1"})))
         self.assertIn("unknown-key:DEM-9", ids([issue("DEM-1")], evidence(mentioned={"DEM-9": ["commit a"]})))
         self.assertIn("agent-pr-stale:DEM-1",
                       ids([issue("DEM-1", labels=("env-none", "agent-pr"))], evidence(prs={"DEM-1": [pr("MERGED")]})))
@@ -82,6 +82,33 @@ class Checks(unittest.TestCase):
     def test_ui_checks(self):
         found = ids([issue("DEM-1", summary="Redesign the screen")])
         self.assertLessEqual({"env-none-ui:DEM-1", "ui-no-evidence:DEM-1"}, found)
+
+
+class BranchEvidence(unittest.TestCase):
+    """NFX-119: any <prefix>/<KEY> branch counts, -shots does not, and the finding names the real branch."""
+
+    def test_any_prefix_counts_and_is_printed(self):
+        import shutil
+        import subprocess
+        import tempfile
+        repo = tempfile.mkdtemp(prefix="audit-branch-")
+        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+        def git(*args):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=repo, check=True,
+                           capture_output=True, env=env)
+        git("init", "-q", "-b", "main")
+        git("commit", "-q", "--allow-empty", "-m", "init")
+        for ref in ("main", "ana/DEM-3", "ana/DEM-4-shots", "Bob/DEM-5", "fix-DEM-6"):
+            git("update-ref", f"refs/remotes/origin/{ref}", "HEAD")
+        ev = repo_evidence("DEM", repo)
+        self.assertEqual(ev["branches"], {"DEM-3": "origin/ana/DEM-3"})
+        findings = audit("DEM", dict([issue("DEM-3"), issue("DEM-4")]), ev)
+        branch = [f for f in findings if f["id"] == "branch-no-pr:DEM-3"]
+        self.assertEqual(len(branch), 1, findings)
+        self.assertEqual(branch[0]["evidence"], "origin/ana/DEM-3")
+        self.assertNotIn("branch-no-pr:DEM-4", {f["id"] for f in findings})
 
 
 class CommitKeys(unittest.TestCase):
@@ -105,7 +132,7 @@ class NextUp(unittest.TestCase):
             issue("DEM-6", labels=("env-none", "ready-for-agent", "fable-review")),
             issue("DEM-7"),
         ])
-        groups = next_up(issues, evidence(branches={"DEM-7"}), [])
+        groups = next_up(issues, evidence(branches={"DEM-7": "origin/cesar/DEM-7"}), [])
         self.assertEqual([e[:5] for e in groups["Queue or cloud now"]], ["DEM-1"])
         self.assertEqual([e[:5] for e in groups["Queue or cloud once ready-for-agent"]], ["DEM-2", "DEM-6"])
         self.assertEqual([e[:5] for e in groups["Mac session"]], ["DEM-3"])

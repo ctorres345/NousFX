@@ -15,7 +15,8 @@ python3 -B claude/hooks/review-gate.py check --cwd DIR --command "gh pr create"
 ```
 
 - Exit 0 allows. Exit 2 blocks, with the reason on stderr.
-- It judges the repo in `DIR`: branch named `<prefix>/<KEY>` (until NFX-119 the gate checks my own prefix), and a review mark for this exact code.
+- It judges the repo in `DIR`: branch named `<prefix>/<KEY>`, and a review mark for this exact code.
+- The prefix is `[branch] prefix` in `~/.config/nousfx/local.toml`, the file sync reads (home from the passwd record, `USERPROFILE` on Windows; sync's `--state-home` does not move it). With a prefix, only `<prefix>/<KEY>` passes. With none (no file, unreadable, invalid, or Python < 3.11 without `tomllib`: cloud, CI, a fresh install), any `[a-z0-9-]+/<KEY>` passes. A broken config never blocks (NFX-119).
 - Bad input blocks. A missing option, a missing folder or a folder that is not a git repo all exit 2.
 - `--allow-non-repo` is for agy. A folder that is not a repo is then judged by the command alone, so `cd <repo> && gh pr create` is still checked in that repo. It only covers git's own "not a git repository" answer: a missing git, a missing folder and a pushed commit (`--tree`) still block.
 - `--tool` names the parser: `Bash` (default), `PowerShell`, or an MCP tool name holding `create_pull_request`, as the Claude hook passes them.
@@ -126,7 +127,10 @@ agy run_command ──► hooks.json ──► agy_gate.py ──► review-gate
 
 ## CI: the real gate for tools without hooks
 
-- Workflow: `.github/workflows/review-gate.yml`. It runs on open, push, reopen and description edit.
+- Workflow: `.github/workflows/review-gate.yml`. It runs on open, push, reopen, description edit and label changes.
+- Its first step runs the base branch's `review-gate.py check-branch "$GITHUB_HEAD_REF"`: the shape `<prefix>/<KEY>` with any lowercase prefix, since CI does not know whose prefix it is (NFX-119). A bad name fails the job with the expected form. A base gate without `check-branch` (the PR that adds it) gives a warning and no check.
+- The `branch-exception` PR label skips that step only when the PR author's `author_association` is OWNER or MEMBER, like a tier override. Adding the label re-runs the job. Agents never add it; it is the user's call, like `--allow-branch`. The repo owner creates the label once: `gh label create branch-exception`.
+- `project-setup` does not install this workflow in other repos, so there is no second copy to update.
 - It takes `review-gate.py` and `pr_create_parser.py` from the base branch (`git show origin/<base>:...`), never from the PR. A PR cannot edit the gate to approve itself.
 - The PR body reaches the job through an env var and a file. It is never interpolated into a shell command.
 - The job passes only when the PR description or the last commit message holds a `Review-Gate: <tree hash>` line whose hash equals the tree of the PR head commit.

@@ -118,8 +118,9 @@ def commit_keys(project, subject):
 def repo_evidence(project, repo):
     """Commits, branches and PRs per ticket key. A failed source becomes a gap, not a clean result."""
     pattern = re.compile(rf"\b{project}-\d+\b")
-    head = re.compile(rf"^cesar/({project}-\d+)$")
-    evidence = {"commits": defaultdict(list), "branches": set(), "prs": defaultdict(list), "gaps": [], "mentioned": defaultdict(list)}
+    # <prefix>/<KEY> for any prefix (NFX-119); a <prefix>/<KEY>-shots branch holds screenshots, not work.
+    head = re.compile(rf"^[a-z0-9-]+/({project}-\d+)$")
+    evidence = {"commits": defaultdict(list), "branches": {}, "prs": defaultdict(list), "gaps": [], "mentioned": defaultdict(list)}
     try:
         try:
             base = run(["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], repo).strip()
@@ -134,7 +135,7 @@ def repo_evidence(project, repo):
         for line in run(["git", "branch", "-r", "--format=%(refname:short)"], repo).splitlines():
             match = head.match(line.removeprefix("origin/"))
             if match:
-                evidence["branches"].add(match.group(1))
+                evidence["branches"].setdefault(match.group(1), line)
                 evidence["mentioned"][match.group(1)].append(f"branch {line}")
     except (OSError, subprocess.SubprocessError) as e:
         evidence["gaps"].append(f"git evidence unavailable, so code checks did not use commits or branches: {type(e).__name__}")
@@ -183,7 +184,7 @@ def audit(project, issues, evidence):
 
         if key in evidence["branches"] and not prs:
             add("branch-no-pr", key, "medium", f"Branch exists with no PR (status {status_name(issue)})",
-                f"origin/cesar/{key}", "Open a PR or delete the branch")
+                evidence["branches"][key], "Open a PR or delete the branch")
 
         if "agent-pr" in labels and prs and not open_prs:
             add("agent-pr-stale", key, "high", "Has agent-pr, but no PR is open", prs[-1]["url"], "Remove agent-pr")

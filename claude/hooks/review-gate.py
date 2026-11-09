@@ -14,9 +14,13 @@ its PR body (--body, -b, --body-file, -F, a heredoc inside --body "$(cat <<EOF .
 of a create-PR MCP tool). No body, --fill, a stale hash, a body built at run time or a file without the line
 blocks, and the message prints the exact lines to paste (the output of `attest`).
 
-Branch check: the branch must be named cesar/<JIRA-KEY> (for example cesar/MOB-23). If the
-user approves another name for this PR, `review-gate.py --allow-branch "reason"` records an
+Branch check (NFX-119): the branch must be named <prefix>/<JIRA-KEY> (for example cesar/MOB-23). The prefix is
+`[branch] prefix` in ~/.config/nousfx/local.toml (the file sync reads; home from the user record, USERPROFILE on
+Windows; sync's --state-home is ignored). With no usable prefix (no file, unreadable, invalid, or no tomllib before
+Python 3.11) only the shape counts: lowercase letters, digits and dashes, a slash, a Jira key. A broken config never
+blocks. If the user approves another name for this PR, `review-gate.py --allow-branch "reason"` records an
 exception for the current branch (stored in the git dir, never committed).
+`check-branch NAME` (CI) checks the shape only: exit 0 when NAME fits, 1 with the expected form when it does not.
 
 Check mode: `review-gate.py check --cwd DIR --command "gh pr create"` asks the same question without
 a hook payload (pre-push hook, CI, other tools). Exit 0 allows, 2 blocks, and bad input blocks.
@@ -85,7 +89,9 @@ STAMP_FILE = "claude-review-check-pass"  # in the git dir, written only by `run-
 STAMP_KEY = "claude-review-stamp-key"
 GIT_ENV_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
 
-BRANCH_OK = re.compile(r"^cesar/[A-Z][A-Z0-9]+-\d+$")
+BRANCH_KEY = r"[A-Z][A-Z0-9]+-\d+"
+BRANCH_SHAPE = re.compile(rf"[a-z0-9-]+/{BRANCH_KEY}")  # fullmatch; any prefix: CI, cloud, fresh installs
+PREFIX_VALID = re.compile(r"[a-z0-9][a-z0-9-]*")  # fullmatch; the rule sync enforces (nousfx_prefix.VALID)
 MCP_PR_CREATE = re.compile(r"create_pull_request", re.I)
 GIT_REPO_VARS = re.compile(r"\bGIT_(?:DIR|WORK_TREE)\b", re.I)
 
@@ -225,8 +231,8 @@ Reinstall the gate and its parser together (re-run the sync: ./install.sh, or sc
 """
 
 BRANCH_BLOCK = """\
-Blocked: branch "{branch}" is not named cesar/<JIRA-KEY> (for example cesar/MOB-23).
-- Create or find the Jira ticket, then rename the branch: git branch -m cesar/<KEY>
+Blocked: branch "{branch}" is not named {prefix}/<JIRA-KEY> (for example {prefix}/MOB-23).
+- Create or find the Jira ticket, then rename the branch: git branch -m {prefix}/<KEY>
   (rename only an unpushed branch, or ask the user first). A rename leaves the review mark on the old name,
   so run the `review-loop` skill again after it.
 - Another name for this PR is the user's call: ask the user. Do not record an exception yourself.
@@ -614,6 +620,53 @@ def mark(argv):
     return 0
 
 
+def user_home():
+    """Home from the user record, not the HOME variable, as nousfx_sync.user_home finds it."""
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_dir
+    except ImportError:  # Windows has no pwd
+        return os.environ.get("USERPROFILE") or os.path.expanduser("~")
+
+
+def local_toml():
+    """The local.toml sync reads at its default state home (<home>/.config/nousfx)."""
+    return os.path.join(user_home(), ".config", "nousfx", "local.toml")
+
+
+def branch_prefix():
+    """`[branch] prefix` from local.toml, or None when it is unset, unreadable, invalid or tomllib is missing."""
+    if tomllib is None:
+        return None
+    try:
+        with open(local_toml(), encoding="utf-8") as f:
+            value = tomllib.loads(f.read()).get("branch", {}).get("prefix")
+    except (OSError, UnicodeDecodeError, ValueError, AttributeError):  # TOMLDecodeError is a ValueError
+        return None
+    return value if isinstance(value, str) and PREFIX_VALID.fullmatch(value) else None
+
+
+def branch_ok(branch, prefix):
+    """True when branch is <prefix>/<KEY>, or of that shape with any valid prefix when prefix is None."""
+    if prefix is None:
+        return bool(BRANCH_SHAPE.fullmatch(branch))
+    return bool(re.fullmatch(rf"{re.escape(prefix)}/{BRANCH_KEY}", branch))
+
+
+def check_branch(argv):
+    """`check-branch NAME` (CI): the shape only, since CI cannot know whose prefix it is. 0 fits, 1 does not."""
+    if len(argv) != 3 or not argv[2]:
+        print("usage: review-gate.py check-branch NAME", file=sys.stderr)
+        return 1
+    if branch_ok(argv[2], None):
+        print(f'Branch "{argv[2]}" fits <prefix>/<JIRA-KEY>.')
+        return 0
+    print(f'Branch "{argv[2]}" is not named <prefix>/<JIRA-KEY>: a lowercase prefix (letters, digits, dashes), '
+          'a slash and a Jira key, for example ana/MOB-23. Rename the branch, or ask the repo owner for the '
+          '`branch-exception` label.', file=sys.stderr)
+    return 1
+
+
 def allow_branch(argv):
     cwd = os.getcwd()
     branch = current_branch(cwd)
@@ -627,7 +680,8 @@ def allow_branch(argv):
 def branch_blocked(cwd, branch=None):
     """Message to print when the branch (default: the current one) breaks the naming rule, else None."""
     branch = branch or current_branch(cwd)
-    if branch == "HEAD" or BRANCH_OK.match(branch):  # detached HEAD: nothing to judge
+    prefix = branch_prefix()
+    if branch == "HEAD" or branch_ok(branch, prefix):  # detached HEAD: nothing to judge
         return None
     try:
         with open(git_path("claude-branch-ok", cwd), encoding="utf-8") as f:
@@ -635,7 +689,7 @@ def branch_blocked(cwd, branch=None):
                 return None
     except (OSError, KeyError, ValueError):
         pass
-    return BRANCH_BLOCK.format(branch=branch, script=SCRIPT)
+    return BRANCH_BLOCK.format(branch=branch, prefix=prefix or "<prefix>", script=SCRIPT)
 
 
 def in_repo(cwd):
@@ -1212,6 +1266,8 @@ if __name__ == "__main__":
         sys.exit(verify_attestation(sys.argv))
     if sys.argv[1:2] == ["verify-tier"]:
         sys.exit(verify_tier(sys.argv))
+    if sys.argv[1:2] == ["check-branch"]:
+        sys.exit(check_branch(sys.argv))
     if "--allow-branch" in sys.argv:
         sys.exit(allow_branch(sys.argv))
     sys.exit(mark(sys.argv) if "--mark" in sys.argv else gate(sys.argv))
