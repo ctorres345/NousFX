@@ -6,6 +6,12 @@
       "repo": "https://github.com/android/skills",
       "sha256": "65d3fd62d5c9b173b8567b638f54833db26d98c1d2fc5bbc21afea46eb6acdb2"
     },
+    "agentic-actions-auditor": {
+      "commit": "e4dd0bb5b15535f7c5a0834187dffba6ac37e4ff",
+      "path": "plugins/agentic-actions-auditor/skills/agentic-actions-auditor",
+      "repo": "https://github.com/trailofbits/skills",
+      "sha256": "cc7b3d1a75443e02b5fbd5955adf64da393b4ed202ef7be152ac14a506b6ec95"
+    },
     "ask-matt": {
       "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
       "path": "skills/engineering/ask-matt",
@@ -150,6 +156,12 @@
       "repo": "https://github.com/mattpocock/skills",
       "sha256": "019bbcc250992c776244aa1c818aed4015364f65bb9d1dbfd3bef9bae196b065"
     },
+    "security-audit": {
+      "commit": "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8",
+      "path": "skills/security-audit",
+      "repo": "https://github.com/cloudflare/security-audit-skill",
+      "sha256": "8513eb3b2c39b8d05ef4f47b32ef4d18280b93a5efb91d8df6272f7435034af5"
+    },
     "setup-matt-pocock-skills": {
       "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
       "path": "skills/engineering/setup-matt-pocock-skills",
@@ -161,6 +173,12 @@
       "path": "skills/misc/setup-pre-commit",
       "repo": "https://github.com/mattpocock/skills",
       "sha256": "98523a8db5977c41a095834df8697123bb845ff6ddbb9500733b161f11441a37"
+    },
+    "sharp-edges": {
+      "commit": "e4dd0bb5b15535f7c5a0834187dffba6ac37e4ff",
+      "path": "plugins/sharp-edges/skills/sharp-edges",
+      "repo": "https://github.com/trailofbits/skills",
+      "sha256": "fa36c2d4f9fa315eebcf03b4687dc760ff6b5805de69a3d2614a6b0fce695c6d"
     },
     "tdd": {
       "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
