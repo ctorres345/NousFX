@@ -31,11 +31,11 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
           AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
-          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          EXCEPTION_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'branch-exception') }}
         run: |
           # NFX-119 branch check
           set -eu
-          if python3 -c 'import json, os, sys; sys.exit("branch-exception" not in json.loads(os.environ["LABELS"] or "[]"))'; then
+          if [ "$EXCEPTION_LABEL" = "true" ]; then
             case "$AUTHOR_ASSOCIATION" in
               OWNER|MEMBER)
                 echo "Branch check skipped: the branch-exception label is set and the PR author is $AUTHOR_ASSOCIATION."
@@ -50,7 +50,7 @@ jobs:
             exit 0
           fi
           python3 -B "$gate" check-branch "$HEAD_REF" </dev/null 2>&1 || {
-            echo "::error::Branch \"$HEAD_REF\" is not named <prefix>/<JIRA-KEY> (for example ana/MOB-23). Rename it, or ask the repo owner for the branch-exception label."
+            echo "::error::The branch name check failed (message above)."
             exit 1
           }
       - name: Verify the review attestation with the base branch's gate

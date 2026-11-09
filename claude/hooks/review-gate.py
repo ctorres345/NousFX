@@ -90,7 +90,6 @@ STAMP_KEY = "claude-review-stamp-key"
 GIT_ENV_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
 
 BRANCH_KEY = r"[A-Z][A-Z0-9]+-\d+"
-BRANCH_SHAPE = re.compile(rf"[a-z0-9-]+/{BRANCH_KEY}")  # fullmatch; any prefix: CI, cloud, fresh installs
 PREFIX_VALID = re.compile(r"[a-z0-9][a-z0-9-]*")  # fullmatch; the rule sync enforces (nousfx_prefix.VALID)
 MCP_PR_CREATE = re.compile(r"create_pull_request", re.I)
 GIT_REPO_VARS = re.compile(r"\bGIT_(?:DIR|WORK_TREE)\b", re.I)
@@ -641,21 +640,20 @@ def branch_prefix():
     try:
         with open(local_toml(), encoding="utf-8") as f:
             value = tomllib.loads(f.read()).get("branch", {}).get("prefix")
-    except (OSError, UnicodeDecodeError, ValueError, AttributeError):  # TOMLDecodeError is a ValueError
+    except Exception:  # any failure means no prefix (bad TOML, no passwd entry, deep nesting): never block
         return None
     return value if isinstance(value, str) and PREFIX_VALID.fullmatch(value) else None
 
 
 def branch_ok(branch, prefix):
     """True when branch is <prefix>/<KEY>, or of that shape with any valid prefix when prefix is None."""
-    if prefix is None:
-        return bool(BRANCH_SHAPE.fullmatch(branch))
-    return bool(re.fullmatch(rf"{re.escape(prefix)}/{BRANCH_KEY}", branch))
+    head = re.escape(prefix) if prefix else "[a-z0-9-]+"  # no prefix: any, for CI, cloud and fresh installs
+    return bool(re.fullmatch(rf"{head}/{BRANCH_KEY}", branch))
 
 
 def check_branch(argv):
     """`check-branch NAME` (CI): the shape only, since CI cannot know whose prefix it is. 0 fits, 1 does not."""
-    if len(argv) != 3 or not argv[2]:
+    if len(argv) != 3:
         print("usage: review-gate.py check-branch NAME", file=sys.stderr)
         return 1
     if branch_ok(argv[2], None):

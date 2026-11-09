@@ -132,7 +132,7 @@ def repo_evidence(project, repo):
                 evidence["commits"][key].append(sha)
             for key in pattern.findall(subject):
                 evidence["mentioned"][key].append(f"commit {sha}")
-        for line in run(["git", "branch", "-r", "--format=%(refname:short)"], repo).splitlines():
+        for line in run(["git", "branch", "-r", "--list", "origin/*", "--format=%(refname:short)"], repo).splitlines():
             match = head.match(line.removeprefix("origin/"))
             if match:
                 evidence["branches"].setdefault(match.group(1), line)

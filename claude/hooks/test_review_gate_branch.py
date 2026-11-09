@@ -39,13 +39,14 @@ class Prefix(Base):
         super().setUp()
         self.gate = load_gate()
         self.home = os.path.join(self.tmp, "home")
-        os.makedirs(os.path.join(self.home, ".config", "nousfx"))
+        self.toml = os.path.join(self.home, ".config", "nousfx", "local.toml")
+        os.makedirs(os.path.dirname(self.toml))
         patcher = mock.patch.object(self.gate, "user_home", return_value=self.home)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def write_toml(self, text, mode="w"):
-        with open(os.path.join(self.home, ".config", "nousfx", "local.toml"), mode) as f:
+        with open(self.toml, mode) as f:
             f.write(text)
 
     def blocked(self, branch):
@@ -84,8 +85,8 @@ class Prefix(Base):
         self.write_toml(b"\xff\xfe[branch]\n", mode="wb")  # not UTF-8
         self.assertIsNone(self.gate.branch_prefix())
         self.assertIsNone(self.blocked("ana/NFX-1"))
-        os.remove(os.path.join(self.home, ".config", "nousfx", "local.toml"))
-        os.makedirs(os.path.join(self.home, ".config", "nousfx", "local.toml"))  # a folder: open() fails
+        os.remove(self.toml)
+        os.makedirs(self.toml)  # a folder: open() fails
         self.assertIsNone(self.gate.branch_prefix())
         self.assertIsNone(self.blocked("ana/NFX-1"))
 
@@ -95,6 +96,11 @@ class Prefix(Base):
             self.assertIsNone(self.gate.branch_prefix())
             self.assertIsNone(self.blocked("ana/NFX-1"))
             self.assertIsNotNone(self.blocked("fix-stuff"))
+
+    def test_no_passwd_entry_falls_back(self):
+        with mock.patch.object(self.gate, "user_home", side_effect=KeyError("getpwuid(): uid not found")):
+            self.assertIsNone(self.gate.branch_prefix())
+            self.assertIsNone(self.blocked("ana/NFX-1"))
 
     def test_allow_branch_exception_still_counts(self):
         self.write_toml('[branch]\nprefix = "cesar"\n')
@@ -126,6 +132,24 @@ class SameFileAsSync(unittest.TestCase):
     def test_valid_prefix_rule_matches_sync(self):
         import nousfx_prefix
         self.assertEqual(load_gate().PREFIX_VALID.pattern, nousfx_prefix.VALID.pattern)
+
+    def test_configs_sync_refuses_give_the_gate_no_prefix(self):
+        """Where sync stops with code 2, the gate falls back to the shape instead of guessing a prefix."""
+        import nousfx_prefix
+        gate = load_gate()
+        tmp = os.path.realpath(tempfile.mkdtemp(prefix="gate-parity-test-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        toml = nousfx_prefix.path(tmp)
+        for text in ("not toml [", 'branch = "x"\n', '[branch]\nprefix = 3\n', '[branch]\nprefix = "Bad"\n',
+                     '[branch]\nprefix = "-x"\n', '[branch]\nprefix = "a/b"\n'):
+            with self.subTest(text=text):
+                with open(toml, "w", encoding="utf-8") as f:
+                    f.write(text)
+                with self.assertRaises(Exception) as caught:
+                    nousfx_prefix.resolve(tmp, type("SyncError", (Exception,), {"__init__": lambda s, m, c=1: None}))
+                self.assertNotIsInstance(caught.exception, AttributeError)
+                with mock.patch.object(gate, "local_toml", return_value=toml):
+                    self.assertIsNone(gate.branch_prefix())
 
 
 class CheckBranch(unittest.TestCase):
@@ -186,9 +210,9 @@ class Workflow(unittest.TestCase):
         self.git("commit", "-qm", "base")
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
 
-    def step(self, head, labels="[]", association="CONTRIBUTOR"):
+    def step(self, head, label=False, association="CONTRIBUTOR"):
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-        env.update(BASE_REF="main", HEAD_REF=head, AUTHOR_ASSOCIATION=association, LABELS=labels,
+        env.update(BASE_REF="main", HEAD_REF=head, AUTHOR_ASSOCIATION=association, EXCEPTION_LABEL="true" if label else "false",
                    RUNNER_TEMP=self.tmp)
         return subprocess.run(["bash", self.script], cwd=self.repo, env=env, capture_output=True, text=True,
                               stdin=subprocess.DEVNULL)
@@ -198,7 +222,7 @@ class Workflow(unittest.TestCase):
         r = self.step("fix-stuff")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("::error::", r.stdout)
-        self.assertIn("<prefix>/<JIRA-KEY>", r.stdout)
+        self.assertIn("<prefix>/<JIRA-KEY>", r.stdout)  # check-branch's message, through 2>&1
 
     def test_good_branch_passes(self):
         self.base_gate()
@@ -208,21 +232,19 @@ class Workflow(unittest.TestCase):
 
     def test_label_skips_for_owner_and_member_only(self):
         self.base_gate()
-        labels = '[\n  "bug",\n  "branch-exception"\n]'
         for assoc in ("OWNER", "MEMBER"):
-            r = self.step("fix-stuff", labels, assoc)
+            r = self.step("fix-stuff", True, assoc)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("skipped", r.stdout)
         for assoc in ("COLLABORATOR", "CONTRIBUTOR", "NONE", "owner", ""):
-            r = self.step("fix-stuff", labels, assoc)
+            r = self.step("fix-stuff", True, assoc)
             self.assertEqual(r.returncode, 1, assoc)
             self.assertIn("::warning::", r.stdout)
             self.assertIn("::error::", r.stdout)
 
-    def test_other_labels_and_bad_json_do_not_skip(self):
+    def test_no_label_does_not_skip(self):
         self.base_gate()
-        for labels in ('["branch-exception-x"]', '["x\\"branch-exception\\""]', "not json", ""):
-            self.assertEqual(self.step("fix-stuff", labels, "OWNER").returncode, 1, labels)
+        self.assertEqual(self.step("fix-stuff", False, "OWNER").returncode, 1)
 
     def test_base_gate_without_check_branch_warns(self):
         old = os.path.join(self.tmp, "old-gate.py")
@@ -240,6 +262,7 @@ class Workflow(unittest.TestCase):
         self.assertIn("types: [opened, synchronize, reopened, edited, labeled, unlabeled]", text)
         step = text.split("Check the branch name with the base branch's gate")[1].split("\n      - name:")[0]
         self.assertIn("HEAD_REF: ${{ github.head_ref }}", step)
+        self.assertIn("contains(github.event.pull_request.labels.*.name, 'branch-exception')", step)
         self.assertIn('git show "origin/$BASE_REF:claude/hooks/review-gate.py"', step)
         run = step.split("run: |")[1]
         self.assertNotIn("${{", run)  # nothing from the PR is interpolated into the shell

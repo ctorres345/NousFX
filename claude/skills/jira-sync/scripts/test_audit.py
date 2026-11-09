@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Tests for audit.py. Run: python3 -I ~/.claude/skills/jira-sync/scripts/test_audit.py"""
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.dont_write_bytecode = True
@@ -88,9 +91,6 @@ class BranchEvidence(unittest.TestCase):
     """NFX-119: any <prefix>/<KEY> branch counts, -shots does not, and the finding names the real branch."""
 
     def test_any_prefix_counts_and_is_printed(self):
-        import shutil
-        import subprocess
-        import tempfile
         repo = tempfile.mkdtemp(prefix="audit-branch-")
         self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -102,6 +102,7 @@ class BranchEvidence(unittest.TestCase):
         git("commit", "-q", "--allow-empty", "-m", "init")
         for ref in ("main", "ana/DEM-3", "ana/DEM-4-shots", "Bob/DEM-5", "fix-DEM-6"):
             git("update-ref", f"refs/remotes/origin/{ref}", "HEAD")
+        git("update-ref", "refs/remotes/upstream/DEM-7", "HEAD")  # another remote: its name is no prefix
         ev = repo_evidence("DEM", repo)
         self.assertEqual(ev["branches"], {"DEM-3": "origin/ana/DEM-3"})
         findings = audit("DEM", dict([issue("DEM-3"), issue("DEM-4")]), ev)
