@@ -789,7 +789,7 @@ class GateBudget(unittest.TestCase):
     def test_home_hook(self):
         for win in (False, True):
             with self.subTest(win=win):
-                cfg = json.loads(nousfx_sync.merge_settings("", "/h/.claude/hooks/review-gate.py", win))
+                cfg = json.loads(nousfx_sync.merge_settings("", "/h/.claude/hooks/review-gate.py", win, prefix="me"))
                 self.assert_agrees(cfg["hooks"]["PreToolUse"][0]["hooks"][0])
 
     def test_project_asset(self):

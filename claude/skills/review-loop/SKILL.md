@@ -16,7 +16,7 @@ Invoke the `simplify` skill via the Skill tool on the same scope, so the reviewe
 
 ## Step 1: pick the tier
 
-Run `python3 -B <this skill's folder>/scripts/tier.py --base <base hash> --labels <ticket labels>` (`python` on Windows). The ticket is the one in the branch name `cesar/<KEY>`; read its labels from Jira. If the branch has no key, leave out `--labels` and say so. If it has a key but Jira cannot be read, labels are unknown: use at least Tier 2 and put "labels unavailable" in the reasons. Print the tier and its reasons. The merge base was checked above, so any failure of `tier.py` (including exit 2): use Tier 2. Without the Agent tool (agy): the tier sets only the round cap; review inline.
+Run `python3 -B <this skill's folder>/scripts/tier.py --base <base hash> --labels <ticket labels>` (`python` on Windows). The ticket is the one in the branch name `<prefix>/<KEY>`; read its labels from Jira. If the branch has no key, leave out `--labels` and say so. If it has a key but Jira cannot be read, labels are unknown: use at least Tier 2 and put "labels unavailable" in the reasons. Print the tier and its reasons. The merge base was checked above, so any failure of `tier.py` (including exit 2): use Tier 2. Without the Agent tool (agy): the tier sets only the round cap; review inline.
 
 | Tier | Reviewer (Agent call) | Rounds |
 |---|---|---|

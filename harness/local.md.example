@@ -8,8 +8,8 @@
 # How to explain things to me
 - <your preferences for answer style, for example: lead with the answer, then short bullets>
 
-# Tickets and branches
-- Branch prefix: <your-prefix>, so a ticket branch is `<your-prefix>/<TICKET-KEY>`.
+# Tickets
+# (The branch prefix is a setting, not a rule: it goes in local.toml, see local.toml.example.)
 - Tracker: <your tracker and project key>.
 
 # Docs voice

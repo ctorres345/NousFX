@@ -50,11 +50,11 @@ class Base(unittest.TestCase):
         write(os.path.join(self.state, "local.md"), read(os.path.join(FIX, "local.md")))
         write(os.path.join(self.repo, "harness", "mcp.toml"), "# no servers\n")  # the shared list is required
 
-    def sync(self, *args, repo=None):
+    def sync(self, *args, repo=None, env=None):
         return subprocess.run(
             [sys.executable, "-B", SYNC, "--home", self.home, "--state-home", self.state,
              "--repo", repo or self.repo, *args],
-            capture_output=True, text=True, cwd=self.tmp)
+            capture_output=True, text=True, cwd=self.tmp, env={**os.environ, **(env or {})})
 
     def tree(self):
         out = {}
@@ -294,6 +294,13 @@ class DroppedSectionGuard(Base):
         self.assertIn("# Forgotten section", report)
         self.assertIn("A rule nobody carried over", report)
 
+    def test_heading_whose_title_lives_on_in_a_longer_heading_is_kept(self):
+        agents = os.path.join(self.repo, "harness", "AGENTS.md")
+        write(agents, read(agents) + "\n## Tickets and branches\n- Branch `<prefix>/<KEY>` off the default branch.\n")
+        r, report = self.regress("# Branches\n- Branch `<prefix>/<KEY>` off the default branch.\n")
+        self.assertEqual(r.returncode, 0, report)
+        self.assertIn("dropped: 0", report)
+
     def test_rule_moved_to_a_skill_is_kept(self):
         rule = "Always archive the quarterly widget ledger before closing the books."
         write(os.path.join(self.repo, "claude", "skills", "demo", "SKILL.md"), f"---\nname: demo\n---\n\n{rule}\n")
@@ -343,12 +350,12 @@ class DriftHookRegistration(Base):
 
     def test_tools_list_is_passed_through_in_the_order_given(self):
         cfg = json.loads(nousfx_sync.merge_settings(None, "/g/review-gate.py", False,
-                                                    ("/h/nousfx-drift.py", "/r", ("claude", "agy"))))
+                                                    ("/h/nousfx-drift.py", "/r", ("claude", "agy")), prefix="me"))
         cmd = cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         self.assertEqual(cmd, 'python3 -I -B "/h/nousfx-drift.py" --repo "/r" --tools claude,agy')
 
     def test_without_drift_arguments_only_the_gate_is_registered(self):
-        cfg = json.loads(nousfx_sync.merge_settings(None, "/g/review-gate.py", False))
+        cfg = json.loads(nousfx_sync.merge_settings(None, "/g/review-gate.py", False, prefix="me"))
         self.assertEqual(list(cfg["hooks"]), ["PreToolUse"])
 
     def test_second_sync_replaces_the_entry_and_keeps_other_session_hooks(self):

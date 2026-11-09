@@ -1,0 +1,7 @@
+# Personal settings (local, never committed). Copy to ~/.config/nousfx/local.toml.
+# Sync reads them; they are not rules, so they never show up in the generated rules.
+
+[branch]
+# Ticket branches are <prefix>/<KEY>. Lowercase letters, digits and dashes, no leading dash, no slash.
+# Without it, sync uses your git user.name cleaned up ("Ana Lopez" -> "ana-lopez") and says so.
+prefix = "your-name"

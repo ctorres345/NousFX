@@ -60,7 +60,7 @@ def classify(today, generated, skills=""):
     last = -1
     for raw in today.splitlines():
         line = norm(raw)
-        if not line:
+        if not line or line.startswith("#"):  # headings are judged by title below, at any level
             continue
         if line in gen_set:
             pos = gen.index(line)

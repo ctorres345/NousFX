@@ -26,7 +26,7 @@ Show the table, then ask one question at a time about real choices, each with yo
 
 ## 3. Create the branch
 
-Find or create the Jira ticket, and work on `cesar/<KEY>` in a worktree from the default branch.
+Read `[branch] prefix` in `~/.config/nousfx/local.toml`. If it is missing, ask Cesar for one (lowercase letters, digits and dashes; recommend the default sync printed) and write it there, never into the repo. Then find or create the Jira ticket, and work on `<prefix>/<KEY>` in a worktree from the default branch.
 
 ## 4. Install
 

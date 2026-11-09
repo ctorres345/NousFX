@@ -68,10 +68,13 @@ class SingleCopy(unittest.TestCase):
                              f"Claude rules are {size} bytes, over {CLAUDE_RULES_BUDGET}: cut a line first, or move on-use rules into their skill or hook")
 
     def test_built_rules_use_only_the_listed_sources(self):
-        # build_rules reads the same two files (plus the optional local files, absent here).
-        built = nousfx_sync.build_rules(ROOT, os.path.join(ROOT, "no-such-state"))
+        # build_rules reads the same two files (plus the optional local files, absent here), with the prefix in.
+        built = nousfx_sync.build_rules(ROOT, os.path.join(ROOT, "no-such-state"), prefix="ana")
         for rel in ("harness/AGENTS.md", "harness/overlays/claude.overlay.md"):
-            self.assertIn(read(os.path.join(ROOT, rel)).strip("\n"), built)
+            self.assertIn(read(os.path.join(ROOT, rel)).replace("<prefix>", "ana").strip("\n"), built)
+
+    def test_the_branch_rule_names_the_prefix_placeholder(self):
+        self.assertIn("`<prefix>/<KEY>`", read(os.path.join(ROOT, "harness", "AGENTS.md")))
 
 
 if __name__ == "__main__":

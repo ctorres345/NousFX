@@ -15,7 +15,7 @@ python3 -B claude/hooks/review-gate.py check --cwd DIR --command "gh pr create"
 ```
 
 - Exit 0 allows. Exit 2 blocks, with the reason on stderr.
-- It judges the repo in `DIR`: branch named `cesar/<KEY>`, and a review mark for this exact code.
+- It judges the repo in `DIR`: branch named `<prefix>/<KEY>` (until NFX-119 the gate checks my own prefix), and a review mark for this exact code.
 - Bad input blocks. A missing option, a missing folder or a folder that is not a git repo all exit 2.
 - `--allow-non-repo` is for agy. A folder that is not a repo is then judged by the command alone, so `cd <repo> && gh pr create` is still checked in that repo. It only covers git's own "not a git repository" answer: a missing git, a missing folder and a pushed commit (`--tree`) still block.
 - `--tool` names the parser: `Bash` (default), `PowerShell`, or an MCP tool name holding `create_pull_request`, as the Claude hook passes them.
@@ -121,7 +121,7 @@ agy run_command ──► hooks.json ──► agy_gate.py ──► review-gate
 - Repo copies (`.claude/hooks/`, from `project-setup`) are only a fallback for cloud sessions, which have no `~/.claude`; the project's Claude hook (project-setup's `assets/settings.json`) runs one only when `$HOME/.claude/hooks/review-gate.py` is missing (it checks `$HOME`, not the passwd home; advisory either way). Locally the gate is always `~/.claude/hooks/review-gate.py`, for this hook and for review-loop's `--mark`. A branch can edit the repo copy, so it is advisory and CI's base-branch gate is the real check. `nousfx_sync.py --project` refreshes a stale copy (`--check` reports it as drift) and never adds one.
 - `REVIEW_GATE_DIR` overrides that folder. It is for tests and for my own shell. The hook refuses it, and blocks the push, when the folder is inside any git work tree (or git cannot say), because code in a work tree is code under review.
 - It fails closed. A missing gate script, missing `python3` or any git error blocks the push.
-- It reads the ref list git sends on stdin. Deletes, tag pushes and pushes of the default branch (`main`, `master`, or `origin/HEAD`) pass. Any other branch push is judged on the tree of the pushed commit (`local_sha`), not the checked-out branch. That tree needs a valid review mark recorded on the pushed branch name, and that name must be `cesar/<KEY>`. The mark holds the local branch name, so a push to a remote branch with another name (`git push origin cesar/A:cesar/B`) blocks; push under the same name. A sha that is not a commit blocks. It calls `review-gate.py check ... --tree TREE --branch NAME`.
+- It reads the ref list git sends on stdin. Deletes, tag pushes and pushes of the default branch (`main`, `master`, or `origin/HEAD`) pass. Any other branch push is judged on the tree of the pushed commit (`local_sha`), not the checked-out branch. That tree needs a valid review mark recorded on the pushed branch name, and that name must be `<prefix>/<KEY>`. The mark holds the local branch name, so a push to a remote branch with another name (`git push origin ana/A:ana/B`) blocks; push under the same name. A sha that is not a commit blocks. It calls `review-gate.py check ... --tree TREE --branch NAME`.
 - It is advisory. `git push --no-verify` skips it, and nothing on the client can stop that. I never treat it as the only control.
 
 ## CI: the real gate for tools without hooks
