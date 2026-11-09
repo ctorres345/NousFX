@@ -12,6 +12,12 @@
       "repo": "https://github.com/mattpocock/skills",
       "sha256": "7ff2383b40fe9d8f3e753d267d964fb2b44d120a948fd2a57c3b26ddfc318370"
     },
+    "break-ui": {
+      "commit": "5206a950b715e0cabe7043ea0b2304332b91494e",
+      "path": "skills/break-ui",
+      "repo": "https://github.com/emilkowalski/skills",
+      "sha256": "accfc40025b4cc57475bebdcef52153a1598beec2794d6f11dec5cbbd79481c9"
+    },
     "code-review": {
       "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
       "path": "skills/engineering/code-review",
@@ -41,6 +47,12 @@
       "path": "system/edge-to-edge",
       "repo": "https://github.com/android/skills",
       "sha256": "954c391ab845f97ce160c04c3944d6c6da3c7ad0385970353b314ee2a3aabea2"
+    },
+    "emil-design-eng": {
+      "commit": "5206a950b715e0cabe7043ea0b2304332b91494e",
+      "path": "skills/emil-design-eng",
+      "repo": "https://github.com/emilkowalski/skills",
+      "sha256": "55735a70a886326ee8ba1dd4d1ee040e4e9503a536891467e4ed7e114a69b0dd"
     },
     "git-guardrails-claude-code": {
       "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
@@ -215,6 +227,12 @@
       "path": "skills/engineering/wizard",
       "repo": "https://github.com/mattpocock/skills",
       "sha256": "806f7f7461824054ffaf3344e1e56e5e8a42344e22bdf8d22c6a8117eb9b1c38"
+    },
+    "write-swift": {
+      "commit": "5206a950b715e0cabe7043ea0b2304332b91494e",
+      "path": "skills/write-swift",
+      "repo": "https://github.com/emilkowalski/skills",
+      "sha256": "aba96f69500a765c53e6230e036aacaf1e98f81d5eefd1a15d10d6706dd27b97"
     },
     "writing-for-agents": {
       "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
