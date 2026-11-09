@@ -170,7 +170,9 @@ claude/skills/*, plugins/via/skills/via   sources
 
 ### Outside skills
 
-Skills I use but do not write (Matt Pocock's workflow set, `ui-ux-pro-max`, the Android set, `material-3`) are pinned in `harness/skills.lock.json`. It has the same format as Via's `plugins/via/skills.lock.json`: a repo, a path, a full commit and a sha256 for each skill.
+Skills I use but do not write (Matt Pocock's workflow set, `ui-ux-pro-max`, the Android set, `material-3`, and Emil Kowalski's `emil-design-eng`, `break-ui` and `write-swift`) are pinned in `harness/skills.lock.json`. It has the same format as Via's `plugins/via/skills.lock.json`: a repo, a path, a full commit and a sha256 for each skill.
+
+- Emil Kowalski's animation skills (`animate`, `animation-vocabulary`, `improve-animations`, `review-animations`) are Via's: they stay in Via's lock, which `/via setup` installs. His `prototype` is not pinned, because Matt Pocock's `prototype` already has the name (NFX-121).
 
 - A real run fetches each skill that is missing, checks the sha256, and keeps the files in `<state home>/outside-skills/<name>-<12 characters of the sha256>/`. After that it links them like my own skills, so the manifest, collisions, backups and `--restore` all work the same. A skill already in the cache is not fetched again.
 - A skill that fails (the fetch fails, the checksum differs, or the tree is unsafe) is reported on stderr and left out. Nothing is written for it, and its existing links stay. Everything else is applied, and the run exits 1.
