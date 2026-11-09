@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """NFX-18: the old UI review skill is retired in favor of Via. Run: python3 -B scripts/test_ui_review_retired.py"""
 import os
+import re
 import subprocess
 import unittest
 
@@ -36,6 +37,18 @@ class Retired(unittest.TestCase):
         self.assertEqual(len([l for l in body.splitlines() if l.strip()]), 1)
         for cmd in ("/via spec", "/via check", "/via audit"):
             self.assertIn(cmd, body)
+
+    def test_the_stub_is_hidden_from_the_model(self):
+        # NFX-116: it still answers when typed by name, but leaves Claude Code's skill list (until 1.2.0).
+        front = read(STUB).split("---", 2)[1]
+        self.assertIn("\ndisable-model-invocation: true\n", front)
+
+    def test_the_stub_is_gone_once_1_2_0_is_cut(self):
+        # The end date is enforced, not only written down: a released 1.2.0 (or later) heading with the stub
+        # still in place fails here.
+        released = re.findall(r"^## (\d+)\.(\d+)\.\d+(?![^\n]*unreleased)", read("CHANGELOG.md"), re.M)
+        if any((int(a), int(b)) >= (1, 2) for a, b in released):
+            self.assertFalse(os.path.exists(os.path.join(ROOT, os.path.dirname(STUB))))
 
     def test_the_old_skill_ships_no_scripts_or_assets(self):
         r = subprocess.run(["git", "ls-files", os.path.dirname(STUB)], cwd=ROOT, capture_output=True, text=True)
