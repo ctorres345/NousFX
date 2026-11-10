@@ -407,7 +407,19 @@ class DriftHookRegistration(Base):
         counts = json.loads(lines[0])
         self.assertEqual(counts["files"], 1)
         self.assertEqual(set(counts), {"files", "skills", "outside", "rules"})
-        self.assertEqual(set(counts["rules"]), {"bytes", "budget", "repeats"})
+        self.assertEqual(set(counts["rules"]), {"bytes", "budget", "headroom", "repeats", "shared"})
+
+    def test_summary_shows_both_caps_and_the_headroom_under_each(self):
+        """NFX-133: the sync cap and the shared-rules ratchet side by side, the ratchet read from one constant."""
+        self.sync()
+        rules = json.loads(self.sync("--check", "--summary").stdout.strip().splitlines()[-1])["rules"]
+        self.assertEqual(rules["headroom"], rules["budget"] - rules["bytes"])
+        shared = rules["shared"]
+        self.assertEqual(shared["budget"], nousfx_sync.CLAUDE_RULES_BUDGET)
+        self.assertEqual(shared["headroom"], shared["budget"] - shared["bytes"])
+        want = sum(len(read(os.path.join(self.repo, rel)).encode("utf-8"))
+                   for rel in ("harness/AGENTS.md", "harness/overlays/claude.overlay.md"))
+        self.assertEqual(shared["bytes"], want)
 
     def test_summary_when_clean_exits_zero_with_zero_counts(self):
         self.sync()
@@ -456,7 +468,9 @@ class RulesBudget(Base):
         self.assertEqual(self.run_sync("--check").returncode, 0)  # in step: no drift, warning or not
         rc, counts = self.summary()
         self.assertEqual(rc, 0)
-        self.assertEqual(counts["rules"], {"bytes": body, "budget": 6144, "repeats": 0})
+        self.assertEqual({k: counts["rules"][k] for k in ("bytes", "budget", "repeats")},
+                         {"bytes": body, "budget": 6144, "repeats": 0})
+        self.assertEqual(counts["rules"]["headroom"], 6144 - body)
 
     def test_within_budget_prints_no_warning(self):
         r = self.run_sync()
@@ -491,9 +505,10 @@ class RulesBudget(Base):
         self.assertEqual(len(repeats), 1, r.stderr)
         self.assertIn("always run the full test suite", repeats[0])
         self.assertIn(f"is in {local} and {agents}", repeats[0])
-        self.assertEqual(self.summary(), (0, {"files": 0, "skills": 0, "outside": 0,
-                                              "rules": {"bytes": self.summary()[1]["rules"]["bytes"],
-                                                        "budget": 6144, "repeats": 1}}))
+        rc, counts = self.summary()
+        self.assertEqual(rc, 0)
+        self.assertEqual((counts["files"], counts["skills"], counts["outside"]), (0, 0, 0))
+        self.assertEqual((counts["rules"]["budget"], counts["rules"]["repeats"]), (6144, 1))
 
     def test_a_repeat_in_local_md_counts_once_when_two_tools_load_it(self):
         write(os.path.join(self.repo, "harness", "overlays", "agy.overlay.md"), "## agy overlay\n- agy only line\n")

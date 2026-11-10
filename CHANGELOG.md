@@ -9,6 +9,7 @@
 - A commit on the wrong branch is caught where it happens. The subject must start with the branch's Jira key (`NFX-86: x`, or `NFX-85, NFX-86: x`). Locally, a new advisory `claude/githooks/commit-msg` and the Claude hook (on a literal `git commit -m`) warn and never block. In CI, a new step runs the base gate's `check-commits`, which fails a PR with a commit that names another key or none; merge commits and subjects git writes itself (`Merge`, `Revert`, `fixup!`, `squash!`) are skipped, and a base gate without `check-commits` only warns (NFX-86).
 
 ### Rules
+- After a merge the agent runs one `after-merge` skill (delete the branches, move the ticket to Done, run `/handoff`), and the rules keep a single pointer line. `--check --summary` now also reports the shared-rules size, its cap and the headroom under each cap, both read from `nousfx_sync.CLAUDE_RULES_BUDGET`. The ratchet keeps 50 bytes of room, its failure message points to a skill before a cut, and "from docs and config" is back in the runbook line (NFX-133).
 - A confirmed merge now moves its Jira ticket to Done, unasked, in the same sentence that already deletes the branches. I had been moving them by hand (NFX-132).
 
 ### Review cost
