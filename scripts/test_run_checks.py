@@ -110,7 +110,7 @@ class RunChecksTest(unittest.TestCase):
         self.run_main("-j", "1")
         with open(self.times) as f:
             saved = json.load(f)
-        self.assertIn("test_a.py", saved)
+        self.assertIn("test_a.py", saved)  # keyed by path under the repo root
         self.assertEqual(saved["test_old.py"], 5.0)
 
     def test_corrupt_or_missing_times_file_is_ignored(self):

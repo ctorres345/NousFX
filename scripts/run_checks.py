@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -66,15 +67,21 @@ def order(suites, times):
     """Cheapest first by the seconds of the last run. A suite with no record (new or renamed, the likeliest to
     fail) counts as free and goes first; ties break on file size (smaller first). Only the order changes,
     never which suites run."""
-    return sorted(suites, key=lambda p: (times.get(os.path.basename(p), 0.0), os.path.getsize(p)))
+    return sorted(suites, key=lambda p: (times.get(os.path.relpath(p, ROOT), 0.0), os.path.getsize(p)))
 
 
-def run(path, running):
-    """Run one suite. `running` holds its live process so --fail-fast can stop it."""
+def run(path, running, stop, lock):
+    """Run one suite. `running` holds its live process so --fail-fast can stop it. Starting is checked against
+    `stop` under `lock`, so a worker cannot slip a new suite in while fail-fast is stopping the others (returns
+    None then)."""
     start = time.monotonic()
-    with subprocess.Popen([sys.executable, "-B", path], cwd=ROOT, stdin=subprocess.DEVNULL,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
+    with lock:
+        if stop.is_set():
+            return None
+        proc = subprocess.Popen([sys.executable, "-B", path], cwd=ROOT, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         running.add(proc)
+    with proc:
         try:
             out, err = proc.communicate()
         finally:
@@ -92,15 +99,19 @@ def main(argv):
     times = load_times(tpath) if tpath else {}
     suites = order(suites, times)
     failed, seen, running = [], 0, set()
+    stop, lock = threading.Event(), threading.Lock()
     start = time.monotonic()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=args.j)
-    futures = [pool.submit(run, p, running) for p in suites]
+    futures = [pool.submit(run, p, running, stop, lock) for p in suites]
     try:
         for future in concurrent.futures.as_completed(futures):
-            path, r, took = future.result()
+            result = future.result()
+            if result is None:  # skipped: fail-fast was already stopping
+                continue
+            path, r, took = result
             rel = os.path.relpath(path, ROOT)
             seen += 1
-            times[os.path.basename(path)] = round(took, 2)
+            times[rel] = round(took, 2)
             print(f"{'ok  ' if r.returncode == 0 else 'FAIL'} {rel} ({took:.0f}s)", flush=True)
             if r.returncode:
                 failed.append(rel)
@@ -110,8 +121,10 @@ def main(argv):
     finally:  # on a fail-fast break: drop queued suites, stop the running ones, then join the workers
         pool.shutdown(wait=False, cancel_futures=True)
         if args.fail_fast and failed:
-            for proc in list(running):
-                proc.terminate()
+            with lock:
+                stop.set()
+                for proc in list(running):
+                    proc.terminate()
         pool.shutdown(wait=True)
     if tpath and not (args.fail_fast and failed):
         save_times(tpath, times)  # a stopped run is a partial picture; only full runs refresh the record
