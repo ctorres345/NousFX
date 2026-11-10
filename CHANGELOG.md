@@ -5,6 +5,9 @@
 ### Tickets
 - Done is now written as proofs. Every acceptance criterion in the ticket template ends in a `Proof:` line (a command, or `manual: <step>`), and a new Failure modes section says how the work could break and what it does then. The jira-sync ready check flags a `ready-for-agent` ticket that lacks either, and the PR template has an "Acceptance criterion, proof, result" table. The template has one source (the `project-setup` asset), and `scripts/test_ticket_template_single_copy.py` fails when `docs/agents/ticket-template.md` drifts from it (NFX-104).
 
+### Review cost
+- `scripts/review_replay.py` replays past tier-2 reviews with any reviewer and compares findings, tokens and cost, against a switch rule written first in `evals/review-replay/README.md`. First result: Sonnet at high effort caught 4 of 7 comparable real medium findings (rule: 90%), so `reviewer` stays on Opus; it cost $0.94 against $2.15 for Opus on the same six cases. Results are in `evals/review-replay/RESULTS.md` (NFX-130).
+
 ## 1.1.0 (2026-11-09)
 
 ### Review gate

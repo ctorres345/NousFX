@@ -135,6 +135,12 @@ class RuleTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("inconclusive", why)
 
+    def test_a_failing_condition_is_reported_even_when_findings_are_unjudged(self):
+        ok, why = rr.decide(self.totals(med_caught=4, unjudged=5))
+        self.assertFalse(ok)
+        self.assertIn("under 90%", why)
+        self.assertIn("unjudged", why)
+
     def test_unjudged_findings_block_a_decision(self):
         ok, why = rr.decide(self.totals(unjudged=1))
         self.assertFalse(ok)

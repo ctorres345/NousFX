@@ -116,9 +116,8 @@ def score(case, new, judged, only=None):
 
 
 def decide(t):
-    """The NFX-130 rule. `t` has the candidate's totals over the whole set."""
-    if t["unjudged"]:
-        return False, "%d unjudged new finding(s): judge them in judged.json first" % t["unjudged"]
+    """The NFX-130 rule. `t` has the candidate's totals over the whole set. A condition that already fails
+    is reported even when new findings are still unjudged; a pass needs everything judged."""
     if t["high_total"] < 2:
         return False, "inconclusive: only %d comparable real high finding(s); the rule needs at least 2" % t["high_total"]
     reasons = []
@@ -130,6 +129,8 @@ def decide(t):
         reasons.append("%d false positives over %d cases (more than one per case)" % (t["fp"], t["cases"]))
     if not t["cost"] < t["opus_cost"]:
         reasons.append("cost $%.2f is not below Opus $%.2f" % (t["cost"], t["opus_cost"]))
+    if t["unjudged"]:
+        reasons.append("%d unjudged new finding(s), so the false-positive count is incomplete" % t["unjudged"])
     return (not reasons), ("all four conditions hold" if not reasons else "; ".join(reasons))
 
 
