@@ -1,0 +1,39 @@
+#!/bin/sh
+# Advisory commit-msg hook (NFX-86): warns when the commit subject does not name the branch's Jira key.
+# A commit `NFX-10: x` on `cesar/NFX-83` usually means another session switched the shared checkout.
+#
+# Rule (the same as `review-gate.py check-commits`, which CI runs): the branch is <prefix>/<KEY>, and the subject
+# starts with `KEY:` or `KEY, KEY:` holding that key. Skipped: a branch with no key, a detached HEAD, a merge,
+# rebase, cherry-pick or revert in progress, and subjects git writes itself (Merge, Revert, fixup!, squash!).
+#
+# It only warns and always exits 0; `git commit --no-verify` skips it. CI is the real check.
+#
+# Install: cp claude/githooks/commit-msg .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg
+# or put it in the folder core.hooksPath points at.
+file=$1
+[ -f "$file" ] || exit 0
+
+branch=$(git symbolic-ref --short -q HEAD 2>/dev/null) || exit 0
+key=$(printf '%s\n' "$branch" | sed -n 's|^[a-z0-9][a-z0-9-]*/\([A-Z][A-Z0-9]*-[0-9][0-9]*\)$|\1|p')
+[ -n "$key" ] || exit 0
+
+gitdir=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+for state in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+  [ -e "$gitdir/$state" ] && exit 0
+done
+
+subject=$(grep -v '^#' "$file" | sed -n '/[^[:space:]]/{p;q;}')
+[ -n "$subject" ] || exit 0
+case "$subject" in "Merge "* | "Revert \""* | "fixup! "* | "squash! "* | "amend! "*) exit 0 ;; esac
+
+k='[A-Z][A-Z0-9]*-[0-9][0-9]*'
+lead=$(printf '%s\n' "$subject" | sed -n "s/^\\($k\\(,[[:space:]]*$k\\)*\\):.*/\\1/p")
+if [ -z "$lead" ]; then
+  echo "commit-msg: warning: the subject \"$subject\" does not start with a Jira key. Branch $branch needs \"$key: ...\"." >&2
+  exit 0
+fi
+case ",$(printf '%s' "$lead" | tr -d ' \t')," in
+  *",$key,"*) ;;
+  *) echo "commit-msg: warning: the subject \"$subject\" names $lead, but branch $branch is $key. Another session may have switched this checkout: check the branch, then amend or switch back." >&2 ;;
+esac
+exit 0
