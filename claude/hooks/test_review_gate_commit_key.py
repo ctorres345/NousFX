@@ -14,6 +14,9 @@ import sys
 import unittest
 
 sys.dont_write_bytecode = True
+for _who in ("AUTHOR", "COMMITTER"):  # CI runners have no git identity; commits and merges here need one
+    os.environ[f"GIT_{_who}_NAME"] = "t"
+    os.environ[f"GIT_{_who}_EMAIL"] = "t@t"
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
