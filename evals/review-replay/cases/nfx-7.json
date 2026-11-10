@@ -1,0 +1,200 @@
+{
+  "id": "nfx-7",
+  "source": "nousfx",
+  "ui": false,
+  "exact": false,
+  "inexact_reasons": [
+    ".gitignore is in the merged PR but not in the rebuilt tree",
+    "README.md is in the merged PR but not in the rebuilt tree",
+    "docs/RUNBOOK.md is in the merged PR but not in the rebuilt tree",
+    "plugins/via/.claude-plugin/plugin.json is in the merged PR but not in the rebuilt tree",
+    "plugins/via/skills/via/modes/audit.md is in the merged PR but not in the rebuilt tree",
+    "plugins/via/skills/via/modes/check.md is in the merged PR but not in the rebuilt tree",
+    "plugins/via/skills/via/references/run-record.md is in the merged PR but not in the rebuilt tree",
+    "samples/README.md is in the merged PR but not in the rebuilt tree",
+    "samples/compose/.gitignore is in the merged PR but not in the rebuilt tree",
+    "samples/compose/app/build.gradle.kts is in the merged PR but not in the rebuilt tree",
+    "samples/compose/app/src/main/AndroidManifest.xml is in the merged PR but not in the rebuilt tree",
+    "samples/compose/app/src/main/java/dev/nousfx/sample/MainActivity.kt is in the merged PR but not in the rebuilt tree",
+    "samples/compose/build.gradle.kts is in the merged PR but not in the rebuilt tree",
+    "samples/compose/gradle.properties is in the merged PR but not in the rebuilt tree",
+    "samples/compose/gradle/wrapper/gradle-wrapper.jar is in the merged PR but not in the rebuilt tree",
+    "samples/compose/gradle/wrapper/gradle-wrapper.properties is in the merged PR but not in the rebuilt tree",
+    "samples/compose/gradlew is in the merged PR but not in the rebuilt tree",
+    "samples/compose/gradlew.bat is in the merged PR but not in the rebuilt tree",
+    "samples/compose/settings.gradle.kts is in the merged PR but not in the rebuilt tree",
+    "samples/flutter/.gitignore is in the merged PR but not in the rebuilt tree",
+    "samples/flutter/lib/main.dart is in the merged PR but not in the rebuilt tree",
+    "samples/flutter/pubspec.yaml is in the merged PR but not in the rebuilt tree",
+    "samples/flutter/test/home_screen_test.dart is in the merged PR but not in the rebuilt tree",
+    "samples/web/index.html is in the merged PR but not in the rebuilt tree",
+    "samples/web/styles.css is in the merged PR but not in the rebuilt tree"
+  ],
+  "scope_check": "verified",
+  "ticket": "Objective: find real bugs and security issues in this change. Repo /Users/me/Projects/NousFX, branch cesar/NFX-7, uncommitted. Base commit: c40a0c6d0a5f58fcf5644cd50c4e44731dab68b6. Scope: `git diff c40a0c6d0a5f58fcf5644cd50c4e44731dab68b6` plus untracked files from `git ls-files --others --exclude-standard` (ignore graphify-out/ and docs/handoff-*.md).\n\nWhat it is: ticket NFX-7. A stdlib Python CLI `plugins/via/scripts/via_run.py` (commands init, merge, reject, pass) that keeps Via's run record (findings.json), a findings ledger inside docs/design/via.md between marker comments, a gitignored run folder `.via/runs/<stamp>/`, and a pass record `<git-dir>/via-check-ok` holding the working-tree hash (same method as claude/hooks/review-gate.py). Tests: plugins/via/scripts/test_via_run.py. Also a schema doc plugins/via/assets/findings.schema.json, reference plugins/via/skills/via/references/run-record.md, and three sample apps under samples/ (web, compose, flutter; they contain DELIBERATE design flaws, weak contrast and a small button, do not report those).\n\nDesign rules to review against: finding ID = VIA-<screen slug>-<8 hex sha256(screen, rule, file)>, line NOT in the hash, same-key findings numbered -2,-3 in line order; rejected findings never return as new; fixed only when the finding's screen is in the run's scope; the run folder must be gitignored before it is created; the CLI must refuse symlinks and secret-shaped text and write nothing on a refusal (exit 1 invalid, exit 2 secret); finding text must be escaped in the rendered ledger table; text outside the ledger markers must be preserved byte for byte.",
+  "base": "c40a0c6d0a5f58fcf5644cd50c4e44731dab68b6",
+  "patch_file": "nfx-7.patch",
+  "opus_findings": [
+    {
+      "id": "via_run.py-ledger-no-fence-wipe",
+      "severity": "high",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 270,
+      "problem": "If both ledger markers are present but the ```json fence is missing or changed (hand edit, a trailing space after `json`, a different fence), load_ledger returns an empty ledger with valid start and end. The next merge or reject then overwrites the block, silently losing all history, including rejections. Rejected findings then come back as new.",
+      "fix": "Exit with code 1 (\"ledger block unreadable, nothing changed\") when the markers exist but no JSON fence is found, the same way invalid JSON is handled.",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-ledger-entry-shape",
+      "severity": "low",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 274,
+      "problem": "Ledger entries are not validated: an entry missing \"status\" raises KeyError at line 218/233, and a non-string id breaks sorted() at 254. Either way the user gets a raw traceback, not exit 1.",
+      "fix": "Check that each entry is a dict with a str id and a known status. Otherwise die with code 1.",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-crlf-not-byte-preserved",
+      "severity": "med",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 77,
+      "problem": "read_text and write_atomic use text mode with universal newlines, so CRLF (or lone CR) in via.md or .gitignore is rewritten as LF. That breaks the rule that text outside the markers is kept byte for byte.",
+      "fix": "Open both with newline=\"\" so line endings pass through unchanged. Use the file's own newline style for the lines the tool adds.",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-reject-after-merge-pass",
+      "severity": "med",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 386,
+      "problem": "`pass` counts findings_open from the statuses frozen in findings.json at merge time. `reject` only updates the ledger. So a finding rejected between merge and pass (the normal review flow) still counts as open in the pass record.",
+      "fix": "In cmd_pass, look up each finding's current status in the ledger by id (or have reject also update the run record), and leave rejected ones out.",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-rejected-suffix-shift",
+      "severity": "med",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 197,
+      "problem": "The -2/-3 suffixes depend on line order among the current run's same-key findings. Say A (base ID) and B (-2) exist and B is rejected. If A gets fixed, the next run gives B the base ID. B then comes back as open or regressed while the -2 entry stays rejected. Adding a sibling above B shifts its number the same way. Either way the rule that rejected findings never return is broken.",
+      "fix": "Before numbering, match the new findings against existing ledger entries with the same base (for example by nearest line, or by issue text), and reuse their IDs. At least never hand a rejected entry's sibling ID to a different finding without saying so.",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-path-not-normalized",
+      "severity": "low",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 192,
+      "problem": "location.file is hashed as given, so \"./src/a.tsx\", \"src/a.tsx\" and \"src\\\\a.tsx\" get different IDs. A rejected finding comes back as new when the path is spelled differently.",
+      "fix": "Before hashing, normalize to a project-relative POSIX path (os.path.normpath, replace backslashes, strip \"./\").",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-scope-raw-vs-slug",
+      "severity": "low",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 201,
+      "problem": "IDs group screens by slug, but covers() compares raw screen names. Scope [\"home\"] does not cover a ledger entry whose screen is \"Home\", so fixed findings stay open.",
+      "fix": "Compare slug(screen) against {slug(s) for s in scope}.",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-secret-unicode-escape",
+      "severity": "med",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 324,
+      "problem": "The secret scan runs on the raw JSON text before decoding. A key written with JSON escapes (for example \"AKIA...\" or \"ghp_...\") passes the scan, and json.loads then decodes it into the real key, which goes into via.md, a tracked file.",
+      "fix": "Also scan the decoded values: walk every string in rec (or run has_secret on json.dumps(rec, ensure_ascii=False)) after json.loads, and exit with code 2 on a match.",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-merge-symlinked-via",
+      "severity": "med",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 311,
+      "problem": "Only init refuses a symlinked .via or .via/runs. merge and pass compare realpaths, so if .via (or .via/runs) is a symlink to a folder outside the project, the containment check still passes and merge writes findings.json outside the project.",
+      "fix": "In resolve_run, repeat init's islink checks on .via, .via/runs and run_dir itself, and refuse with code 1.",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-run-dir-cwd-relative",
+      "severity": "low",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 313,
+      "problem": "A relative RUN_DIR is resolved against the cwd, not --project. With --project set it is wrongly refused, or points at a different folder.",
+      "fix": "Resolve a relative run_arg against project: os.path.join(project, run_arg).",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-cell-backslash-cr",
+      "severity": "low",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 249,
+      "problem": "cell() escapes \"",
+      "fix": "\" but not backslashes or \"\\r\". A value ending in \"\\\" before a \"|\" becomes \"\\\\|\", which renders as a backslash followed by a real column break. A raw \"\\r\" can also split a row. | Escape \"\\\\\" as \"\\\\\\\\\" before escaping \"|\", and replace \"\\r\" as well as \"\\n\" (ideally all Unicode line separators).",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-marker-order-dup-block",
+      "severity": "low",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 266,
+      "problem": "load_ledger finds only the first START and the first END. If the END marker text appears earlier in the file (for example a doc line that mentions it), the real block is ignored and save_ledger appends a new empty block on every run, losing the ledger.",
+      "fix": "Search for END starting after START (text.find(END, start)). Exit with code 1 when the markers appear more than once or out of order.",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-gitignore-negation",
+      "severity": "low",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 306,
+      "problem": "ensure_ignored only looks for the exact line \".via/\". A later \"!.via/\" line, or a pattern like \"/.via/\", is not taken into account, so the run folder may not actually be ignored when it is created.",
+      "fix": "After writing, confirm with `git check-ignore -q .via/runs/x`, and refuse with code 1 if it is not ignored.",
+      "quote": ""
+    },
+    {
+      "id": "via_run.py-merge-partial-write",
+      "severity": "low",
+      "confidence": 60,
+      "file": "plugins/via/scripts/via_run.py",
+      "line": 362,
+      "problem": "merge writes the ledger and then findings.json. If the second write fails, the ledger is updated but the run record has no merged_at, so a retry counts new findings as open.",
+      "fix": "Write the run record first, or both to temp files and then replace both, to keep the window small.",
+      "quote": ""
+    }
+  ],
+  "judged": {
+    "via_run.py-ledger-no-fence-wipe": "real",
+    "via_run.py-ledger-entry-shape": "skip",
+    "via_run.py-crlf-not-byte-preserved": "real",
+    "via_run.py-reject-after-merge-pass": "real",
+    "via_run.py-rejected-suffix-shift": "real",
+    "via_run.py-path-not-normalized": "skip",
+    "via_run.py-scope-raw-vs-slug": "skip",
+    "via_run.py-secret-unicode-escape": "real",
+    "via_run.py-merge-symlinked-via": "real",
+    "via_run.py-run-dir-cwd-relative": "skip",
+    "via_run.py-cell-backslash-cr": "skip",
+    "via_run.py-marker-order-dup-block": "skip",
+    "via_run.py-gitignore-negation": "skip",
+    "via_run.py-merge-partial-write": "skip"
+  },
+  "judged_notes": "Session: 'fixing every high and med one plus the cheap low ones, skipping the partial-write item'. Lows marked skip.",
+  "captured_from": {
+    "session": "c2ee038c-66cb-47e1-9fe2-ad349e855c71.jsonl",
+    "agent": "ae7138f24388a4053"
+  }
+}

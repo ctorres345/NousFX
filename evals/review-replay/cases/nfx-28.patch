@@ -1,0 +1,38 @@
+diff --git a/.claude/handoff.md b/.claude/handoff.md
+new file mode 100644
+index 0000000..e194e78
+--- /dev/null
++++ b/.claude/handoff.md
+@@ -0,0 +1,32 @@
++# Handoff: NousFX, after NFX-7 (2026-11-03)
++
++Repo: `~/Projects/NousFX` (github.com/ctorres345/NousFX). This file is gitignored. Check `git log`, `git status` and the Jira board before trusting it.
++
++## Where things stand
++- NFX-5, 6, 7, 26 and 27 are merged and Done. NFX-7 is PR #7: `plugins/via/scripts/via_run.py` (init, merge, reject, pass), the run record schema, `samples/{web,compose,flutter}`. Flow of a run: `plugins/via/skills/via/references/run-record.md`.
++- Only `/via setup` works. `/via audit`, `check`, `spec` and `export` are still stubs that name their tickets.
++- NFX-28 (this handoff policy: ask once to create a gitignored `.claude/handoff.md`) is In Progress on branch `cesar/NFX-28`. The rule text is already changed in `claude/CLAUDE.delegation.md` and `~/.claude/CLAUDE.md`, plus the `.gitignore` line. Uncommitted: ask the user whether to commit, then `review-loop`, then the PR.
++- Jira project **NFX** (board: https://cjthdev.atlassian.net/jira/software/projects/NFX/boards/70). Spec NFX-1 holds the design decisions. Rules: `docs/agents/issue-tracker.md`, `docs/agents/ticket-template.md`. Install docs: `docs/RUNBOOK.md`.
++
++## Next
++- **NFX-8**: tracer bullet `/via audit` on the web sample (`samples/web`). It is unblocked now that NFX-7 is Done, and it unblocks NFX-9, 10, 11 and 15. Read the ticket and its `is blocked by` links first. Branch `cesar/NFX-8` from `main`.
++- NFX-29 (small, unblocked): have the `project-setup` skill create `.claude/handoff.md` and its `.gitignore` line for new repos.
++
++## Open items
++- The NFX-6 fresh-session install check was never run: `claude plugin marketplace add ctorres345/NousFX`, `claude plugin install via@nousfx`, `/reload-plugins`, `/via setup`, run again and expect `unchanged`.
++- Still undone from the Oct 19 handoff: trim the ~85K starting context with `/context`; rerun `python3 -I scripts/usage-report.py`; PR for Ganamnesis branch `chore/ignore-claude-handoff`.
++
++## Gotchas
++- `via_run.py` matching of sibling findings to ledger entries is a heuristic (issue text, then order, then nearest line within 25 lines). A new finding near a rejected one that has left the run can take its ID. Accepted on purpose.
++- `merge` writes the ledger before `findings.json` on purpose; `pass` must run after `merge`.
++- Run Python with `-B` in this repo. A stray `__pycache__` changes the review gate's tree hash.
++- The Compose sample needs `ANDROID_HOME=$HOME/Library/Android/sdk`. Do not put it in `local.properties` in git.
++- `transitionJiraIssue` takes `transitionName` ("In Progress", "Done"). Jira search results are huge: filter the saved file with `jq`.
++- Branch names are `cesar/NFX-<n>`; the review gate blocks any other. READMEs, docs and PR bodies are in Cesar's first-person voice.
++- Personal paths and keys never go in the repo. Do not run `install.sh` until NFX-24 (known drift, see NFX-1 notes).
++
++## Suggested skills
++- `tdd` for NFX-8's audit bookkeeping: write the subprocess tests against `via_run.py` fixtures first, then the mode.
++- `codebase-design` before fixing the audit mode's interface with `via_run.py`, if the run record needs new fields.
++- `grilling` only if NFX-8's ticket leaves the audit flow open; NFX-1 probably settles it.
++- User-only: `/handoff` again at the end of NFX-8.

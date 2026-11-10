@@ -1,0 +1,135 @@
+diff --git a/claude/skills/handoff/SKILL.md b/claude/skills/handoff/SKILL.md
+index d41e90c..1b397e1 100644
+--- a/claude/skills/handoff/SKILL.md
++++ b/claude/skills/handoff/SKILL.md
+@@ -4,21 +4,28 @@ description: Write a short handoff note so a fresh session can continue this tas
+ argument-hint: "[optional focus]"
+ ---
+ 
+-Write `.claude/handoff.md` in the project root (overwrite any existing one). Keep it under 30 lines. $ARGUMENTS
++Write the project's handoff note (see "Where to save"). Keep it under 30 lines. $ARGUMENTS
+ 
+ Contents, in this order:
+ 1. **Header:** today's date, current branch, short HEAD sha (from git).
+ 2. **Goal:** one or two lines.
+ 3. **Done:** what is finished and verified.
+ 4. **Next:** ordered steps for the next session.
+-5. **Decisions:** choices made and the reason for each.
+-6. **Files touched:** paths only.
+-7. **Verify:** the exact commands that prove the current state (build, tests).
+-8. **Open questions / risks.**
++5. **Suggested skills:** one skill per line, each tied to the step it applies to (for example "`tdd` for the URL parsing, before the UI"), naming the next work first. Leave out skills that always apply (`review-loop` before a PR) and do not list a skill twice.
++6. **Decisions:** choices made and the reason for each.
++7. **Files touched:** paths only.
++8. **Verify:** the exact commands that prove the current state (build, tests).
++9. **Open questions / risks.**
+ 
+ Rules:
+ - Use facts from this session and git only. Mark anything unverified as "unverified".
+-- No secrets, tokens, or credential values.
+-- Do not `git add` or commit the file; tell the user it is local unless they choose otherwise.
++- No secrets, tokens, or credential values. Reference commits, PRs and tickets by link instead of duplicating them.
++- Never `git add` or commit the file; tell the user it is local unless they choose otherwise.
+ 
+-Then tell the user the file path and suggest: run `/clear` (or open a new thread) and start the next session with "continue from .claude/handoff.md".
++## Where to save
++
++- The project already has `.claude/handoff.md` (or a root `HANDOFF.md`): update that file in place. Keep its structure and replace the stale parts (state, next steps, open risks). Do not create a second copy. Before writing, run from the git top level `git check-ignore -q --no-index <file>` and `git ls-files --error-unmatch <file>`. If the first exits 1 (no ignore rule) or the second exits 0 (git tracks the file), tell the user before writing.
++- The project has neither and is a git repo: ask the user once per session (in unattended runs do not ask: use the temp folder): "Create `.claude/handoff.md` and add it to `.gitignore`? A note in the temp folder is not found by the next session." On a yes, create the file in the project root (the git top level, so the next session finds it) and, run from there, unless `git check-ignore -q --no-index .claude/handoff.md` already succeeds, add `.claude/handoff.md` to that folder's `.gitignore` (no duplicate line). Leave that edit uncommitted and tell the user. Then write the handoff there.
++- On a no, or outside a git repo: write the note to the OS temp directory and do not ask again that session.
++
++Finish by printing the full path of the file written; for the temp folder add that a new session will not find it on its own. Then suggest: run `/clear` (or open a new thread) and start the next session with "continue from .claude/handoff.md".
+diff --git a/claude/skills/prototype-fidelity/SKILL.md b/claude/skills/prototype-fidelity/SKILL.md
+new file mode 100644
+index 0000000..e76bc9b
+--- /dev/null
++++ b/claude/skills/prototype-fidelity/SKILL.md
+@@ -0,0 +1,11 @@
++---
++name: prototype-fidelity
++description: Work based on an approved prototype or design (artifact, Figma, mockup) where the prototype is the spec. Use when creating or refining tickets from it, implementing its UI, reviewing that UI, or writing the PR.
++---
++
++The prototype is the spec. Apply the step that matches where you are.
++
++1. **Tickets:** every ticket built from the prototype links it AND names the artboard or screen. It carries the acceptance criterion "matches the prototype: colors, sizes, radii, spacing, icons, states (open/pressed/selected/empty/dark)", with the concrete values that matter written in the ticket, not only a link. When creating or refining such a ticket, add this if missing.
++2. **Implementing:** open and read the prototype source (not only the ticket text) before writing UI code, and list its concrete values (tokens, colors per element, dimensions, radii) in the plan. If the app lacks a token the prototype uses, say so and name the ticket that adds it.
++3. **Review:** `review-loop` hands the reviewer the prototype and asks it to list visual deviations as findings. Before opening the PR, compare the emulator screenshots against the prototype yourself.
++4. **PR:** the description states what was checked against the prototype and what deliberately differs (and which ticket covers it).
+diff --git a/scripts/test_rules_single_copy.py b/scripts/test_rules_single_copy.py
+new file mode 100644
+index 0000000..9e4c3af
+--- /dev/null
++++ b/scripts/test_rules_single_copy.py
+@@ -0,0 +1,71 @@
++#!/usr/bin/env python3
++"""Each rule lives in one source file, and the always-loaded Claude rules stay short (NFX-58).
++
++Run: python3 -B scripts/test_rules_single_copy.py
++
++Sources compared: harness/AGENTS.md, every harness/overlays/*.md, and claude/CLAUDE.delegation.md while it
++still exists (install.sh reads it until NFX-48 retires it). A rule counts as repeated when the same
++sentence (6 words or more, case and spacing ignored) appears in two different files.
++"""
++import glob
++import os
++import re
++import sys
++import unittest
++
++HERE = os.path.dirname(os.path.abspath(__file__))
++ROOT = os.path.dirname(HERE)
++sys.path.insert(0, HERE)
++import nousfx_sync  # noqa: E402
++
++MIN_WORDS = 6
++CLAUDE_RULES_BUDGET = 4096  # bytes: AGENTS.md + Claude overlay, what every Claude session loads
++
++
++def sources():
++    paths = [os.path.join(ROOT, "harness", "AGENTS.md")]
++    paths += sorted(glob.glob(os.path.join(ROOT, "harness", "overlays", "*.md")))
++    legacy = os.path.join(ROOT, "claude", "CLAUDE.delegation.md")
++    if os.path.exists(legacy):
++        paths.append(legacy)
++    return paths
++
++
++def sentences(text):
++    text = re.sub(r"`", "", text)
++    for chunk in re.split(r"(?<=[.!?:;])\s+|\n+", text):
++        chunk = " ".join(chunk.lstrip("-* #").lower().split())
++        if len(chunk.split()) >= MIN_WORDS:
++            yield chunk
++
++
++class SingleCopy(unittest.TestCase):
++    def test_no_sentence_appears_in_two_files(self):
++        seen, repeated = {}, []
++        for path in sources():
++            with open(path, encoding="utf-8") as f:
++                for s in set(sentences(f.read())):
++                    name = os.path.relpath(path, ROOT)
++                    if s in seen and seen[s] != name:
++                        repeated.append(f"{seen[s]} and {name}: {s[:90]}")
++                    seen.setdefault(s, name)
++        self.assertEqual(repeated, [], "the same rule is written in more than one file")
++
++    def test_always_loaded_claude_rules_fit_the_budget(self):
++        size = 0
++        for rel in ("harness/AGENTS.md", "harness/overlays/claude.overlay.md"):
++            with open(os.path.join(ROOT, rel), "rb") as f:
++                size += len(f.read())
++        self.assertLessEqual(size, CLAUDE_RULES_BUDGET,
++                             f"Claude rules are {size} bytes; move on-use rules into their skill or hook")
++
++    def test_built_rules_use_only_the_listed_sources(self):
++        # build_rules reads the same two files (plus the optional local files, absent here).
++        built = nousfx_sync.build_rules(ROOT, os.path.join(ROOT, "no-such-state"))
++        for rel in ("harness/AGENTS.md", "harness/overlays/claude.overlay.md"):
++            with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
++                self.assertIn(f.read().strip("\n"), built)
++
++
++if __name__ == "__main__":
++    unittest.main()

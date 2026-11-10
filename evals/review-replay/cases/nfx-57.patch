@@ -1,0 +1,675 @@
+diff --git a/claude/hooks/nousfx-drift.py b/claude/hooks/nousfx-drift.py
+new file mode 100644
+index 0000000..2d43041
+--- /dev/null
++++ b/claude/hooks/nousfx-drift.py
+@@ -0,0 +1,144 @@
++#!/usr/bin/env python3
++"""NousFX session-start drift warning (SessionStart hook for Claude Code). NFX-57.
++
++Tells me when this machine's harness is behind, so the Mac and the Windows PC do not drift apart:
++  1. the installed files differ from what sync would write (`nousfx_sync.py --check --summary`);
++  2. my local NousFX clone is behind origin/main (the origin/main of the last fetch).
++It prints one JSON line (a message for me and the same text as context for the model), or nothing.
++
++Rules this file keeps:
++  - It never fixes anything: no sync, no pull. The only write is the background `git fetch`
++    that keeps origin/main fresh for the NEXT session (never waited for, at most every 10 minutes).
++  - It never fails the session start: every error, timeout or odd output means "say nothing", exit 0.
++  - It stays under a 2 second budget; whatever is not finished by then is skipped quietly.
++  - Standard library only. Programs run with the clone as their working directory, so a program of the
++    same name sitting in the project I opened can never be picked up on Windows.
++
++Arguments (sync writes them into the hook command): --repo DIR --tools claude[,agy].
++Test seams: --home, --state-home (passed on to sync) and --platform posix|windows.
++"""
++import argparse
++import json
++import os
++import subprocess
++import sys
++import time
++
++BUDGET = 2.0  # seconds for the whole hook
++GIT_WAIT = 0.6  # most the "how far behind" question may take
++FETCH_EVERY = 600  # seconds between background fetches
++
++
++def run(cmd, cwd, timeout):
++    try:
++        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
++                              stdin=subprocess.DEVNULL)
++    except (OSError, subprocess.SubprocessError, ValueError):
++        return None
++
++
++def drift_counts(args, deadline):
++    """The counts sync reports, or None when it says clean or cannot be trusted."""
++    sync = os.path.join(args.repo, "scripts", "nousfx_sync.py")
++    # -E -s: PYTHON* variables and user site-packages must not shadow the standard library. Not -I: sync
++    # imports its sibling modules, and -I would leave its own folder off the module path.
++    cmd = [sys.executable, "-E", "-s", "-B", sync, "--check", "--summary", "--tools", args.tools]
++    for flag, value in (("--home", args.home), ("--state-home", args.state_home)):
++        if value:
++            cmd += [flag, value]
++    left = deadline - time.monotonic()
++    r = run(cmd, args.repo, left) if left > 0 else None
++    if r is None or r.returncode != 1:  # 0 = clean; 2 or a crash = nothing to trust
++        return None
++    try:
++        counts = json.loads(r.stdout.strip().splitlines()[-1])
++    except (ValueError, IndexError):
++        return None
++    return counts if isinstance(counts, dict) else None
++
++
++def commits_behind(args, deadline):
++    left = min(GIT_WAIT, deadline - time.monotonic())
++    r = run(["git", "rev-list", "--count", "HEAD..origin/main"], args.repo, left) if left > 0 else None
++    if r is None or r.returncode != 0:
++        return 0
++    try:
++        return max(int(r.stdout.strip()), 0)
++    except ValueError:
++        return 0
++
++
++def start_background_fetch(args):
++    """Refresh origin/main for the next session. Never waited for; skipped when one ran recently."""
++    try:
++        stamp = os.path.join(args.repo, ".git", "FETCH_HEAD")
++        if os.path.exists(stamp) and time.time() - os.path.getmtime(stamp) < FETCH_EVERY:
++            return
++        kwargs = {"cwd": args.repo, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
++                  "stderr": subprocess.DEVNULL}
++        if args.platform == "windows" or os.name == "nt":
++            kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
++        else:
++            kwargs["start_new_session"] = True
++        subprocess.Popen(["git", "fetch", "--quiet", "origin", "main"], **kwargs)
++    except (OSError, ValueError):
++        pass
++
++
++def plural(n, one, many=None):
++    return f"{n} {one if n == 1 else (many or one + 's')}"
++
++
++def message(args, counts, behind):
++    win = args.platform == "windows" or (args.platform is None and os.name == "nt")
++    sync = f"{'python' if win else 'python3'} -B scripts/nousfx_sync.py"
++    if args.tools != "claude":
++        sync += f" --tools {args.tools}"
++    parts = []
++    if counts:
++        if counts.get("files"):
++            parts.append(plural(counts["files"], "file"))
++        if counts.get("skills"):
++            parts.append(f"{plural(counts['skills'], 'skill')} need a decision" if counts["skills"] != 1
++                         else "1 skill needs a decision")
++        if counts.get("outside"):
++            parts.append(f"{plural(counts['outside'], 'outside skill')} to fetch")
++    out_of_date = "NousFX on this machine is out of date" + (f" ({', '.join(parts)})" if parts else "")
++    if counts and behind:
++        return (f"{out_of_date}, and the clone is {plural(behind, 'commit')} behind origin/main. "
++                f"Run git pull, then {sync} in {args.repo}.")
++    if counts:
++        return f"{out_of_date}. Run {sync} in {args.repo}."
++    return (f"Your NousFX clone is {plural(behind, 'commit')} behind origin/main. "
++            f"Run git pull, then {sync} in {args.repo}.")
++
++
++def main(argv=None):
++    started = time.monotonic()
++    ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument("--repo", required=True)
++    ap.add_argument("--tools", default="claude")
++    ap.add_argument("--home")
++    ap.add_argument("--state-home")
++    ap.add_argument("--platform", choices=("posix", "windows"))
++    args, _ = ap.parse_known_args(argv)
++    if not os.path.isfile(os.path.join(args.repo, "scripts", "nousfx_sync.py")):
++        return 0  # no clone on this machine: nothing to compare
++    deadline = started + BUDGET
++    counts = drift_counts(args, deadline)
++    behind = commits_behind(args, deadline)
++    if time.monotonic() < deadline:
++        start_background_fetch(args)
++    if counts is None and not behind:
++        return 0
++    text = message(args, counts, behind)
++    print(json.dumps({"systemMessage": text,
++                      "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}))
++    return 0
++
++
++if __name__ == "__main__":
++    try:
++        sys.exit(main())
++    except BaseException:  # a warning must never fail or hang the start of a session
++        sys.exit(0)
+diff --git a/docs/sync.md b/docs/sync.md
+index 3d21159..01c572b 100644
+--- a/docs/sync.md
++++ b/docs/sync.md
+@@ -12,8 +12,8 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by
+         |
+         v   python3 -B scripts/nousfx_sync.py [--tools claude,agy]
+ ~/.claude/CLAUDE.md                generated, header holds a hash of the sources
+-~/.claude/settings.json            review gate registered (other settings kept)
+-~/.claude/hooks/                   review-gate.py and pr_create_parser.py
++~/.claude/settings.json            review gate and drift warning registered (other settings kept)
++~/.claude/hooks/                   review-gate.py, pr_create_parser.py and nousfx-drift.py
+ ~/.gemini/config/plugins/nousfx/   (agy) hooks.json, and hooks/ with agy_gate.py and its own copy of the gate
+ ```
+ 
+@@ -24,6 +24,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by
+ | none | back up, write, then self-test the gate hook |
+ | `--dry-run` | print a diff, write nothing |
+ | `--check` | list drifted files, exit 1 on drift, write nothing |
++| `--check --summary` | the same exit code, but one JSON line of counts (`files`, `skills`, `outside`). The drift warning reads it |
+ | `--restore` | put back the last backup (files that did not exist are removed) |
+ | `--clean-backups` | also move old `install.sh` backups into the backup (otherwise they are only listed) |
+ | `--yes-replace NAME` | let my skill NAME replace a folder sync does not own (moved into the backup first) |
+@@ -31,6 +32,22 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by
+ | `--project DIR` | set up one repo (see Project mode below) |
+ | `--home`, `--state-home`, `--repo` | override locations; tests always use these |
+ 
++## Drift warning
++
++When I change NousFX on one machine, the other one tells me at the start of a Claude Code session. Sync registers a `SessionStart` hook, `~/.claude/hooks/nousfx-drift.py`, with the clone's path and the `--tools` list written into its command.
++
++What it checks:
++- **This machine is out of date.** It runs `nousfx_sync.py --check --summary` in the clone. Any exit 1 with a valid summary counts, so a skill collision I have not decided yet also warns.
++- **The clone is behind `origin/main`.** It counts `HEAD..origin/main` from the last fetch. Then it starts `git fetch` in the background, at most every 10 minutes, so the next session sees fresh data. The warning can be one session late, and it never waits for the network.
++
++What it prints: nothing when all is well. Otherwise one line, for example `NousFX on this machine is out of date (2 files, 13 skills need a decision). Run python3 -B scripts/nousfx_sync.py in <clone>.` On Windows the command says `python`. The same text goes to me and to the model.
++
++What it never does: sync, pull or write a file of mine. The background fetch is the only write, and it only moves `origin/main` in the clone. Any error, a missing clone or more than 2 seconds means it says nothing and exits 0, so it cannot break a session start.
++
++To turn it off, remove the `SessionStart` entry that names `nousfx-drift.py` from `~/.claude/settings.json`. The next sync puts it back.
++
++agy has no session-start hook (only `PreToolUse` is proven), so its rules carry a line that asks the model to run `--check` at the start of a session and report drift.
++
+ ## Rules I keep
+ 
+ - The home dir comes from the user record, never the `HOME` variable.
+diff --git a/harness/overlays/agy.overlay.md b/harness/overlays/agy.overlay.md
+index 527d987..ff42ca2 100644
+--- a/harness/overlays/agy.overlay.md
++++ b/harness/overlays/agy.overlay.md
+@@ -4,4 +4,5 @@
+ - Any request to review, critique, polish, or optimize UI/UX, visual design, responsiveness, or accessibility: follow the `ui-review` skill first.
+ - Token hygiene (long contexts are the main cost): do not read whole files over ~20K chars (search, or read a line range). Redirect long build or test output to a file and read only the tail or the failures. Do not re-read unchanged files in a session.
+ - One task per session. When a task is done or the topic changes, tell the user in one line and offer to start a new session.
++- agy has no session-start hook. At the start of a session, run `python3 -B scripts/nousfx_sync.py --check --tools claude,agy` in the NousFX clone (`python` on Windows). If it exits 1, tell the user in one line that this machine is out of date and which command updates it. Never run the sync yourself.
+ - Model choice and delegation to other agents are decided by the gemini-orchestrator plugin rules. Do not override them here.
+diff --git a/scripts/nousfx_sync.py b/scripts/nousfx_sync.py
+index 56e664a..19955a2 100644
+--- a/scripts/nousfx_sync.py
++++ b/scripts/nousfx_sync.py
+@@ -50,6 +50,9 @@ import nousfx_skills
+ 
+ HERE = os.path.dirname(os.path.abspath(__file__))
+ HOOK_FILES = nousfx_agy.GATE_FILES  # the gate and its parser: the same pair goes to Claude and to agy
++DRIFT_HOOK = "nousfx-drift.py"  # Claude only: agy has no session-start event, so its rules carry a line instead
++CLAUDE_HOOK_FILES = HOOK_FILES + (DRIFT_HOOK,)
++DRIFT_TIMEOUT = 5  # seconds; the hook keeps its own 2 s budget and skips quietly past it
+ MATCHER = "Bash|PowerShell|mcp__.*create_pull_request"
+ TOOLS = nousfx_mcp.TOOLS
+ 
+@@ -152,31 +155,53 @@ def windows_path(path):
+     return path.replace("\\", "/")
+ 
+ 
++def native_for(win):
++    """How a path is written inside a command: cygpath-style on Windows, as is elsewhere."""
++    return windows_path if win else (lambda p: p)
++
++
+ def interpreter(win):
+     """python3 on POSIX; on Windows the launcher is `python`."""
+     return "python" if win else "python3"
+ 
+ 
+-def merge_settings(current, gate_path, win):
+-    cfg = json.loads(current) if current else {}
+-    hook = {"type": "command", "timeout": 30,
+-            "command": f'{interpreter(win)} -I -B "{gate_path}"'}  # -I: PYTHONPATH must not shadow stdlib in the gate
++def owned_hook(command, timeout, win):
++    hook = {"type": "command", "timeout": timeout, "command": command}
+     if win:
+         hook["shell"] = "powershell"
+-    pre = cfg.setdefault("hooks", {}).setdefault("PreToolUse", [])
+-    pre[:] = [e for e in pre if not any("review-gate.py" in h.get("command", "") for h in e.get("hooks", []))]
+-    pre.append({"matcher": MATCHER, "hooks": [hook]})
++    return hook
++
++
++def replace_owned(entries, marker, entry):
++    """Drop every entry whose command names `marker` (ours, from an earlier sync), then add the fresh one."""
++    entries[:] = [e for e in entries if not any(marker in h.get("command", "") for h in e.get("hooks", []))]
++    entries.append(entry)
++
++
++def merge_settings(current, gate_path, win, drift=None):
++    """Register the review gate and, when `drift` is (script, repo, tools), the session-start drift warning."""
++    cfg = json.loads(current) if current else {}
++    py = interpreter(win)
++    hooks = cfg.setdefault("hooks", {})
++    # -I: PYTHONPATH must not shadow stdlib in the hooks
++    gate = owned_hook(f'{py} -I -B "{gate_path}"', 30, win)
++    replace_owned(hooks.setdefault("PreToolUse", []), "review-gate.py", {"matcher": MATCHER, "hooks": [gate]})
++    if drift:
++        script, repo, tools = drift
++        warn = owned_hook(f'{py} -I -B "{script}" --repo "{repo}" --tools {",".join(tools)}', DRIFT_TIMEOUT, win)
++        replace_owned(hooks.setdefault("SessionStart", []), DRIFT_HOOK, {"hooks": [warn]})
+     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
+ 
+ 
+-def claude_files(repo, home, state, platform):
++def claude_files(repo, home, state, platform, tools):
+     claude = os.path.join(home, ".claude")
+     win = is_windows(platform)
+-    gate = os.path.join(claude, "hooks", "review-gate.py")
+-    gate_cmd = windows_path(gate) if win else gate
++    native = native_for(win)
++    gate_cmd = native(os.path.join(claude, "hooks", "review-gate.py"))
++    drift_cmd = native(os.path.join(claude, "hooks", DRIFT_HOOK))
+     wanted = {os.path.join(claude, "CLAUDE.md"): build_rules(repo, state)}
+     wanted.update(nousfx_agents.plan_agents(repo, claude, SyncError))
+-    for name in HOOK_FILES:
++    for name in CLAUDE_HOOK_FILES:
+         src = os.path.join(repo, "claude", "hooks", name)
+         text = read_or_none(src)
+         if text is None:
+@@ -184,7 +209,8 @@ def claude_files(repo, home, state, platform):
+         wanted[os.path.join(claude, "hooks", name)] = text
+     settings = os.path.join(claude, "settings.json")
+     try:
+-        wanted[settings] = merge_settings(read_or_none(settings), gate_cmd, win)
++        wanted[settings] = merge_settings(read_or_none(settings), gate_cmd, win,
++                                          (drift_cmd, native(repo), sorted(tools, key=TOOLS.index)))
+     except ValueError as e:
+         raise SyncError(f"{settings} is not valid JSON ({e}); fix it first", 2)
+     return wanted
+@@ -219,11 +245,10 @@ def plan(repo, home, state, platform, tools=("claude",), project=None, yes_repla
+         elif "agy" in tools:
+             wanted = {p: t for p, t in wanted.items() if not p.startswith(plugin + os.sep)}
+     else:
+-        wanted = claude_files(repo, home, state, platform) if "claude" in tools else {}
++        wanted = claude_files(repo, home, state, platform, tools) if "claude" in tools else {}
+         if "agy" in tools:
+             win = is_windows(platform)
+-            wanted.update(nousfx_agy.plan_agy(repo, home, state, SyncError, interpreter(win),
+-                                              windows_path if win else (lambda p: p)))
++            wanted.update(nousfx_agy.plan_agy(repo, home, state, SyncError, interpreter(win), native_for(win)))
+         wanted.update(nousfx_mcp.plan_mcp(repo, home, state, tools, SyncError, SECRET_PATTERNS))
+     # Folders the user may legitimately link (dotfiles) are not checked; sync's own files and folders are.
+     skip = {os.path.join(home, ".claude"), home, state} | ({project} if project else set())
+@@ -443,6 +468,8 @@ def main(argv=None):
+     mode = ap.add_mutually_exclusive_group()
+     mode.add_argument("--dry-run", action="store_true", help="print a diff, write nothing")
+     mode.add_argument("--check", action="store_true", help="report drift, exit 1 on drift, write nothing")
++    ap.add_argument("--summary", action="store_true",
++                    help="with --check: print one JSON line of counts (files, skills, outside) instead of the listing")
+     mode.add_argument("--restore", action="store_true", help="put back the last backup")
+     ap.add_argument("--home", help="home dir (default: from the user record)")
+     ap.add_argument("--state-home", help="state dir (default: <home>/.config/nousfx)")
+@@ -462,6 +489,8 @@ def main(argv=None):
+     tools = tuple(dict.fromkeys(t.strip() for t in args.tools.split(",") if t.strip()))
+     if not tools or any(t not in TOOLS for t in tools):
+         ap.error(f"--tools takes a comma list of {', '.join(TOOLS)}")
++    if args.summary and not args.check:
++        ap.error("--summary only goes with --check")
+     project = os.path.abspath(args.project) if args.project else None
+     if project and not os.path.isdir(project):
+         ap.error(f"--project: {project} is not a folder")
+@@ -505,6 +534,12 @@ def main(argv=None):
+         links = pp.links
+         unrunnable = nousfx_project.not_executable(pp.executable)
+         pending = bool(todo or links or unrunnable or sk.pending or need)
++        counts = {"files": len(todo) + len(links) + len(unrunnable),
++                  "skills": len(sk.actions) + len(sk.collisions) + len(sk.broken), "outside": len(need)}
++        bad = any(counts.values())
++        if args.check and args.summary:  # one line for the session-start warning; notes and listings stay out
++            print(json.dumps(counts))
++            return 1 if bad else 0
+         for note in pp.notes:
+             print(note)
+         if args.check:
+@@ -518,7 +553,6 @@ def main(argv=None):
+                 print(f"drift: outside skill {n} {st}")
+             for line in sk.lines() + sk.listing():
+                 print(line)
+-            bad = bool(todo or links or unrunnable or sk.actions or sk.collisions or sk.broken or need)
+             print("drift found" if bad else "no drift")
+             return 1 if bad else 0
+         if args.dry_run:
+diff --git a/scripts/test_nousfx_drift.py b/scripts/test_nousfx_drift.py
+new file mode 100644
+index 0000000..7903bc9
+--- /dev/null
++++ b/scripts/test_nousfx_drift.py
+@@ -0,0 +1,228 @@
++#!/usr/bin/env python3
++"""Tests for claude/hooks/nousfx-drift.py (NFX-57). Run: python3 -B scripts/test_nousfx_drift.py
++
++The hook is installed by a real sync into a temp home, then run as a subprocess the way Claude Code
++runs it. Nothing real is touched: the home, the state home and the clone are all temp folders.
++"""
++import json
++import os
++import shutil
++import stat
++import subprocess
++import sys
++import tempfile
++import time
++import unittest
++
++from test_nousfx_sync import Base, HERE, read, write
++
++GIT_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
++
++
++def git(cwd, *args):
++    r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
++                        "-c", "commit.gpgsign=false", *args], cwd=cwd, env=GIT_ENV, capture_output=True, text=True)
++    assert r.returncode == 0, r.stderr
++    return r.stdout
++
++
++class DriftBase(Base):
++    def setUp(self):
++        super().setUp()
++        shutil.copytree(HERE, os.path.join(self.repo, "scripts"),
++                        ignore=shutil.ignore_patterns("test_*", "fixtures", "__pycache__"))
++        shutil.copytree(os.path.join(os.path.dirname(HERE), "plugins", "via", "scripts"),  # sync imports it
++                        os.path.join(self.repo, "plugins", "via", "scripts"),
++                        ignore=shutil.ignore_patterns("test_*", "__pycache__"))
++        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
++        self.installed = os.path.join(self.home, ".claude", "hooks", "nousfx-drift.py")
++
++    def run_hook(self, *extra, repo=None, env=None, tools="claude"):
++        t0 = time.monotonic()
++        r = subprocess.run(
++            [sys.executable, "-I", "-B", self.installed, "--repo", repo or self.repo, "--tools", tools,
++             "--home", self.home, "--state-home", self.state, *extra],
++            input="{}", capture_output=True, text=True, cwd=self.tmp, env=env or os.environ)
++        self.elapsed = time.monotonic() - t0
++        return r
++
++    def message(self, r):
++        self.assertEqual(r.returncode, 0, r.stderr)
++        out = r.stdout.strip()
++        self.assertEqual(len(out.splitlines()), 1, r.stdout)
++        data = json.loads(out)
++        msg = data["systemMessage"]
++        ctx = data["hookSpecificOutput"]
++        self.assertEqual(ctx["hookEventName"], "SessionStart")
++        self.assertEqual(ctx["additionalContext"], msg)
++        self.assertNotIn("install.sh", msg)
++        return msg
++
++    def drift(self):
++        """A changed source: the rules file on disk no longer matches what sync would write."""
++        path = os.path.join(self.repo, "harness", "AGENTS.md")
++        write(path, read(path) + "\n- A new rule.\n")
++
++
++class Quiet(DriftBase):
++    def test_no_drift_prints_nothing(self):
++        r = self.run_hook()
++        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
++
++    def test_missing_clone_prints_nothing_and_exits_zero(self):
++        r = self.run_hook(repo=os.path.join(self.tmp, "nope"))
++        self.assertEqual((r.returncode, r.stdout), (0, ""))
++
++    def test_sync_that_crashes_prints_nothing_and_exits_zero(self):
++        write(os.path.join(self.repo, "scripts", "nousfx_sync.py"), "raise RuntimeError('boom')\n")
++        r = self.run_hook()
++        self.assertEqual((r.returncode, r.stdout), (0, ""))
++
++    def test_sync_that_prints_garbage_prints_nothing(self):
++        write(os.path.join(self.repo, "scripts", "nousfx_sync.py"), "print('not json')\nraise SystemExit(1)\n")
++        r = self.run_hook()
++        self.assertEqual((r.returncode, r.stdout), (0, ""))
++
++    def test_sync_usage_error_prints_nothing(self):
++        write(os.path.join(self.repo, "scripts", "nousfx_sync.py"), "raise SystemExit(2)\n")
++        r = self.run_hook()
++        self.assertEqual((r.returncode, r.stdout), (0, ""))
++
++    def test_slow_sync_is_skipped_inside_the_budget(self):
++        write(os.path.join(self.repo, "scripts", "nousfx_sync.py"), "import time\ntime.sleep(30)\n")
++        r = self.run_hook()
++        self.assertEqual((r.returncode, r.stdout), (0, ""))
++        self.assertLess(self.elapsed, 4.0)
++
++    def test_unreadable_stdin_does_not_matter(self):
++        r = subprocess.run([sys.executable, "-I", "-B", self.installed, "--repo", self.repo, "--home", self.home,
++                            "--state-home", self.state], input="\xff not json", capture_output=True, text=True)
++        self.assertEqual((r.returncode, r.stdout), (0, ""))
++
++
++class Warns(DriftBase):
++    def test_changed_source_prints_one_line_naming_the_sync_command(self):
++        self.drift()
++        msg = self.message(self.run_hook())
++        self.assertIn("out of date", msg)
++        self.assertIn("1 file", msg)
++        self.assertIn("python3 -B scripts/nousfx_sync.py", msg)
++        self.assertIn(self.repo, msg)
++        self.assertNotIn("--tools", msg)
++        self.assertLess(self.elapsed, 2.0)
++
++    def stub_sync(self, counts, rc=1):
++        write(os.path.join(self.repo, "scripts", "nousfx_sync.py"),
++              f"import sys\nprint({json.dumps(json.dumps(counts))})\nprint('args:', *sys.argv[1:], file=sys.stderr)\n"
++              f"raise SystemExit({rc})\n")
++
++    def test_the_hook_asks_for_a_summary_of_the_same_tools_and_the_command_repeats_them(self):
++        self.stub_sync({"files": 1, "skills": 0, "outside": 0})
++        msg = self.message(self.run_hook(tools="claude,agy"))
++        self.assertIn("nousfx_sync.py --tools claude,agy", msg)
++
++    def test_counts_are_spelled_out(self):
++        self.stub_sync({"files": 2, "skills": 13, "outside": 1})
++        msg = self.message(self.run_hook())
++        self.assertIn("2 files", msg)
++        self.assertIn("13 skills need a decision", msg)
++        self.assertIn("1 outside skill to fetch", msg)
++
++    def test_zero_counts_with_exit_one_still_warn_once_without_numbers(self):
++        self.stub_sync({"files": 0, "skills": 0, "outside": 0})
++        msg = self.message(self.run_hook())
++        self.assertIn("out of date", msg)
++
++    def test_clean_summary_prints_nothing(self):
++        self.stub_sync({"files": 0, "skills": 0, "outside": 0}, rc=0)
++        self.assertEqual(self.run_hook().stdout, "")
++
++    def test_windows_message_says_python(self):
++        self.drift()
++        msg = self.message(self.run_hook("--platform", "windows"))
++        self.assertIn("python -B scripts/nousfx_sync.py", msg)
++        self.assertNotIn("python3", msg)
++
++    def test_hook_never_changes_the_machine(self):
++        self.drift()
++        before = self.snapshot()
++        self.run_hook()
++        self.assertEqual(self.snapshot(), before)
++
++
++class Behind(DriftBase):
++    def setUp(self):
++        super().setUp()
++        self.origin = os.path.join(self.tmp, "origin.git")
++        git(self.tmp, "init", "-q", "--bare", "-b", "main", self.origin)
++        git(self.repo, "init", "-q", "-b", "main")
++        git(self.repo, "add", "-A")
++        git(self.repo, "commit", "-q", "-m", "one")
++        git(self.repo, "remote", "add", "origin", self.origin)
++        git(self.repo, "push", "-q", "origin", "main")
++        write(os.path.join(self.repo, ".git", "FETCH_HEAD"), "")  # a fetch just ran: the hook starts none
++        self.stub = os.path.join(self.tmp, "stubbin")
++        self.mark = os.path.join(self.tmp, "fetch-started")
++        real = shutil.which("git")
++        write(os.path.join(self.stub, "git"),
++              f'#!/bin/sh\nfor a in "$@"; do if [ "$a" = fetch ]; then touch "{self.mark}"; sleep 3; exit 0; fi; done\n'
++              f'exec "{real}" "$@"\n')
++        os.chmod(os.path.join(self.stub, "git"), os.stat(os.path.join(self.stub, "git")).st_mode | stat.S_IXUSR)
++        self.env = {**os.environ, "PATH": self.stub + os.pathsep + os.environ["PATH"]}
++
++    def push_from_elsewhere(self, n=1):
++        other = os.path.join(self.tmp, "other")
++        git(self.tmp, "clone", "-q", self.origin, other)
++        for i in range(n):
++            write(os.path.join(other, f"f{i}.txt"), "x")
++            git(other, "add", "-A")
++            git(other, "commit", "-q", "-m", f"c{i}")
++        git(other, "push", "-q", "origin", "main")
++        git(self.repo, "fetch", "-q", "origin")  # what an earlier background fetch would have done
++
++    def test_up_to_date_prints_nothing(self):
++        self.assertEqual(self.run_hook(env=self.env).stdout, "")
++
++    def test_behind_prints_the_pull_line(self):
++        self.push_from_elsewhere(3)
++        msg = self.message(self.run_hook(env=self.env))
++        self.assertIn("3 commits behind origin/main", msg)
++        self.assertIn("git pull", msg)
++        self.assertIn("python3 -B scripts/nousfx_sync.py", msg)
++        self.assertNotIn("out of date", msg)
++
++    def test_one_commit_is_singular(self):
++        self.push_from_elsewhere(1)
++        self.assertIn("1 commit behind", self.message(self.run_hook(env=self.env)))
++
++    def test_drift_and_behind_make_one_combined_line(self):
++        self.push_from_elsewhere(2)
++        self.drift()
++        msg = self.message(self.run_hook(env=self.env))
++        self.assertIn("out of date", msg)
++        self.assertIn("2 commits behind origin/main", msg)
++        self.assertIn("git pull", msg)
++
++    def test_no_origin_is_silent(self):
++        git(self.repo, "remote", "remove", "origin")
++        self.assertEqual(self.run_hook(env=self.env).stdout, "")
++
++    def test_old_fetch_starts_a_background_fetch_without_waiting_for_it(self):
++        os.utime(os.path.join(self.repo, ".git", "FETCH_HEAD"), (1, 1))
++        r = self.run_hook(env=self.env)
++        self.assertEqual((r.returncode, r.stdout), (0, ""))
++        self.assertLess(self.elapsed, 2.0)  # the stub fetch sleeps 3 s
++        deadline = time.monotonic() + 3
++        while not os.path.exists(self.mark) and time.monotonic() < deadline:
++            time.sleep(0.05)
++        self.assertTrue(os.path.exists(self.mark), "the fetch was never started")
++
++    def test_recent_fetch_starts_none(self):
++        r = self.run_hook(env=self.env)
++        time.sleep(0.5)
++        self.assertEqual(r.returncode, 0)
++        self.assertFalse(os.path.exists(self.mark))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/scripts/test_nousfx_sync.py b/scripts/test_nousfx_sync.py
+index 82a3354..2c4faa6 100644
+--- a/scripts/test_nousfx_sync.py
++++ b/scripts/test_nousfx_sync.py
+@@ -299,5 +299,88 @@ class DroppedSectionGuard(Base):
+         self.assertIn("reworded: 1", report)
+ 
+ 
++class DriftHookRegistration(Base):
++    """NFX-57: sync registers a SessionStart hook that warns about drift, and --check --summary feeds it."""
++
++    def drift_entries(self):
++        cfg = json.loads(read(self.settings))
++        return [e for e in cfg["hooks"].get("SessionStart", [])
++                if any("nousfx-drift.py" in h["command"] for h in e["hooks"])]
++
++    def test_session_start_hook_is_registered_with_repo_and_tools(self):
++        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
++        entries = self.drift_entries()
++        self.assertEqual(len(entries), 1)
++        hook = entries[0]["hooks"][0]
++        script = os.path.join(self.home, ".claude", "hooks", "nousfx-drift.py")
++        self.assertTrue(os.path.exists(script))
++        self.assertEqual(hook["command"], f'python3 -I -B "{script}" --repo "{self.repo}" --tools claude')
++        self.assertEqual(hook["timeout"], 5)
++
++    def test_tools_list_is_passed_through_in_the_order_given(self):
++        sys.path.insert(0, HERE)
++        import nousfx_sync
++        cfg = json.loads(nousfx_sync.merge_settings(None, "/g/review-gate.py", False,
++                                                    ("/h/nousfx-drift.py", "/r", ("claude", "agy"))))
++        cmd = cfg["hooks"]["SessionStart"][0]["hooks"][0]["command"]
++        self.assertEqual(cmd, 'python3 -I -B "/h/nousfx-drift.py" --repo "/r" --tools claude,agy')
++
++    def test_without_drift_arguments_only_the_gate_is_registered(self):
++        sys.path.insert(0, HERE)
++        import nousfx_sync
++        cfg = json.loads(nousfx_sync.merge_settings(None, "/g/review-gate.py", False))
++        self.assertEqual(list(cfg["hooks"]), ["PreToolUse"])
++
++    def test_second_sync_replaces_the_entry_and_keeps_other_session_hooks(self):
++        write(self.settings, json.dumps({"hooks": {"SessionStart": [
++            {"hooks": [{"type": "command", "command": "mine.sh"}]},
++            {"hooks": [{"type": "command", "command": "python3 old/nousfx-drift.py --repo x"}]}]}}))
++        self.sync()
++        self.sync()
++        cmds = [h["command"] for e in json.loads(read(self.settings))["hooks"]["SessionStart"] for h in e["hooks"]]
++        self.assertEqual(cmds[0], "mine.sh")
++        self.assertEqual(sum("nousfx-drift.py" in c for c in cmds), 1)
++        self.assertIn(self.repo, cmds[-1])
++
++    def test_windows_command_uses_python_and_powershell(self):
++        self.sync("--platform", "windows")
++        hook = self.drift_entries()[0]["hooks"][0]
++        self.assertTrue(hook["command"].startswith('python -I -B "'), hook["command"])
++        self.assertEqual(hook["shell"], "powershell")
++
++    def test_drift_hook_is_not_copied_for_agy(self):
++        self.sync("--tools", "claude,agy")
++        agy_hooks = os.path.join(self.home, ".gemini", "config", "plugins", "nousfx", "hooks")
++        for base, _, files in os.walk(os.path.join(self.home, ".gemini")):
++            self.assertNotIn("nousfx-drift.py", files, base)
++
++    def test_second_run_changes_nothing_and_check_is_clean(self):
++        self.sync()
++        before = self.snapshot()
++        self.assertEqual(self.sync().returncode, 0)
++        self.assertEqual(self.snapshot(), before)
++        self.assertEqual(self.sync("--check").returncode, 0)
++
++    def test_summary_is_one_json_line_with_counts(self):
++        self.sync()
++        write(self.rules, "hand edit\n")
++        r = self.sync("--check", "--summary")
++        self.assertEqual(r.returncode, 1, r.stderr)
++        lines = r.stdout.strip().splitlines()
++        self.assertEqual(len(lines), 1, r.stdout)
++        counts = json.loads(lines[0])
++        self.assertEqual(counts["files"], 1)
++        self.assertEqual(set(counts), {"files", "skills", "outside"})
++
++    def test_summary_when_clean_exits_zero_with_zero_counts(self):
++        self.sync()
++        r = self.sync("--check", "--summary")
++        self.assertEqual(r.returncode, 0, r.stderr)
++        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1]), {"files": 0, "skills": 0, "outside": 0})
++
++    def test_summary_without_check_is_a_usage_error(self):
++        self.assertEqual(self.sync("--summary").returncode, 2)
++
++
+ if __name__ == "__main__":
+     unittest.main()

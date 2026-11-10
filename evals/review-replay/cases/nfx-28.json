@@ -1,0 +1,80 @@
+{
+  "id": "nfx-28",
+  "source": "nousfx",
+  "ui": false,
+  "exact": false,
+  "inexact_reasons": [
+    ".gitignore is in the merged PR but not in the rebuilt tree",
+    "README.md is in the merged PR but not in the rebuilt tree",
+    "claude/CLAUDE.delegation.md is in the merged PR but not in the rebuilt tree",
+    ".claude/handoff.md is in the rebuilt tree but not in the merged PR"
+  ],
+  "scope_check": "verified",
+  "ticket": "Objective: find real problems in this small change. Repo /Users/me/Projects/NousFX, branch cesar/NFX-28, uncommitted. Base commit: d0edafc6647c877a04a91d85de53474c4feb4a3b. Scope: `git diff d0edafc6647c877a04a91d85de53474c4feb4a3b` (2 files: .gitignore, claude/CLAUDE.delegation.md). Ignore graphify-out/. Use `python3 -B` if you run Python; leave no __pycache__.\n\nWhat it is: ticket NFX-28. The \"Writing a handoff\" policy line in claude/CLAUDE.delegation.md changed. Old: with no handoff file, write to the OS temp folder, never create .claude/handoff.md. New: in a git repo with no handoff file, ask the user once to create .claude/handoff.md and gitignore it; yes creates it, no (or not a git repo) uses the temp folder; always print the full path written. The same line was applied to the user's personal ~/.claude/CLAUDE.md (line 40) and must be identical to the repo copy (check: `diff <(sed -n 40p ~/.claude/CLAUDE.md) <(grep \"Writing a handoff\" claude/CLAUDE.delegation.md)`). The policy is appended into ~/.claude/CLAUDE.md by install.sh (see install.sh and docs/RUNBOOK.md for how it replaces its own section). .gitignore gained `.claude/handoff.md`.\n\nCheck: (1) does the new rule contradict any other line of the delegation policy (the \"Handoff (every project, no exceptions)\" start-of-session check, the suggested-skills lines)? (2) is the rule unambiguous for an agent (who asks, when, what if the user answers no, non-git folders, a handoff file that exists but is empty)? (3) does install.sh or any test/doc in the repo depend on the old wording (\"Never create\" or \"temp\")? grep for it. (4) does the .gitignore change break anything, such as an existing tracked .claude/handoff.md? (5) the `.claude/handoff.md` content is out of scope.\n\nOutput, one per line: `ID | severity (high|med|low) | file:line | problem | suggested fix`, or `NO FINDINGS`. Read-only: do not edit files.",
+  "base": "d0edafc6647c877a04a91d85de53474c4feb4a3b",
+  "patch_file": "nfx-28.patch",
+  "opus_findings": [
+    {
+      "id": "CLAUDE.delegation.md-unattended-ask",
+      "severity": "med",
+      "confidence": 60,
+      "file": "claude/CLAUDE.delegation.md",
+      "line": 14,
+      "problem": "The new rule says \"ask the user once\" but gives no fallback when nobody can answer. Other lines in the policy cover unattended `/goal` runs; this one does not, so an agent there could block on the question or create the file without asking.",
+      "fix": "Add: \"In unattended `/goal` runs, do not ask: write to the temp folder and report the path.\"",
+      "quote": ""
+    },
+    {
+      "id": "CLAUDE.delegation.md-ask-once-scope",
+      "severity": "low",
+      "confidence": 60,
+      "file": "claude/CLAUDE.delegation.md",
+      "line": 14,
+      "problem": "\"Ask the user once\" does not say once per what: per `/handoff` call, per session or per project. After a \"no\", the next `/handoff` in the same session could ask again, or an agent could take the old \"no\" as permanent.",
+      "fix": "Say \"once per session; after a no, use the temp folder for the rest of the session without asking again.\"",
+      "quote": ""
+    },
+    {
+      "id": "CLAUDE.delegation.md-gitignore-check",
+      "severity": "low",
+      "confidence": 60,
+      "file": "claude/CLAUDE.delegation.md",
+      "line": 14,
+      "problem": "\"Once, no duplicate line\" only guards against the exact same line. If the file is already ignored by another pattern (`.claude/`, a global excludes file), the agent still adds a redundant line. The rule also does not say whether to commit the `.gitignore` edit, so a tracked `.gitignore` is left modified.",
+      "fix": "Say: run `git check-ignore -q .claude/handoff.md` first and add the line only when it fails; leave the `.gitignore` edit uncommitted and tell the user.",
+      "quote": ""
+    },
+    {
+      "id": "CLAUDE.delegation.md-subdir-root",
+      "severity": "low",
+      "confidence": 60,
+      "file": "claude/CLAUDE.delegation.md",
+      "line": 14,
+      "problem": "When the project folder is a subfolder of a git repo (monorepo), \"project\" and \"git repo\" point to different roots. A `.claude/handoff.md` line in the top-level `.gitignore` is anchored there and does not match `sub/.claude/handoff.md`. The start-of-session check looks in \"the project\", so it is unclear where to create the file and which `.gitignore` to edit.",
+      "fix": "Say: create the file in the project root (where the session starts), and add the ignore line to that folder's `.gitignore`, or use a `**/.claude/handoff.md` pattern.",
+      "quote": ""
+    },
+    {
+      "id": "SKILL.md-repo-handoff-contradicts",
+      "severity": "low",
+      "confidence": 60,
+      "file": "claude/skills/handoff/SKILL.md",
+      "line": 7,
+      "problem": "The repo's own handoff skill says to always write `.claude/handoff.md` without asking. The policy line now says to ask first and otherwise use the temp folder. It also says it overrides \"the skill's 'save to the temp folder' rule\", which is only in the symlinked `~/.agents/skills/handoff` skill, not this one. `README.md:92` also says `/handoff` writes `.claude/handoff.md`. An install where the repo skill is the active one gets conflicting instructions. This is older than this change, but the new wording makes the gap wider.",
+      "fix": "Bring `claude/skills/handoff/SKILL.md` and README line 92 in line with the ask-first flow, or word the policy line to cover both skill variants.",
+      "quote": ""
+    }
+  ],
+  "judged": {
+    "CLAUDE.delegation.md-unattended-ask": "real",
+    "CLAUDE.delegation.md-ask-once-scope": "real",
+    "CLAUDE.delegation.md-gitignore-check": "real",
+    "CLAUDE.delegation.md-subdir-root": "real",
+    "SKILL.md-repo-handoff-contradicts": "real"
+  },
+  "judged_notes": "Session fixed all five (unattended, once scope, gitignore, monorepo root, skill-location wording).",
+  "captured_from": {
+    "session": "c2ee038c-66cb-47e1-9fe2-ad349e855c71.jsonl",
+    "agent": "a368f45904bd6e594"
+  }
+}
