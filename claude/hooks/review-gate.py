@@ -726,6 +726,7 @@ def check_commits(argv):
     return 0
 
 
+SHORT_VALUE_FLAGS = "FCcStu"  # `git commit` short flags that take the rest of the word (or the next one) as a value
 COMMIT_OPT_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--exec-path", "--namespace"}  # git options before `commit`
 HEREDOC_SUBJECT = re.compile(r"<<-?[ \t]*(['\"]?)\w+\1[ \t]*\n[ \t]*(\S[^\n]*)")
 
@@ -741,8 +742,8 @@ def commit_subject(command, ps=False):
             continue
         args, i = event[1:], 0
         while i < len(args) and args[i].text.startswith("-"):  # git's own options, before the subcommand
-            if args[i].text in COMMIT_OPT_VALUE:
-                return None  # another repo: not this branch
+            if args[i].text.split("=")[0] in COMMIT_OPT_VALUE:
+                return None  # another repo (`-C dir`, `--git-dir=x`): not this branch
             i += 1
         if i >= len(args) or args[i].text != "commit":
             continue
@@ -760,12 +761,15 @@ def commit_subject(command, ps=False):
                 w, value = args[i + 1], args[i + 1].text
             elif t.startswith("--message="):
                 value = t[len("--message="):]
-        elif t.startswith("-") and "m" in t[1:]:
-            tail = t[t.index("m", 1) + 1:]  # -m MSG, -amMSG, -am MSG
-            if tail:
-                value = tail
-            elif i + 1 < len(args):
-                w, value = args[i + 1], args[i + 1].text
+        elif t.startswith("-"):
+            for j, ch in enumerate(t[1:], 1):  # a short cluster: -am MSG, -amMSG, -Fmsg.txt (F takes the rest)
+                if ch == "m":
+                    value = t[j + 1:] or (args[i + 1].text if i + 1 < len(args) else None)
+                    if not t[j + 1:] and i + 1 < len(args):
+                        w = args[i + 1]
+                    break
+                if ch in SHORT_VALUE_FLAGS:
+                    break
         if value is None:
             continue
         if w.dynamic:

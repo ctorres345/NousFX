@@ -250,6 +250,16 @@ class ClaudeHook(Base):
         for cmd in ("git status", "echo git commit -m 'NFX-10: x'", "git log -m 'NFX-10: x'"):
             self.assertEqual(self.warning(self.hook(cmd)), "", cmd)
 
+    def test_flags_that_take_a_value_are_not_read_as_messages(self):
+        for cmd in ("git commit -Fcommit_msg.txt", "git commit -Smykey", "git commit -F commit_msg.txt",
+                    "git commit -Smykey -m 'NFX-83: x'"):
+            self.assertEqual(self.warning(self.hook(cmd)), "", cmd)
+        self.assertIn("NFX-10", self.warning(self.hook("git commit -Smykey -m 'NFX-10: x'")))
+
+    def test_git_dir_and_work_tree_in_the_equals_form_are_another_repo(self):
+        for cmd in ("git --git-dir=/o/.git commit -m 'NFX-10: x'", "git --work-tree=/o commit -m 'NFX-10: x'"):
+            self.assertEqual(self.warning(self.hook(cmd)), "", cmd)
+
     def test_cd_before_commit_is_silent(self):
         self.assertEqual(self.warning(self.hook('cd /tmp && git commit -m "NFX-10: x"')), "")
 
