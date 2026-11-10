@@ -2,11 +2,12 @@
 """Run every test suite of this repo. This is the check command in .nousfx/project.toml (NFX-54).
 
 Each suite runs as its own process with this interpreter and -B (no __pycache__, which would change the
-tree hash). Suites run in parallel (NFX-97), cheapest first (NFX-134): by the seconds recorded on the last run in the
-git dir (nousfx-check-times.json, outside the tree), else by file size. A failing fast suite then shows up
-before the slow ones finish. `-j N` sets the number at once (`-j 1` runs them one by one). Prints one line per
-suite as it finishes and exits 1 if any failed. Output of a failing suite is shown. `--fail-fast` stops after
-the first failure (a quick local loop); the review gate never passes it, so a stamp is always a full pass. Suites must not write inside the repo: they run side by side, and
+tree hash). Suites run in parallel (NFX-97), cheapest first (NFX-134): by the seconds recorded on the last run
+in the git dir (nousfx-check-times.json, outside the tree); a suite with no record goes first. A failing fast
+suite then shows up before the slow ones finish. `-j N` sets the number at once (`-j 1` runs them one by one).
+Prints one line per suite as it finishes and exits 1 if any failed. Output of a failing suite is shown.
+`--fail-fast` stops after the first failure and ends the suites still running (a quick local loop); the review
+gate never passes it, so a stamp is always a full pass. Suites must not write inside the repo: they run side by side, and
 some read the real tree (test_ui_review_retired.py greps it).
 """
 import argparse
@@ -35,7 +36,10 @@ def parse_args(argv):
 
 def times_path():
     """Where last run's seconds per suite live: the git dir, so the tree hash is untouched. None outside git."""
-    r = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=ROOT, capture_output=True, text=True)
+    try:
+        r = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=ROOT, capture_output=True, text=True)
+    except OSError:  # no git binary: the order falls back to file size
+        return None
     return os.path.join(r.stdout.strip(), "nousfx-check-times.json") if r.returncode == 0 else None
 
 
@@ -49,27 +53,33 @@ def load_times(path):
 
 
 def save_times(path, times):
+    tmp = f"{path}.{os.getpid()}"  # write beside it, then swap in: a parallel run never reads half a file
     try:
-        with open(path, "w") as f:
+        with open(tmp, "w") as f:
             json.dump(times, f, indent=1, sort_keys=True)
+        os.replace(tmp, path)
     except OSError:
         pass
 
 
 def order(suites, times):
-    """Cheapest first. Seconds from the last run win; without a record the file size stands in (smaller first).
-    Only the order changes, never which suites run."""
-    def cost(p):
-        recorded = times.get(os.path.basename(p))
-        return (0, recorded) if recorded is not None else (1, os.path.getsize(p))
-    return sorted(suites, key=cost)
+    """Cheapest first by the seconds of the last run. A suite with no record (new or renamed, the likeliest to
+    fail) counts as free and goes first; ties break on file size (smaller first). Only the order changes,
+    never which suites run."""
+    return sorted(suites, key=lambda p: (times.get(os.path.basename(p), 0.0), os.path.getsize(p)))
 
 
-def run(path):
+def run(path, running):
+    """Run one suite. `running` holds its live process so --fail-fast can stop it."""
     start = time.monotonic()
-    r = subprocess.run([sys.executable, "-B", path], cwd=ROOT, stdin=subprocess.DEVNULL,
-                       capture_output=True, text=True)
-    return path, r, time.monotonic() - start
+    with subprocess.Popen([sys.executable, "-B", path], cwd=ROOT, stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
+        running.add(proc)
+        try:
+            out, err = proc.communicate()
+        finally:
+            running.discard(proc)
+    return path, subprocess.CompletedProcess(proc.args, proc.returncode, out, err), time.monotonic() - start
 
 
 def main(argv):
@@ -81,10 +91,10 @@ def main(argv):
     tpath = times_path()
     times = load_times(tpath) if tpath else {}
     suites = order(suites, times)
-    failed, seen = [], 0
+    failed, seen, running = [], 0, set()
     start = time.monotonic()
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=args.j)
-    futures = [pool.submit(run, p) for p in suites]
+    futures = [pool.submit(run, p, running) for p in suites]
     try:
         for future in concurrent.futures.as_completed(futures):
             path, r, took = future.result()
@@ -97,12 +107,16 @@ def main(argv):
                 print((r.stdout + r.stderr)[-4000:], flush=True)
                 if args.fail_fast:
                     break
-    finally:  # on a fail-fast break this cancels the suites that have not started
-        pool.shutdown(wait=True, cancel_futures=True)
+    finally:  # on a fail-fast break: drop queued suites, stop the running ones, then join the workers
+        pool.shutdown(wait=False, cancel_futures=True)
+        if args.fail_fast and failed:
+            for proc in list(running):
+                proc.terminate()
+        pool.shutdown(wait=True)
     if tpath and not (args.fail_fast and failed):
         save_times(tpath, times)  # a stopped run is a partial picture; only full runs refresh the record
     if args.fail_fast and failed:
-        print(f"stopped after first failure: {seen}/{len(suites)} suites run")
+        print(f"stopped after first failure: {seen}/{len(suites)} suites finished")
         return 1
     print(f"{len(suites) - len(failed)}/{len(suites)} suites passed in {time.monotonic() - start:.0f}s")
     return 1 if failed else 0

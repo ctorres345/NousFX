@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -68,6 +69,15 @@ class RunChecksTest(unittest.TestCase):
         self.assertIn("2/3 suites passed", out)
         self.assertNotIn("stopped after first failure", out)
 
+    def test_fail_fast_stops_running_suites(self):
+        self.suite("slow", "import time; time.sleep(30)", pad=5000)
+        self.suite("fast", "import time; time.sleep(1); import sys; sys.exit(1)")
+        start = time.monotonic()
+        code, out = self.run_main("-j", "2", "--fail-fast")
+        self.assertEqual(code, 1)
+        self.assertLess(time.monotonic() - start, 15)
+        self.assertNotIn("test_slow.py", out)
+
     def test_all_pass_exits_zero_with_fail_fast(self):
         self.suite("a")
         self.suite("b")
@@ -83,6 +93,10 @@ class RunChecksTest(unittest.TestCase):
         small, big = self.suite("small"), self.suite("big", pad=4000)
         times = {"test_small.py": 9.0, "test_big.py": 0.1}
         self.assertEqual(run_checks.order([small, big], times), [big, small])
+
+    def test_unrecorded_suite_goes_before_recorded_ones(self):
+        slow, new = self.suite("slow", pad=4000), self.suite("new", pad=9000)
+        self.assertEqual(run_checks.order([slow, new], {"test_slow.py": 30.0}), [new, slow])
 
     def test_ordering_keeps_every_suite(self):
         paths = [self.suite(n, pad=i * 100) for i, n in enumerate("abcd")]
@@ -107,6 +121,16 @@ class RunChecksTest(unittest.TestCase):
         self.assertEqual(run_checks.load_times(self.times), {})
         code, _ = self.run_main("-j", "1")
         self.assertEqual(code, 0)
+
+    def test_missing_git_binary_means_no_times_file(self):
+        saved = run_checks.subprocess.run
+        def no_git(*a, **k):
+            raise FileNotFoundError("git")
+        run_checks.subprocess.run = no_git
+        try:
+            self.assertIsNone(self._saved[2]())
+        finally:
+            run_checks.subprocess.run = saved
 
     def test_no_suites_fails(self):
         code, out = self.run_main()
