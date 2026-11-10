@@ -96,9 +96,8 @@ def main(argv):
                 failed.append(rel)
                 print((r.stdout + r.stderr)[-4000:], flush=True)
                 if args.fail_fast:
-                    pool.shutdown(wait=False, cancel_futures=True)
                     break
-    finally:
+    finally:  # on a fail-fast break this cancels the suites that have not started
         pool.shutdown(wait=True, cancel_futures=True)
     if tpath and not (args.fail_fast and failed):
         save_times(tpath, times)  # a stopped run is a partial picture; only full runs refresh the record
