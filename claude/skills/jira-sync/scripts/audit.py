@@ -10,7 +10,9 @@ import re
 import subprocess
 from collections import defaultdict
 
-REQUIRED_SECTIONS = ["goal", "scope", "acceptance criteria", "environment", "review", "human gates", "blocked by"]
+REQUIRED_SECTIONS = ["goal", "scope", "acceptance criteria", "failure modes", "environment", "review", "human gates", "blocked by"]
+CHECKBOX = re.compile(r"^\s*[-*]\s*\\?\[[ xX]\\?\]")  # Jira escapes the brackets
+PROOF = re.compile(r"proof:\s*\S", re.I)
 NOT_REALLY_DONE = re.compile(r"won.?t|duplicate|declined|cannot|can.?t|abandon|obsolete|invalid", re.I)
 UI_WORDS = re.compile(r"\b(ui|ux|screen|screens|button|sheet|dialog|layout|theme|dark mode|icon|empty state|tab bar|"
                       r"navigation bar|animation|visual|redesign|widget)\b", re.I)
@@ -57,8 +59,11 @@ def sections(text):
     for line in text.splitlines():
         heading = re.match(r"^#{1,6}\s*(.+?)\s*#*$", line)
         if heading:
-            current = re.sub(r"\s*\(.*\)$", "", heading.group(1)).strip().lower()
-            found[current] = ""
+            name = re.sub(r"\s*\(.*\)$", "", heading.group(1)).strip().lower()
+            # A repeated heading (Via's "### Acceptance criteria" under its spec section) is not the ticket's own.
+            current = None if name in found else name
+            if current:
+                found[current] = ""
         elif current:
             found[current] += line + "\n"
     return found
@@ -219,6 +224,13 @@ def audit(project, issues, evidence):
             for name in REQUIRED_SECTIONS:
                 if not parts.get(name, "").strip():
                     problems.append(f"section '{name}' missing or empty")
+            criteria = [ln.strip() for ln in parts.get("acceptance criteria", "").splitlines()
+                        if CHECKBOX.match(ln)]
+            if not criteria:
+                problems.append("acceptance criteria has no checkbox items")
+            for item in criteria:
+                if not PROOF.search(item):
+                    problems.append("acceptance criterion without Proof: " + item[:50])
             gates = parts.get("human gates", "").strip().lower()
             if gates and not re.match(r"^(none|n/a)\b", gates):
                 problems.append("human gates is not None")

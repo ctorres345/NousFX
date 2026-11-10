@@ -11,8 +11,11 @@ In: ...
 Out: ...
 
 ## Acceptance criteria
-- [ ] Checkable behavior
-- [ ] Test or command that proves it
+- [ ] Checkable behavior. Proof: `command that shows it`
+- [ ] Behavior only a device or network shows. Proof: manual: the step to run
+
+## Failure modes
+How it could break in production, and what it does then.
 
 ## Environment
 env-none | env-emulator | env-device, and the devices needed
@@ -39,7 +42,8 @@ Ticket keys, or "None"
 
 A ticket gets `ready-for-agent` only when all of these hold:
 
-- Every section is filled, and each acceptance criterion can be checked.
+- Every section is filled, and each acceptance criterion ends in a `Proof:` line (a command, or `manual: <step>`).
+- Failure modes names at least one way it breaks.
 - It has exactly one `env-*` label (Epics have none).
 - Human gates says "None", and every blocker is Done.
 - It is not `env-device`, which stays `ready-for-human`. Fable approval sits in Review and does not count as a human gate.

@@ -11,7 +11,8 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from audit import audit, commit_keys, next_up, repo_evidence
 
-READY = ("## Goal\nx\n## Scope\nx\n## Acceptance criteria\nx\n## Environment\nx\n"
+READY = ("## Goal\nx\n## Scope\nx\n## Acceptance criteria\n- [ ] x works. Proof: `true`\n"
+         "- [ ] x on device. Proof: manual: open the app\n## Failure modes\nx\n## Environment\nx\n"
          "## Review\nx\n## Human gates\nNone\n## Blocked by\nNone\n")
 
 
@@ -75,6 +76,20 @@ class Checks(unittest.TestCase):
         self.assertIn("ready-check:DEM-1", ids([issue("DEM-1", labels=ready, text="## Goal\nx\n")]))
         gated = READY.replace("Human gates\nNone", "Human gates\nCesar signs off")
         self.assertIn("ready-check:DEM-1", ids([issue("DEM-1", labels=ready, text=gated)]))
+
+    def test_ready_check_needs_proofs_and_failure_modes(self):
+        ready = ("env-none", "ready-for-agent")
+        no_modes = READY.replace("## Failure modes\nx\n", "")
+        self.assertIn("ready-check:DEM-1", ids([issue("DEM-1", labels=ready, text=no_modes)]))
+        no_proof = READY.replace(". Proof: `true`", "")
+        found = audit("DEM", dict([issue("DEM-1", labels=ready, text=no_proof)]), evidence())
+        self.assertIn("without Proof:", " ".join(f["evidence"] for f in found if f["id"] == "ready-check:DEM-1"))
+        empty = READY.replace("Proof: `true`", "Proof: ")
+        self.assertIn("ready-check:DEM-1", ids([issue("DEM-1", labels=ready, text=empty)]))
+        via = READY + "## Visual spec (Via)\n### Acceptance criteria\n- [ ] Matches the target mock\n"
+        self.assertEqual(ids([issue("DEM-1", labels=ready, text=via)]), set())
+        no_ac = READY.replace("- [ ] x works. Proof: `true`\n- [ ] x on device. Proof: manual: open the app\n", "x\n")
+        self.assertIn("ready-check:DEM-1", ids([issue("DEM-1", labels=ready, text=no_ac)]))
 
     def test_text_dependency(self):
         linked = issue("DEM-2", text="Depends on DEM-1", blocked_by=["DEM-1"])
