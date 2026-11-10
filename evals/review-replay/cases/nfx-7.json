@@ -2,8 +2,35 @@
   "id": "nfx-7",
   "source": "nousfx",
   "ui": false,
-  "exact": true,
-  "inexact_reasons": [],
+  "exact": false,
+  "inexact_reasons": [
+    ".gitignore is in the merged PR but not in the rebuilt tree",
+    "README.md is in the merged PR but not in the rebuilt tree",
+    "docs/RUNBOOK.md is in the merged PR but not in the rebuilt tree",
+    "plugins/via/.claude-plugin/plugin.json is in the merged PR but not in the rebuilt tree",
+    "plugins/via/skills/via/modes/audit.md is in the merged PR but not in the rebuilt tree",
+    "plugins/via/skills/via/modes/check.md is in the merged PR but not in the rebuilt tree",
+    "plugins/via/skills/via/references/run-record.md is in the merged PR but not in the rebuilt tree",
+    "samples/README.md is in the merged PR but not in the rebuilt tree",
+    "samples/compose/.gitignore is in the merged PR but not in the rebuilt tree",
+    "samples/compose/app/build.gradle.kts is in the merged PR but not in the rebuilt tree",
+    "samples/compose/app/src/main/AndroidManifest.xml is in the merged PR but not in the rebuilt tree",
+    "samples/compose/app/src/main/java/dev/nousfx/sample/MainActivity.kt is in the merged PR but not in the rebuilt tree",
+    "samples/compose/build.gradle.kts is in the merged PR but not in the rebuilt tree",
+    "samples/compose/gradle.properties is in the merged PR but not in the rebuilt tree",
+    "samples/compose/gradle/wrapper/gradle-wrapper.jar is in the merged PR but not in the rebuilt tree",
+    "samples/compose/gradle/wrapper/gradle-wrapper.properties is in the merged PR but not in the rebuilt tree",
+    "samples/compose/gradlew is in the merged PR but not in the rebuilt tree",
+    "samples/compose/gradlew.bat is in the merged PR but not in the rebuilt tree",
+    "samples/compose/settings.gradle.kts is in the merged PR but not in the rebuilt tree",
+    "samples/flutter/.gitignore is in the merged PR but not in the rebuilt tree",
+    "samples/flutter/lib/main.dart is in the merged PR but not in the rebuilt tree",
+    "samples/flutter/pubspec.yaml is in the merged PR but not in the rebuilt tree",
+    "samples/flutter/test/home_screen_test.dart is in the merged PR but not in the rebuilt tree",
+    "samples/web/index.html is in the merged PR but not in the rebuilt tree",
+    "samples/web/styles.css is in the merged PR but not in the rebuilt tree"
+  ],
+  "scope_check": "verified",
   "ticket": "Objective: find real bugs and security issues in this change. Repo /Users/me/Projects/NousFX, branch cesar/NFX-7, uncommitted. Base commit: c40a0c6d0a5f58fcf5644cd50c4e44731dab68b6. Scope: `git diff c40a0c6d0a5f58fcf5644cd50c4e44731dab68b6` plus untracked files from `git ls-files --others --exclude-standard` (ignore graphify-out/ and docs/handoff-*.md).\n\nWhat it is: ticket NFX-7. A stdlib Python CLI `plugins/via/scripts/via_run.py` (commands init, merge, reject, pass) that keeps Via's run record (findings.json), a findings ledger inside docs/design/via.md between marker comments, a gitignored run folder `.via/runs/<stamp>/`, and a pass record `<git-dir>/via-check-ok` holding the working-tree hash (same method as claude/hooks/review-gate.py). Tests: plugins/via/scripts/test_via_run.py. Also a schema doc plugins/via/assets/findings.schema.json, reference plugins/via/skills/via/references/run-record.md, and three sample apps under samples/ (web, compose, flutter; they contain DELIBERATE design flaws, weak contrast and a small button, do not report those).\n\nDesign rules to review against: finding ID = VIA-<screen slug>-<8 hex sha256(screen, rule, file)>, line NOT in the hash, same-key findings numbered -2,-3 in line order; rejected findings never return as new; fixed only when the finding's screen is in the run's scope; the run folder must be gitignored before it is created; the CLI must refuse symlinks and secret-shaped text and write nothing on a refusal (exit 1 invalid, exit 2 secret); finding text must be escaped in the rendered ledger table; text outside the ledger markers must be preserved byte for byte.",
   "base": "c40a0c6d0a5f58fcf5644cd50c4e44731dab68b6",
   "patch_file": "nfx-7.patch",
@@ -165,9 +192,9 @@
     "via_run.py-gitignore-negation": "skip",
     "via_run.py-merge-partial-write": "skip"
   },
+  "judged_notes": "Session: 'fixing every high and med one plus the cheap low ones, skipping the partial-write item'. Lows marked skip.",
   "captured_from": {
     "session": "c2ee038c-66cb-47e1-9fe2-ad349e855c71.jsonl",
     "agent": "ae7138f24388a4053"
-  },
-  "judged_notes": "Session: 'fixing every high and med one plus the cheap low ones, skipping the partial-write item'. Lows marked skip."
+  }
 }

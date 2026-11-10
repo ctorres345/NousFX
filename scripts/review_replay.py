@@ -11,10 +11,12 @@ Cases: evals/review-replay/cases/*.json (NousFX diffs) and ~/.config/nousfx/revi
 """
 import argparse
 import glob
+import functools
 import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -26,12 +28,49 @@ ROOT = os.path.dirname(HERE)
 STATE = os.path.join(os.path.expanduser("~"), ".config", "nousfx", "review-replay")
 SEVERITIES = ("high", "med", "low")
 LINE_WINDOW = 10
-TOOLS = "Read,Grep,Glob,Bash(git:*)"
-# Commands that throw away uncommitted work (a new branch keeps it, so `checkout -b` is not here).
-DISCARD = re.compile(r"git (checkout|switch) (main|master)\b|git stash( push)?( |$)|git reset --hard|git restore\b|"
-                     r"git checkout -- ")
+TOOLS = "Read,Grep,Glob," + ",".join("Bash(git %s:*)" % c for c in ("diff", "show", "log", "blame", "grep", "ls-files", "ls-tree", "status"))
+def is_discard(command):
+    """True when the Bash command throws away uncommitted work, so edits made before it are gone (a new branch
+    from HEAD keeps them, `stash pop` puts them back, `checkout main -- f` only touches one file)."""
+    stash_back = stash_hit = hit = False
+    for seg in re.split(r"&&|\|\||;|\||\n", command):
+        try:
+            words = shlex.split(seg)  # a quoted message stays one word
+        except ValueError:
+            words = seg.split()
+        t = [x for x in words if not re.match(r"^\d*[<>]", x)]
+        if not t or t[0] != "git":
+            continue
+        t = t[1:]
+        while t and t[0] in ("-C", "-c") and len(t) > 1:
+            t = t[2:]  # git -C <dir> / -c k=v
+        if not t:
+            continue
+        sub, args = t[0], t[1:]
+        skip = {i + 1 for i, x in enumerate(args) if x in ("-m", "--message")}  # an option's value is not a subcommand
+        pos = [x for i, x in enumerate(args) if not x.startswith("-") and i not in skip]
+        if sub in ("checkout", "switch"):
+            if "." in pos and sub == "checkout":  # `checkout .` and `checkout HEAD .` restore every file
+                hit = True
+            elif "--" in args:
+                hit = hit or not [x for x in args[:args.index("--")] if not x.startswith("-")]
+            elif {"-b", "-B", "-c", "-C"} & set(args):
+                hit = hit or (len(pos) >= 2 and pos[-1] != "HEAD")  # a new branch from another start point
+            else:
+                hit = hit or (len(pos) == 1 and pos[0] in ("main", "master"))
+        elif sub == "stash":
+            if pos and pos[0] in ("pop", "apply"):
+                stash_back = True
+            elif not pos or pos[0] in ("push", "save"):
+                stash_hit = True
+        elif sub == "reset":
+            hit = hit or "--hard" in args
+        elif sub == "restore":
+            hit = hit or "--staged" not in args
+    return hit or (stash_hit and not stash_back)
 
 
+@functools.lru_cache(maxsize=None)
 def _prices():
     spec = importlib.util.spec_from_file_location("usage_report", os.path.join(HERE, "usage-report.py"))
     mod = importlib.util.module_from_spec(spec)
@@ -43,6 +82,13 @@ def usage_cost(model, usage):
     """Dollars for one run, with the same prices as usage-report.py."""
     up = _prices()
     return up.cost(up.family(model), usage or {})
+
+
+def run_cost(r):
+    """The CLI's own cost when it was saved (it prices the 1-hour cache writes), else the usage-report estimate."""
+    if r.get("cli_cost_usd") is not None:
+        return r["cli_cost_usd"]
+    return usage_cost((r.get("models_used") or [r.get("model")])[0], r.get("usage", {}))
 
 
 # ---- findings -------------------------------------------------------------------------------
@@ -85,6 +131,7 @@ def score(case, new, judged, only=None):
     past = case.get("opus_findings", [])
     verdict = case.get("judged", {})
     real = [f for f in past if verdict.get(f["id"]) == "real" and f["severity"] in ("high", "med")]
+    known = [f for f in past if verdict.get(f["id"]) == "real"]  # any severity, comparable or not
     if only is not None:
         real = [f for f in real if f["id"] in only]
     wrong = [f for f in past if verdict.get(f["id"]) == "wrong"]
@@ -97,8 +144,8 @@ def score(case, new, judged, only=None):
             caught_ids.append(f["id"])
     new_real = false_pos = unjudged = 0
     for n in new:
-        if any(matches(n, f) for f in real):
-            continue
+        if any(matches(n, f) for f in known):
+            continue  # a bug the session already confirmed: neither new nor a false positive
         if any(matches(n, f) for f in wrong):
             false_pos += 1
             continue
@@ -118,6 +165,8 @@ def score(case, new, judged, only=None):
 def decide(t):
     """The NFX-130 rule. `t` has the candidate's totals over the whole set. A condition that already fails
     is reported even when new findings are still unjudged; a pass needs everything judged."""
+    if t.get("missing"):
+        return False, "inconclusive: %d case(s) have no run for the baseline or the candidate" % t["missing"]
     if t["high_total"] < 2:
         return False, "inconclusive: only %d comparable real high finding(s); the rule needs at least 2" % t["high_total"]
     reasons = []
@@ -248,11 +297,31 @@ def _ticket_from(prompt):
     return re.sub(r"\n{3,}", "\n\n", "\n".join(keep)).strip()
 
 
+def scope_check(repo, branch, tree, why):
+    """Compare the rebuilt tree's files with the files the merged PR changed. Edits made through Bash are not in the
+    transcript, so a tree can be missing part of the change and still hold every quote. Adds to `why`; returns
+    "verified" or "unverified" (no merge commit found for the branch)."""
+    if not branch or branch in ("main", "master", "HEAD"):
+        return "unverified"
+    r = _git(repo, "log", "--all", "--merges", "-F", "--grep=/" + branch, "--format=%H %s")
+    # the subject must end with the whole branch name: cesar/NFX-7 is not cesar/NFX-79
+    merge = next((l.split()[0] for l in r.stdout.splitlines() if l.endswith("/" + branch)), "")
+    if r.returncode != 0 or not merge:
+        return "unverified"
+    pr = set(_git(repo, "diff", "--name-only", merge + "^1", merge).stdout.split())
+    _git(tree, "add", "-A")
+    built = set(_git(tree, "diff", "--cached", "--name-only").stdout.split())
+    for name in sorted(pr - built):
+        why.append("%s is in the merged PR but not in the rebuilt tree" % name)
+    for name in sorted(built - pr):
+        why.append("%s is in the rebuilt tree but not in the merged PR" % name)
+    return "verified"
+
+
 def capture_case(session, agent_id, repo, case_id, out_dir, ui, source="nousfx", private=False):
     """Build a replay case from a past session: the round-1 findings and the tree the reviewer saw."""
-    sub_dir = os.path.splitext(session)[0] + "/subagents" if session.endswith(".jsonl") else session + "/subagents"
-    if not os.path.isdir(sub_dir):
-        sub_dir = os.path.join(session, "subagents")
+    main_path = session if session.endswith(".jsonl") else session + ".jsonl"
+    sub_dir = os.path.join(os.path.splitext(main_path)[0], "subagents")
     with open(os.path.join(sub_dir, "agent-%s.meta.json" % agent_id)) as f:
         meta = json.load(f)
     sub = _read_jsonl(os.path.join(sub_dir, "agent-%s.jsonl" % agent_id))
@@ -267,30 +336,33 @@ def capture_case(session, agent_id, repo, case_id, out_dir, ui, source="nousfx",
         if hit:
             handback = hit[-1]["input"].get("message", "")
             break
+    if not handback:  # a reviewer that answered in plain text
+        for row in reversed(sub):
+            texts = [b.get("text", "") for b in _blocks(row) if b.get("type") == "text"]
+            if row.get("type") == "assistant" and any(texts):
+                handback = "\n".join(texts)
+                break
+    if not handback.strip():
+        raise SystemExit("agent %s ended with no findings text; refusing to save a clean case" % agent_id)
     findings = parse_findings(handback)
 
-    main = _read_jsonl(session if session.endswith(".jsonl") else session + ".jsonl")
-    errored, edits, cwd = set(), [], repo
-    for row in main:
-        for b in _blocks(row):
-            if b.get("type") == "tool_result" and b.get("is_error"):
-                errored.add(b.get("tool_use_id"))
-    for row in main:
-        hit = False
+    main = _read_jsonl(main_path)
+    at = next((i for i, row in enumerate(main)
+               if any(b.get("type") == "tool_use" and b.get("id") == meta["toolUseId"] for b in _blocks(row))), None)
+    if at is None:
+        raise SystemExit("the Agent call %s is not in the session" % meta["toolUseId"])
+    cwd = main[at].get("cwd", repo)
+    errored = {b.get("tool_use_id") for row in main[:at] for b in _blocks(row)
+               if b.get("type") == "tool_result" and b.get("is_error")}
+    edits = []
+    for row in main[:at]:
         for b in _blocks(row):
             if b.get("type") != "tool_use":
                 continue
-            if b.get("id") == meta["toolUseId"]:
-                cwd, hit = row.get("cwd", repo), True
-                break
-            if b.get("name") == "Bash" and DISCARD.search(b["input"].get("command", "")):
+            if b.get("name") == "Bash" and is_discard(b["input"].get("command", "")):
                 edits = []  # the working tree went back to a clean state: earlier edits are gone
             if b.get("name") in ("Edit", "Write") and b["id"] not in errored:
                 edits.append((b["name"], b["input"]))
-        if hit:
-            break
-    else:
-        raise SystemExit("the Agent call %s is not in the session" % meta["toolUseId"])
 
     for f in findings:  # reviewers sometimes give absolute paths; the replay tree is relative
         for root in (cwd, repo):
@@ -314,6 +386,7 @@ def capture_case(session, agent_id, repo, case_id, out_dir, ui, source="nousfx",
                 why.append("%s: line %d is past the end of %s" % (f["id"], f["line"], f["file"]))
             elif f["quote"] and f["quote"] not in text and f["quote"] not in _base_text(repo, base, f["file"]):
                 why.append("%s: quote not found in %s" % (f["id"], f["file"]))
+        scope = scope_check(repo, main[at].get("gitBranch"), tree, why)
         if findings and not _git(tree, "status", "--porcelain").stdout.strip():
             why.append("no edits were replayed, so the rebuilt tree equals the base")
         exact = not why
@@ -324,9 +397,15 @@ def capture_case(session, agent_id, repo, case_id, out_dir, ui, source="nousfx",
         shutil.rmtree(tmp, ignore_errors=True)
 
     os.makedirs(out_dir, exist_ok=True)
-    case = {"id": case_id, "source": source, "ui": bool(ui), "exact": exact, "inexact_reasons": why, "ticket": _ticket_from(prompt),
-            "base": base, "patch_file": case_id + ".patch", "opus_findings": findings, "judged": {},
-            "captured_from": {"session": os.path.basename(session), "agent": agent_id}}
+    kept = {}  # verdicts are made by hand: recapturing must not erase them
+    old = os.path.join(out_dir, case_id + ".json")
+    if os.path.exists(old):
+        with open(old) as f:
+            prev = json.load(f)
+        kept = {k: prev[k] for k in ("judged", "judged_notes") if k in prev}
+    case = {"id": case_id, "source": source, "ui": bool(ui), "exact": exact, "inexact_reasons": why, "scope_check": scope,
+            "ticket": _ticket_from(prompt), "base": base, "patch_file": case_id + ".patch", "opus_findings": findings,
+            "judged": {}, **kept, "captured_from": {"session": os.path.basename(session), "agent": agent_id}}
     if private:
         case["repo"] = os.path.abspath(repo)
     body = json.dumps(case, indent=2)
@@ -379,7 +458,10 @@ def run_reviewer(case, reviewer, model, effort):
         r = subprocess.run(cmd, input=brief(case), cwd=tree, capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError("claude failed on %s: %s" % (case["id"], r.stderr.strip()[:300]))
-        return json.loads(r.stdout)
+        data = json.loads(r.stdout)
+        if data.get("is_error") or data.get("subtype", "success") != "success":
+            raise RuntimeError("claude reported %s on %s" % (data.get("subtype") or "an error", case["id"]))
+        return data
     finally:
         subprocess.run(["git", "-C", repo, "worktree", "remove", "--force", tree], capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -387,21 +469,41 @@ def run_reviewer(case, reviewer, model, effort):
 
 def cmd_run(args, dirs):
     out = os.path.join(args.runs_dir, args.label)
-    if os.path.exists(out):
-        print("run %s already exists in %s; pick a new label" % (args.label, args.runs_dir), file=sys.stderr)
+    if os.path.exists(out) and not args.resume:
+        print("run %s already exists in %s; pick a new label, or add --resume" % (args.label, args.runs_dir),
+              file=sys.stderr)
         return 2
-    os.makedirs(out)
+    os.makedirs(out, exist_ok=True)
+    failed = []
     for c in load_cases(dirs):
-        data = run_reviewer(c, args.reviewer, args.model, args.effort)
+        path = os.path.join(out, c["id"] + ".json")
+        if args.resume and os.path.exists(path):
+            with open(path) as f:
+                old = json.load(f)
+            if (old.get("reviewer"), old.get("model"), old.get("effort")) != (args.reviewer, args.model, args.effort):
+                print("%s %s was saved with %s/%s/%s, not %s/%s/%s; use a new label" % (
+                    args.label, c["id"], old.get("reviewer"), old.get("model"), old.get("effort"),
+                    args.reviewer, args.model, args.effort), file=sys.stderr)
+                return 2
+            continue
+        try:
+            data = run_reviewer(c, args.reviewer, args.model, args.effort)
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as e:
+            print("%s %s: FAILED: %s" % (args.label, c["id"], e), file=sys.stderr)
+            failed.append(c["id"])
+            continue
         models = list((data.get("modelUsage") or {}).keys())
         saved = {"case": c["id"], "label": args.label, "reviewer": args.reviewer, "model": args.model,
                  "effort": args.effort, "models_used": models, "raw": data.get("result", ""),
                  "findings": parse_findings(data.get("result", "")), "usage": data.get("usage", {}),
                  "cli_cost_usd": data.get("total_cost_usd")}
-        with open(os.path.join(out, c["id"] + ".json"), "w") as f:
+        with open(path, "w") as f:
             json.dump(saved, f, indent=2)
         print("%s %s: %d finding(s)" % (args.label, c["id"], len(saved["findings"])))
-    return 0
+    if failed:
+        print("%s: %d case(s) failed (%s); fix the cause and rerun with --resume" % (args.label, len(failed),
+                                                                                    ", ".join(failed)), file=sys.stderr)
+    return 1 if failed else 0
 
 
 # ---- report ---------------------------------------------------------------------------------
@@ -442,8 +544,7 @@ def totals(cases, runs, judged, only=None):
         t["new_real"] += s["new_real"]
         t["unjudged"] += s["unjudged"]
         u = r.get("usage", {})
-        model = (r.get("models_used") or [r["model"]])[0]
-        t["cost"] += usage_cost(model, u)
+        t["cost"] += run_cost(r)
         t["tokens"] += sum(u.get(k, 0) for k in ("input_tokens", "output_tokens", "cache_read_input_tokens",
                                                   "cache_creation_input_tokens"))
     return t
@@ -452,35 +553,39 @@ def totals(cases, runs, judged, only=None):
 def cmd_report(args, dirs):
     cases = load_cases(dirs)
     labels = args.runs
+    if args.candidate and args.candidate not in labels:
+        raise SystemExit("--candidate %s is not one of --runs (%s)" % (args.candidate, ", ".join(labels)))
     loaded = {l: load_run(args.runs_dir, l) for l in labels}
     raw = {l: totals(cases, *loaded[l]) for l in labels}
     # Only past findings the baseline (first run) reproduces on the rebuilt tree are comparable: some rebuilt
     # trees lack files that were made outside Edit/Write, and no reviewer can find a bug that is not there.
+    base_runs, base_judged = loaded[labels[0]]
     only = {}
     for c in cases:
-        r = loaded[labels[0]][0].get(c["id"])
-        if r:
-            only[c["id"]] = set(score(c, r["findings"], loaded[labels[0]][1].get(c["id"], {}))["caught_ids"])
+        if c["id"] in base_runs:
+            only[c["id"]] = set(score(c, base_runs[c["id"]]["findings"], base_judged.get(c["id"], {}))["caught_ids"])
+        else:  # a gap in the baseline, not a case with nothing to catch
+            print("warning: %s has no %s run, so it drops out of the comparable numbers" % (c["id"], labels[0]))
     per = {l: totals(cases, *loaded[l], only=only) for l in labels}
-    rows = [("high caught (all past)", lambda t: "%d/%d" % (raw[t["_l"]]["high_caught"], raw[t["_l"]]["high_total"])),
-            ("med caught (all past)", lambda t: "%d/%d" % (raw[t["_l"]]["med_caught"], raw[t["_l"]]["med_total"])),
-            ("high caught, comparable", lambda t: "%d/%d" % (t["high_caught"], t["high_total"])),
-            ("med caught, comparable", lambda t: "%d/%d" % (t["med_caught"], t["med_total"])),
-            ("new findings, real", lambda t: str(t["new_real"])),
-            ("false positives", lambda t: str(t["fp"])),
-            ("unjudged", lambda t: str(t["unjudged"])),
-            ("tokens", lambda t: "{:,}".format(t["tokens"])),
-            ("cost (est. $)", lambda t: "%.2f" % t["cost"])]
-    width = max(len(l) for l in labels + ["cost (est. $)"]) + 2
-    for l in labels:
-        per[l]["_l"] = l
+    base, cand = labels[0], args.candidate or (labels[1] if len(labels) > 1 else labels[0])
+    missing = sorted({c["id"] for c in cases for l in (base, cand) if c["id"] not in loaded[l][0]})
+    if missing:
+        print("warning: no run for %s; the decision will be inconclusive" % ", ".join(missing))
+    rows = [("high caught (all past)", lambda l: "%d/%d" % (raw[l]["high_caught"], raw[l]["high_total"])),
+            ("med caught (all past)", lambda l: "%d/%d" % (raw[l]["med_caught"], raw[l]["med_total"])),
+            ("high caught, comparable", lambda l: "%d/%d" % (per[l]["high_caught"], per[l]["high_total"])),
+            ("med caught, comparable", lambda l: "%d/%d" % (per[l]["med_caught"], per[l]["med_total"])),
+            ("new findings, real", lambda l: str(per[l]["new_real"])),
+            ("false positives", lambda l: str(per[l]["fp"])),
+            ("unjudged", lambda l: str(per[l]["unjudged"])),
+            ("tokens", lambda l: "{:,}".format(per[l]["tokens"])),
+            ("cost (est. $)", lambda l: "%.2f" % per[l]["cost"])]
+    width = max(len(l) for l in labels) + 2
     print("%-26s" % "" + "".join(l.ljust(width) for l in labels))
     for name, fn in rows:
-        print("%-26s" % name + "".join(fn(per[l]).ljust(width) for l in labels))
+        print("%-26s" % name + "".join(fn(l).ljust(width) for l in labels))
     print("(comparable = past real findings that %s also caught on the rebuilt trees)" % labels[0])
-    base, cand = labels[0], args.candidate or (labels[1] if len(labels) > 1 else labels[0])
-    t = dict(per[cand])
-    t["opus_cost"] = per[base]["cost"]
+    t = dict(per[cand], opus_cost=per[base]["cost"], missing=len(missing))
     ok, why = decide(t)
     print("\nDecision for %s against %s: %s (%s)" % (cand, base, "PASS" if ok else "KEEP OPUS", why))
     return 0
@@ -497,6 +602,7 @@ def main(argv=None):
     r.add_argument("--model", required=True)
     r.add_argument("--effort", required=True)
     r.add_argument("--reviewer", default="reviewer", help="agent name (default: reviewer)")
+    r.add_argument("--resume", action="store_true", help="keep the cases already saved under this label")
     cp = sub.add_parser("capture", help="build a case from a past session and its round-1 reviewer")
     cp.add_argument("--session", required=True, help="main session .jsonl")
     cp.add_argument("--agent", required=True, help="round-1 reviewer agent id (the agent-<id> part)")

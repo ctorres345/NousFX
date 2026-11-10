@@ -2,8 +2,21 @@
   "id": "nfx-58",
   "source": "nousfx",
   "ui": false,
-  "exact": true,
-  "inexact_reasons": [],
+  "exact": false,
+  "inexact_reasons": [
+    "README.md is in the merged PR but not in the rebuilt tree",
+    "claude/CLAUDE.delegation.md is in the merged PR but not in the rebuilt tree",
+    "claude/skills/project-setup/SKILL.md is in the merged PR but not in the rebuilt tree",
+    "claude/skills/project-setup/assets/ticket-template.md is in the merged PR but not in the rebuilt tree",
+    "claude/skills/review-loop/SKILL.md is in the merged PR but not in the rebuilt tree",
+    "docs/RUNBOOK.md is in the merged PR but not in the rebuilt tree",
+    "harness/AGENTS.md is in the merged PR but not in the rebuilt tree",
+    "harness/overlays/claude.overlay.md is in the merged PR but not in the rebuilt tree",
+    "install.sh is in the merged PR but not in the rebuilt tree",
+    "scripts/real_machine_regression.py is in the merged PR but not in the rebuilt tree",
+    "scripts/test_nousfx_sync.py is in the merged PR but not in the rebuilt tree"
+  ],
+  "scope_check": "verified",
   "ticket": "Objective: find real bugs and security issues (not style). Repo /Users/me/Projects/NousFX, branch cesar/NFX-58, uncommitted. Scope: `git diff bd11c8022268880aadd32eebf84d2d7af511f871` plus untracked files (`git ls-files --others --exclude-standard`): claude/skills/prototype-fidelity/SKILL.md, scripts/test_rules_single_copy.py. Ticket NFX-58: trim always-loaded rules to one copy; each rule in one source; moved rules count as kept in scripts/real_machine_regression.py; delete claude/CLAUDE.delegation.md and its install.sh step. Out of scope: changing what the rules say. Check especially: install.sh still valid after removing the delegation block (bash -n, variables, set -u); regression script classes (moved/reworded) can't hide a truly dropped rule; handoff SKILL.md keeps every rule from the old global rules (save-location logic); no broken references to CLAUDE.delegation.md or to \"Prototype fidelity in CLAUDE.md\" left (grep, excluding graphify-out and .git). Do not edit files. Output format: `ID | severity | file:line | problem | suggested fix`, or `NO FINDINGS`.",
   "base": "bd11c8022268880aadd32eebf84d2d7af511f871",
   "patch_file": "nfx-58.patch",
@@ -66,9 +79,9 @@
     "handoff-SKILL.md-continue-path": "real",
     "install.sh-stale-delegation-section": "skip"
   },
+  "judged_notes": "Session: tightened covered() and the half-moved rule, fixed the handoff path wording; other lows not mentioned.",
   "captured_from": {
     "session": "d85c8133-6353-47ec-aa49-eb8cd320220f.jsonl",
     "agent": "a457f581c5ed2e892"
-  },
-  "judged_notes": "Session: tightened covered() and the half-moved rule, fixed the handoff path wording; other lows not mentioned."
+  }
 }

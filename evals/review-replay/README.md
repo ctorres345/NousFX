@@ -42,3 +42,17 @@ A new finding is **caught** when it names the same file, a line within 10 of the
 | `sonnet-medium` | sonnet | medium |
 
 All three use today's review-loop brief, so the comparison is fair even if the brief differs from the one in the original run.
+
+## Changes after the run (2026-11-10)
+
+The rule above is the text committed in cdfccc9, before any run. These clarifications were made afterwards and do not change a threshold:
+
+- **Matching.** The script decides "caught" alone from file and line (within 10). It does not propose pairs for a human to confirm. The misses behind the decision were read side by side (see `RESULTS.md`).
+- **Unjudged findings.** A pass needs every new finding judged. A condition that already fails is reported even while findings are unjudged. A new finding that re-finds a bug the session already confirmed counts as neither new nor false.
+- **Missing runs.** If a case has no run for the baseline or the candidate, the decision is inconclusive.
+- **Cost.** The saved cost from the Claude CLI is used, because it prices the 1-hour cache writes; the `usage-report.py` estimate is only a fallback. The ranking is the same either way.
+- **Opus spread.** Opus medium was run once, so its run-to-run spread is not measured. A past finding the Opus replay misses is simply not comparable.
+- **Case set.** The 6-case mix is checked with `--list`; only the "2 comparable highs" part is enforced by the script.
+- **Brief.** All runs use the brief in `brief()`, a copy of review-loop's. The ticket text of each case is the original round-1 prompt minus its round and output-format lines, so it still carries that prompt's own scope lines (see Limits in `RESULTS.md`).
+- **Tools.** The saved runs used `Bash(git:*)`. The script now allows only a short list of git subcommands (diff, show, log, blame, grep, ls-files, ls-tree, status); nfx-28 was rerun under that list.
+- **Capture.** After round 2 of the review, capture also compares the rebuilt tree's file list with the merged PR's and marks the case inexact when they differ, and `git checkout -q main`, `git stash -m`, a `stash` with no subcommand and `checkout -b X main` now reset the rebuilt edits. nfx-28 was recaptured and rerun (its first tree carried another ticket's edits).
