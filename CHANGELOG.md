@@ -8,6 +8,9 @@
 ### Review gate
 - A commit on the wrong branch is caught where it happens. The subject must start with the branch's Jira key (`NFX-86: x`, or `NFX-85, NFX-86: x`). Locally, a new advisory `claude/githooks/commit-msg` and the Claude hook (on a literal `git commit -m`) warn and never block. In CI, a new step runs the base gate's `check-commits`, which fails a PR with a commit that names another key or none; merge commits and subjects git writes itself (`Merge`, `Revert`, `fixup!`, `squash!`) are skipped, and a base gate without `check-commits` only warns (NFX-86).
 
+### Rules
+- A confirmed merge now moves its Jira ticket to Done, unasked, in the same sentence that already deletes the branches. I had been moving them by hand (NFX-132).
+
 ### Review cost
 - `scripts/review_replay.py` replays past tier-2 reviews with any reviewer and compares findings, tokens and cost, against a switch rule written first in `evals/review-replay/README.md`. First result: Sonnet at high effort caught 5 of 7 comparable real medium findings (rule: 90%), so `reviewer` stays on Opus; it cost $1.19 against $2.64 for Opus on the same six cases. Results are in `evals/review-replay/RESULTS.md` (NFX-130).
 
