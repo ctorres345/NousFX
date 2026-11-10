@@ -64,6 +64,9 @@ class Rule(unittest.TestCase):
     def test_prefix_of_a_longer_number_does_not_match(self):
         self.assertTrue(self.problem("NFX-830: x"))
 
+    def test_one_letter_key_prefix_is_not_a_key_so_the_branch_is_not_judged(self):
+        self.assertIsNone(self.problem("anything", "cesar/A-1"))
+
     def test_key_without_colon_is_a_problem(self):
         self.assertTrue(self.problem("NFX-83 fix it"))
 
@@ -191,6 +194,10 @@ class CommitMsgHook(Base):
         self.sh("git", "switch", "-q", "--detach")
         self.assertEqual(self.run_hook("anything\n").stderr, "")
 
+    def test_one_letter_key_prefix_agrees_with_python(self):
+        self.sh("git", "switch", "-q", "-c", "cesar/A-1")
+        self.assertEqual(self.run_hook("anything\n").stderr, "")
+
     def test_real_commit_warns_but_still_commits(self):
         hooks = os.path.join(self.repo, ".git", "hooks")
         os.makedirs(hooks, exist_ok=True)
@@ -271,7 +278,7 @@ class Workflow(unittest.TestCase):
     def test_commit_step_skips_when_the_base_gate_lacks_it(self):
         with open(WORKFLOW, encoding="utf-8") as f:
             text = f.read()
-        step = text[text.index("check-commits") - 1500:text.index("Verify the review attestation")]
+        step = text[text.index("Check the commit subjects"):text.index("Verify the review attestation")]
         self.assertRegex(step, r"::warning::.*check-commits")
         self.assertIn("branch-exception", step)
 

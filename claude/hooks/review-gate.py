@@ -699,11 +699,10 @@ def check_commits(argv):
     branch's key in its subject. 0 when they do, 1 with one line per bad commit (or a usage or git error)."""
     cwd = option(argv, "--cwd") or os.getcwd()
     base = option(argv, "--base")
-    rest = [a for i, a in enumerate(argv[2:], 2) if not a.startswith("--") and argv[i - 1] not in ("--base", "--cwd")]
-    if len(rest) != 1 or not base:
+    if len(argv) < 3 or argv[2].startswith("--") or not base:
         print("usage: review-gate.py check-commits BRANCH --base REF [--cwd DIR]", file=sys.stderr)
         return 1
-    branch = rest[0]
+    branch = argv[2]
     if branch_key(branch) is None:
         print(f'Branch "{branch}" has no Jira key, so the commit subjects cannot be checked.', file=sys.stderr)
         return 1
@@ -734,8 +733,8 @@ HEREDOC_SUBJECT = re.compile(r"<<-?[ \t]*(['\"]?)\w+\1[ \t]*\n[ \t]*(\S[^\n]*)")
 def commit_subject(command, ps=False):
     """The literal subject of the one `git commit -m ...` in command, or None when there is none, there are
     several, or it cannot be read (-F, an editor, a message built at run time, a cd before it)."""
-    if pr_create_parser is None or CD_MENTION.search(command):
-        return None
+    if pr_create_parser is None or "commit" not in command or CD_MENTION.search(command):
+        return None  # the substring test keeps the parser off nearly every Bash call
     found = []
     for event in pr_create_parser.parse(command, ps):
         if not isinstance(event, list) or pr_create_parser.command_name(event[0].text) != "git":
