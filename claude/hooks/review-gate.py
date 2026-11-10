@@ -31,6 +31,8 @@ when a valid mark covers the current code, else exits 2. `verify-attestation --t
 (CI) exits 0 when F holds that line for tree H. An honor-system claim, see docs/review-gate.md.
 `verify-tier --tier-json J --text-file F --author-association A` (CI, NFX-70) exits 2 when a `Review-Tier:` line
 in F is below the tier in J (tier.py's JSON for the PR diff). Overrides count only for OWNER or MEMBER (NFX-95).
+`check-commits BRANCH --base REF` (CI, NFX-86) exits 1 when a non-merge commit in REF..HEAD does not name the
+branch's Jira key in its subject. The Claude hook also warns (never blocks) on a literal `git commit -m` subject.
 
 Mark mode: `review-gate.py --mark --findings N` or `--mark --skip "reason"` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
@@ -665,6 +667,135 @@ def check_branch(argv):
     return 1
 
 
+LEADING_KEYS = re.compile(rf"({BRANCH_KEY}(?:,[ \t]*{BRANCH_KEY})*):")
+GENERATED_SUBJECT = re.compile(r"(?:Merge |Revert \"|fixup! |squash! |amend! )")  # git writes these, not the author
+
+
+def branch_key(branch):
+    """The Jira key of a `<prefix>/<KEY>` branch, or None."""
+    m = re.fullmatch(rf"[a-z0-9][a-z0-9-]*/({BRANCH_KEY})", branch)
+    return m.group(1) if m else None
+
+
+def commit_key_problem(subject, branch):
+    """NFX-86: why this commit subject does not name the branch's key, or None when it does or is not judged.
+    The subject must start with `KEY:` or `KEY, KEY:` and the branch key must be one of them. Not judged: a
+    branch with no key (the branch rule covers it) and subjects git generates (merge, revert, fixup)."""
+    key = branch_key(branch)
+    if key is None or GENERATED_SUBJECT.match(subject):
+        return None
+    m = LEADING_KEYS.match(subject)
+    if m is None:
+        return f'The subject "{subject}" does not start with a Jira key. Branch {branch} needs "{key}: ...".'
+    keys = re.findall(BRANCH_KEY, m.group(1))
+    if key in keys:
+        return None
+    return (f'The subject "{subject}" names {", ".join(keys)}, but branch {branch} is {key}. '
+            "Another session may have switched this checkout: check the branch, then amend or switch back.")
+
+
+def check_commits(argv):
+    """`check-commits BRANCH --base REF [--cwd DIR]` (CI, NFX-86): every non-merge commit in REF..HEAD must name the
+    branch's key in its subject. 0 when they do, 1 with one line per bad commit (or a usage or git error)."""
+    cwd = option(argv, "--cwd") or os.getcwd()
+    base = option(argv, "--base")
+    if len(argv) < 3 or argv[2].startswith("--") or not base:
+        print("usage: review-gate.py check-commits BRANCH --base REF [--cwd DIR]", file=sys.stderr)
+        return 1
+    branch = argv[2]
+    if branch_key(branch) is None:
+        print(f'Branch "{branch}" has no Jira key, so the commit subjects cannot be checked.', file=sys.stderr)
+        return 1
+    try:
+        log = git(["log", "--no-merges", "--format=%h%x09%s", f"{base}..HEAD", "--"], cwd)
+    except (RuntimeError, GateTimeout) as e:
+        print(f"Cannot list the commits after {base}: {e}", file=sys.stderr)
+        return 1
+    bad = []
+    for line in log.splitlines():
+        sha, _, subject = line.partition("\t")
+        why = commit_key_problem(subject, branch)
+        if why:
+            bad.append(f"{sha} {why}")
+    if bad:
+        print("\n".join(bad), file=sys.stderr)
+        print(f"{len(bad)} commit(s) do not name the key of {branch}. Amend or reword them (git rebase -i), "
+              "or ask the repo owner for the `branch-exception` label.", file=sys.stderr)
+        return 1
+    print("Commit keys checked.")
+    return 0
+
+
+SHORT_VALUE_FLAGS = "FCcStu"  # `git commit` short flags that take the rest of the word (or the next one) as a value
+COMMIT_OPT_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--exec-path", "--namespace"}  # git options before `commit`
+HEREDOC_SUBJECT = re.compile(r"<<-?[ \t]*(['\"]?)\w+\1[ \t]*\n[ \t]*(\S[^\n]*)")
+
+
+def commit_subject(command, ps=False):
+    """The literal subject of the one `git commit -m ...` in command, or None when there is none, there are
+    several, or it cannot be read (-F, an editor, a message built at run time, a cd before it)."""
+    if pr_create_parser is None or "commit" not in command or CD_MENTION.search(command):
+        return None  # the substring test keeps the parser off nearly every Bash call
+    found = []
+    for event in pr_create_parser.parse(command, ps):
+        if not isinstance(event, list) or pr_create_parser.command_name(event[0].text) != "git":
+            continue
+        args, i = event[1:], 0
+        while i < len(args) and args[i].text.startswith("-"):  # git's own options, before the subcommand
+            if args[i].text.split("=")[0] in COMMIT_OPT_VALUE:
+                return None  # another repo (`-C dir`, `--git-dir=x`): not this branch
+            i += 1
+        if i >= len(args) or args[i].text != "commit":
+            continue
+        found.append(args[i + 1:])
+    if len(found) != 1:
+        return None
+    args = found[0]
+    for i, w in enumerate(args):
+        t = w.text
+        if t == "--":
+            break
+        value = None
+        if t.startswith("--"):
+            if t == "--message" and i + 1 < len(args):
+                w, value = args[i + 1], args[i + 1].text
+            elif t.startswith("--message="):
+                value = t[len("--message="):]
+        elif t.startswith("-"):
+            for j, ch in enumerate(t[1:], 1):  # a short cluster: -am MSG, -amMSG, -Fmsg.txt (F takes the rest)
+                if ch == "m":
+                    value = t[j + 1:] or (args[i + 1].text if i + 1 < len(args) else None)
+                    if not t[j + 1:] and i + 1 < len(args):
+                        w = args[i + 1]
+                    break
+                if ch in SHORT_VALUE_FLAGS:
+                    break
+        if value is None:
+            continue
+        if w.dynamic:
+            m = HEREDOC_SUBJECT.search(value)
+            return m.group(2).strip() if m and "$" not in value.replace("$(", "") else None
+        return value.strip().splitlines()[0] if value.strip() else None
+    return None
+
+
+def commit_warning(command, cwd, ps=False):
+    """The hook JSON that warns about a commit whose subject names another key than the branch's, or None.
+    Advisory (NFX-86): it never blocks, and any failure means no warning."""
+    try:
+        subject = commit_subject(command, ps)
+        if subject is None or not in_repo(cwd):
+            return None
+        why = commit_key_problem(subject, current_branch(cwd))
+    except Exception:
+        return None
+    if not why:
+        return None
+    text = f"Commit key check (warning): {why}"
+    return json.dumps({"systemMessage": text,
+                       "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}})
+
+
 def allow_branch(argv):
     cwd = os.getcwd()
     branch = current_branch(cwd)
@@ -1090,7 +1221,12 @@ def gate(argv):
             return 0  # a tool that cannot open a PR: never break unrelated work
         print(PAYLOAD_BLOCK.format(error=f"{type(e).__name__}: {e}"), file=sys.stderr)
         return 2
-    return evaluate(tool, command, cwd, body)
+    code = evaluate(tool, command, cwd, body)
+    if code == 0 and tool.lower() in ("bash", "powershell"):
+        warning = commit_warning(command, cwd, tool.lower() == "powershell")  # NFX-86: advisory, never blocks
+        if warning:
+            print(warning)
+    return code
 
 
 BODY_BLOCK = """\
@@ -1266,6 +1402,8 @@ if __name__ == "__main__":
         sys.exit(verify_tier(sys.argv))
     if sys.argv[1:2] == ["check-branch"]:
         sys.exit(check_branch(sys.argv))
+    if sys.argv[1:2] == ["check-commits"]:
+        sys.exit(check_commits(sys.argv))
     if "--allow-branch" in sys.argv:
         sys.exit(allow_branch(sys.argv))
     sys.exit(mark(sys.argv) if "--mark" in sys.argv else gate(sys.argv))

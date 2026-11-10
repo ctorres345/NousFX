@@ -115,6 +115,25 @@ agy run_command ──► hooks.json ──► agy_gate.py ──► review-gate
 - Known limits, same as the Claude hook: `gh alias`, SDK calls, `cmd /c` and `gh -R owner/repo pr create` from a folder that is not a repo are not recognized. An MCP create-PR tool called from a folder that is not a repo is blocked. Opening a PR from a UI or another tool is not seen. CI is the gate for those.
 - OpenCode has no adapter yet (NFX-50). Until it does, CI is the only gate there.
 
+## Commit key check (NFX-86)
+
+A commit made on the wrong branch is caught where it happens. In the NFX-10 session a commit `NFX-10: ...` landed on `cesar/NFX-83` after another session switched the shared checkout, and nothing noticed.
+
+The rule: the branch is `<prefix>/<KEY>`, and the subject starts with `KEY:` or `KEY, KEY:` that holds the branch's key.
+
+| Commit | Local | CI |
+|---|---|---|
+| Subject keys include the branch key (`NFX-86: x`, `NFX-85, NFX-86: x`) | pass | pass |
+| Subject names only other keys, or has no key at the start | warn | fail |
+| Merge commit | skipped | skipped (`--no-merges`) |
+| Subject git writes itself (`Merge `, `Revert "`, `fixup! `, `squash! `, `amend! `) | skipped | a merge is skipped; the others are not judged by the rule |
+| Detached HEAD, or a branch with no key | skipped (the branch rule covers it) | the branch step fails first |
+
+- **Git hook.** `claude/githooks/commit-msg` warns on stderr and always exits 0. Install it with `cp claude/githooks/commit-msg .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg` (or put it beside `pre-push` in the folder `core.hooksPath` points at). It skips a merge, rebase, cherry-pick or revert in progress. `git commit --no-verify` skips it. Sync does not install it yet.
+- **Claude hook.** The same gate hook reads a literal `git commit -m "..."` subject (also `-am`, `--message=`, and a `$(cat <<'EOF' ...)` heredoc) and adds a warning to the tool call. It never blocks. It stays silent when the subject is not literal (`-F`, an editor, a variable), when the command holds a `cd`, `git -C` or `--git-dir`. A call that also creates a PR is gated first; the warning is added only when the gate allows it.
+- **CI.** The step after the branch check copies the base branch's `review-gate.py` and runs `check-commits "$HEAD_REF" --base <merge-base>`. It prints one line per bad commit and fails the job. The `branch-exception` label (OWNER or MEMBER author) skips it, like the branch step. A base gate without `check-commits` (the PR that adds it) gives a warning and no check.
+- The check reads subjects only. It does not stop a rewritten history or a key typed to match, so it catches the slip, not a person who means it.
+
 ## Pre-push hook: advisory
 
 - Template: `claude/githooks/pre-push`. Install it with `cp claude/githooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push`, or link it from `.git/hooks`. Point `core.hooksPath` at the folder only when `.git/hooks` holds no other hooks: it switches them off (graphify's `post-checkout` and `post-commit`, for example).
@@ -130,6 +149,7 @@ agy run_command ──► hooks.json ──► agy_gate.py ──► review-gate
 - Workflow: `.github/workflows/review-gate.yml`. It runs on open, push, reopen, description edit and label changes.
 - Its first step runs the base branch's `review-gate.py check-branch "$GITHUB_HEAD_REF"`: the shape `<prefix>/<KEY>` with any lowercase prefix, since CI does not know whose prefix it is (NFX-119). A bad name fails the job with the expected form. A base gate without `check-branch` (the PR that adds it) gives a warning and no check.
 - The `branch-exception` PR label skips that step only when the PR author's `author_association` is OWNER or MEMBER, like a tier override. It checks the author, not who added the label: anyone with triage rights can label an OWNER's PR. No ask rule covers adding it (`gh pr edit --add-label`), so for an agent using my token the rule that it is my call is prose only. Adding the label re-runs the job. Bot and fork branches (`dependabot/...`, a contributor's own name) fail the step and the label cannot help them; an allowance comes when one is needed. Agents never add it; it is the user's call, like `--allow-branch`. The repo owner creates the label once: `gh label create branch-exception`.
+- A second step, after the branch check, runs `check-commits` on the PR's commit subjects (see Commit key check, NFX-86).
 - `project-setup` does not install this workflow in other repos, so there is no second copy to update.
 - It takes `review-gate.py` and `pr_create_parser.py` from the base branch (`git show origin/<base>:...`), never from the PR. A PR cannot edit the gate to approve itself.
 - The PR body reaches the job through an env var and a file. It is never interpolated into a shell command.
