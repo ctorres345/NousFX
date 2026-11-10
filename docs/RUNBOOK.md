@@ -174,6 +174,8 @@ Results (a dash means not run yet; each cell gets a date when it is):
    python3 -B scripts/run_checks.py
    ```
 
+   Suites run cheapest first, so a failing fast suite shows within seconds. For a quick local loop, `--fail-fast` stops at the first failure; the gate and CI never pass it and always run the full set.
+
 3. `settings.json` registers the gate exactly once:
 
    ```bash

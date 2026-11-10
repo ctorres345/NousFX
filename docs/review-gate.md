@@ -51,6 +51,7 @@ A mark now means the tests passed, not only that a reviewer was satisfied. `--ma
   command = "python3 -B scripts/run_checks.py"
   timeout = 1800   # seconds, optional
   ```
+- The gate never adds `--fail-fast` to `scripts/run_checks.py`, so a stamp or mark always means a full pass.
 - The command runs through the shell at the repo top level, with `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR` removed and `PYTHONDONTWRITEBYTECODE=1`. Its output goes to `claude-review-check.log` in the git dir. A refusal prints the last 40 lines and the path.
 - Where it is read from: `origin/HEAD`, else `origin/main`, else `origin/master`. A branch cannot edit its own check to `true`. When that branch has the file, it wins, even if the file has no usable `[check]` (then the mark is refused). Only when the default branch has no `.nousfx/project.toml` at all (the PR that adds it), or no default branch can be found, does the mark use the working-tree file, and it says so. That local fallback is a convenience; CI never uses it. The anchor is the local remote-tracking state (`origin/HEAD` counts only when it points at another `refs/remotes/origin/` ref, and nothing is fetched), so a stale clone or a shell user can still steer the local mark. CI is the real check.
 - A refused mark deletes the older one, so a stale good mark cannot carry a failing run through.
