@@ -1,0 +1,833 @@
+diff --git a/plugins/via/assets/findings.schema.json b/plugins/via/assets/findings.schema.json
+new file mode 100644
+index 0000000..b47c407
+--- /dev/null
++++ b/plugins/via/assets/findings.schema.json
+@@ -0,0 +1,96 @@
++{
++  "$schema": "http://json-schema.org/draft-07/schema#",
++  "title": "Via run record (findings.json)",
++  "description": "Written by Claude into the run folder, then merged by via_run.py. Claude never writes id, status or merged_at: via_run.py adds them. via_run.py is the source of truth for validation; this file documents the same rules.",
++  "type": "object",
++  "required": ["version", "mode", "scope", "platforms", "findings"],
++  "properties": {
++    "version": { "const": 1 },
++    "mode": { "enum": ["check", "audit"] },
++    "scope": {
++      "description": "\"all\", or the screens this run covered. A finding is marked fixed only when its screen is in scope.",
++      "oneOf": [
++        { "const": "all" },
++        { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
++      ]
++    },
++    "platforms": { "type": "array", "items": { "type": "string", "minLength": 1 } },
++    "skills": {
++      "type": "object",
++      "properties": {
++        "run": { "type": "array", "items": { "type": "string" } },
++        "skipped": { "type": "array", "items": { "$ref": "#/definitions/skipped" } }
++      }
++    },
++    "integrations": {
++      "type": "object",
++      "properties": {
++        "used": { "type": "array", "items": { "type": "string" } },
++        "skipped": { "type": "array", "items": { "$ref": "#/definitions/skipped" } }
++      }
++    },
++    "screenshots": {
++      "type": "array",
++      "items": {
++        "type": "object",
++        "required": ["path", "screen", "theme", "size", "redacted"],
++        "properties": {
++          "path": { "type": "string", "minLength": 1 },
++          "screen": { "type": "string", "minLength": 1 },
++          "theme": { "type": "string", "minLength": 1 },
++          "size": { "type": "string", "minLength": 1 },
++          "redacted": { "type": "boolean" }
++        }
++      }
++    },
++    "findings": {
++      "type": "array",
++      "items": {
++        "type": "object",
++        "required": ["screen", "severity", "location", "rule", "issue", "fix", "source"],
++        "properties": {
++          "id": { "description": "Set by via_run.py: VIA-<screen>-<8 hex>, with -2, -3 for same screen, rule and file.", "type": "string" },
++          "screen": { "type": "string", "minLength": 1 },
++          "severity": { "enum": ["high", "med", "low"] },
++          "location": {
++            "type": "object",
++            "required": ["file"],
++            "properties": {
++              "file": { "type": "string", "minLength": 1 },
++              "line": { "type": "integer", "minimum": 0 }
++            }
++          },
++          "rule": { "description": "A short stable name for the kind of problem, such as contrast. Part of the ID.", "type": "string", "minLength": 1 },
++          "issue": { "type": "string", "minLength": 1 },
++          "fix": { "type": "string", "minLength": 1 },
++          "source": { "description": "The skill or second opinion that raised it.", "type": "string", "minLength": 1 },
++          "verdict": { "description": "Second-opinion verdict after checking against code and screenshots.", "enum": ["real", "wrong", "unsure", null] },
++          "route": { "enum": ["fix-now", "ticket", null] },
++          "status": { "description": "Set by via_run.py: new, open or rejected.", "enum": ["new", "open", "rejected"] },
++          "ticket": { "type": "string" }
++        }
++      }
++    },
++    "lessons": {
++      "type": "array",
++      "items": {
++        "type": "object",
++        "required": ["text", "scope", "source"],
++        "properties": {
++          "text": { "type": "string", "minLength": 1 },
++          "scope": { "enum": ["project", "general"] },
++          "source": { "type": "string", "minLength": 1 }
++        }
++      }
++    },
++    "token_cost": { "type": ["number", "object"] },
++    "merged_at": { "description": "Set by via_run.py merge. `pass` refuses a run without it.", "type": "string" }
++  },
++  "definitions": {
++    "skipped": {
++      "type": "object",
++      "required": ["name", "reason"],
++      "properties": { "name": { "type": "string" }, "reason": { "type": "string" } }
++    }
++  }
++}
+diff --git a/plugins/via/scripts/test_via_run.py b/plugins/via/scripts/test_via_run.py
+new file mode 100644
+index 0000000..1890c42
+--- /dev/null
++++ b/plugins/via/scripts/test_via_run.py
+@@ -0,0 +1,304 @@
++#!/usr/bin/env python3
++"""Tests for via_run.py. Run: python3 plugins/via/scripts/test_via_run.py
++
++Each test runs the script as a subprocess against a throwaway git repo and checks only what a caller
++sees: exit codes, stdout JSON and the files left behind.
++"""
++import json
++import os
++import re
++import subprocess
++import sys
++import tempfile
++import unittest
++
++SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "via_run.py")
++LEDGER = os.path.join("docs", "design", "via.md")
++FAKE_KEY = "AQ.FAKEKEYFAKEKEYFAKEKEYFAKEKEY99"
++ID_RE = re.compile(r"^VIA-[a-z0-9-]+-[0-9a-f]{8}(-\d+)?$")
++
++
++def read(path):
++    with open(path, encoding="utf-8") as f:
++        return f.read()
++
++
++def write(path, text):
++    os.makedirs(os.path.dirname(path), exist_ok=True)
++    with open(path, "w", encoding="utf-8") as f:
++        f.write(text)
++
++
++def finding(screen="home", rule="contrast", file="app/Home.kt", line=10, severity="med", **extra):
++    base = {"screen": screen, "severity": severity, "location": {"file": file, "line": line},
++            "rule": rule, "issue": "Low contrast on the subtitle.", "fix": "Use onSurfaceVariant.",
++            "source": "design:accessibility-review"}
++    base.update(extra)
++    return base
++
++
++def record(findings, scope="all", **extra):
++    base = {"version": 1, "mode": "audit", "scope": scope, "platforms": ["compose"], "findings": findings}
++    base.update(extra)
++    return base
++
++
++class ViaRunTest(unittest.TestCase):
++    def setUp(self):
++        tmp = tempfile.TemporaryDirectory()
++        self.addCleanup(tmp.cleanup)
++        self.repo = os.path.join(tmp.name, "repo")
++        os.makedirs(self.repo)
++        self.git("init", "-q")
++        self.git("config", "user.email", "t@example.com")
++        self.git("config", "user.name", "T")
++        write(os.path.join(self.repo, "app", "Home.kt"), "fun Home() {}\n")
++        self.git("add", "-A")
++        self.git("commit", "-qm", "init")
++
++    def git(self, *args):
++        r = subprocess.run(["git", *args], cwd=self.repo, capture_output=True, text=True)
++        self.assertEqual(r.returncode, 0, r.stderr)
++        return r.stdout.strip()
++
++    def run_cli(self, *args):
++        return subprocess.run([sys.executable, SCRIPT, *args, "--project", self.repo],
++                              capture_output=True, text=True)
++
++    def ok(self, *args):
++        r = self.run_cli(*args)
++        self.assertEqual(r.returncode, 0, r.stderr)
++        return json.loads(r.stdout)
++
++    def new_run(self, rec):
++        run_dir = self.ok("init")["run_dir"]
++        write(os.path.join(run_dir, "findings.json"), json.dumps(rec))
++        return run_dir
++
++    def merge(self, rec):
++        run_dir = self.new_run(rec)
++        summary = self.ok("merge", run_dir)
++        return run_dir, summary, json.loads(read(os.path.join(run_dir, "findings.json")))
++
++    def statuses(self, merged):
++        return {f["id"]: f["status"] for f in merged["findings"]}
++
++    def worktree_tree(self):
++        index = os.path.join(self.repo, ".git", "index")
++        with tempfile.TemporaryDirectory() as d:
++            tmp = os.path.join(d, "index")
++            with open(index, "rb") as src, open(tmp, "wb") as dst:
++                dst.write(src.read())
++            env = {**os.environ, "GIT_INDEX_FILE": tmp}
++            subprocess.run(["git", "add", "-A"], cwd=self.repo, env=env, check=True, capture_output=True)
++            return subprocess.run(["git", "write-tree"], cwd=self.repo, env=env, check=True,
++                                  capture_output=True, text=True).stdout.strip()
++
++    def pass_record(self):
++        return json.loads(read(os.path.join(self.repo, ".git", "via-check-ok")))
++
++    # --- stable IDs ---
++
++    def test_same_finding_gets_the_same_id_across_runs_even_when_its_line_moves(self):
++        _, _, first = self.merge(record([finding(line=10)]))
++        _, _, second = self.merge(record([finding(line=42)]))
++        self.assertRegex(first["findings"][0]["id"], ID_RE)
++        self.assertEqual(first["findings"][0]["id"], second["findings"][0]["id"])
++
++    def test_different_rule_or_file_gives_a_different_id(self):
++        _, _, merged = self.merge(record([finding(), finding(rule="touch-target"),
++                                          finding(file="app/Other.kt")]))
++        ids = [f["id"] for f in merged["findings"]]
++        self.assertEqual(len(set(ids)), 3)
++
++    def test_two_findings_with_the_same_screen_rule_and_file_get_numbered_suffixes_in_line_order(self):
++        _, _, first = self.merge(record([finding(line=30), finding(line=5)]))
++        by_line = {f["location"]["line"]: f["id"] for f in first["findings"]}
++        self.assertTrue(by_line[30].endswith("-2"))
++        self.assertFalse(re.search(r"-\d$", by_line[5]))
++        _, _, second = self.merge(record([finding(line=5), finding(line=31)]))
++        again = {f["location"]["line"]: f["id"] for f in second["findings"]}
++        self.assertEqual(again[5], by_line[5])
++        self.assertEqual(again[31], by_line[30])
++
++    # --- ledger merge ---
++
++    def test_first_run_marks_findings_new_and_a_second_run_marks_them_open(self):
++        _, summary, first = self.merge(record([finding()]))
++        self.assertEqual(summary["new"], 1)
++        self.assertEqual(set(self.statuses(first).values()), {"new"})
++        _, summary, second = self.merge(record([finding()]))
++        self.assertEqual((summary["new"], summary["open"]), (0, 1))
++        self.assertEqual(set(self.statuses(second).values()), {"open"})
++
++    def test_a_finding_missing_from_a_full_rerun_is_marked_fixed_and_a_return_is_open_again(self):
++        _, _, first = self.merge(record([finding(), finding(rule="touch-target")]))
++        gone = first["findings"][0]["id"]
++        _, summary, _ = self.merge(record([finding(rule="touch-target")]))
++        self.assertEqual(summary["fixed"], 1)
++        ledger = read(os.path.join(self.repo, LEDGER))
++        self.assertIn('"status": "fixed"', ledger)
++        _, summary, back = self.merge(record([finding(), finding(rule="touch-target")]))
++        self.assertEqual(self.statuses(back)[gone], "open")
++        self.assertEqual(summary["new"], 0)
++
++    def test_a_scoped_rerun_only_fixes_findings_on_screens_inside_its_scope(self):
++        self.merge(record([finding(screen="home"), finding(screen="settings", file="app/Settings.kt")]))
++        _, summary, _ = self.merge(record([], scope=["home"]))
++        self.assertEqual(summary["fixed"], 1)
++        _, summary, merged = self.merge(record([finding(screen="settings", file="app/Settings.kt")], scope=["settings"]))
++        self.assertEqual((summary["new"], summary["open"]), (0, 1))
++
++    def test_a_rejected_finding_never_comes_back_as_new(self):
++        _, _, first = self.merge(record([finding()]))
++        fid = first["findings"][0]["id"]
++        out = self.ok("reject", fid, "--reason", "Brand color on purpose")
++        self.assertEqual(out["status"], "rejected")
++        _, summary, again = self.merge(record([finding(line=99)]))
++        self.assertEqual(self.statuses(again)[fid], "rejected")
++        self.assertEqual((summary["new"], summary["open"]), (0, 0))
++        self.assertEqual(summary["rejected"], 1)
++        _, summary, _ = self.merge(record([]))
++        self.assertEqual(summary["fixed"], 0)
++        self.assertIn("Brand color on purpose", read(os.path.join(self.repo, LEDGER)))
++
++    def test_rejecting_an_unknown_id_fails_and_changes_nothing(self):
++        r = self.run_cli("reject", "VIA-home-00000000", "--reason", "x")
++        self.assertEqual(r.returncode, 1)
++        self.assertFalse(os.path.exists(os.path.join(self.repo, LEDGER)))
++
++    def test_text_outside_the_ledger_markers_is_kept_byte_for_byte(self):
++        before, after = "# Design\n\nTokens: primary #123456\n\n", "\n## Lessons\n- Keep cards flat\n  \n"
++        write(os.path.join(self.repo, LEDGER),
++              before + "<!-- via:ledger:start -->\nold\n<!-- via:ledger:end -->\n" + after)
++        self.merge(record([finding()]))
++        text = read(os.path.join(self.repo, LEDGER))
++        self.assertTrue(text.startswith(before + "<!-- via:ledger:start -->"))
++        self.assertTrue(text.endswith("<!-- via:ledger:end -->\n" + after))
++        self.assertNotIn("\nold\n", text)
++
++    def test_a_ledger_without_markers_gets_the_block_appended(self):
++        write(os.path.join(self.repo, LEDGER), "# Design\n\nTokens only.\n")
++        self.merge(record([finding()]))
++        text = read(os.path.join(self.repo, LEDGER))
++        self.assertTrue(text.startswith("# Design\n\nTokens only.\n"))
++        self.assertEqual(text.count("<!-- via:ledger:start -->"), 1)
++
++    def test_the_ledger_table_escapes_finding_text(self):
++        evil = finding(issue="<script>alert(1)</script> | **bold**")
++        self.merge(record([evil]))
++        text = read(os.path.join(self.repo, LEDGER))
++        table = text.split("<!-- via:ledger:end -->")[0].split("```\n")[-1]
++        self.assertNotIn("<script>", table)
++        self.assertIn("&lt;script&gt;", table)
++        self.assertIn("\\|", table)
++
++    # --- run folder and .gitignore ---
++
++    def test_init_ignores_the_run_folder_before_creating_it(self):
++        out = self.ok("init")
++        self.assertTrue(os.path.isdir(out["run_dir"]))
++        self.assertIn(".via/", read(os.path.join(self.repo, ".gitignore")).splitlines())
++        ignored = subprocess.run(["git", "check-ignore", "-q", out["run_dir"]], cwd=self.repo)
++        self.assertEqual(ignored.returncode, 0)
++
++    def test_init_keeps_existing_gitignore_lines_and_never_duplicates_its_own(self):
++        write(os.path.join(self.repo, ".gitignore"), "build/")  # no trailing newline
++        self.ok("init")
++        self.ok("init")
++        lines = read(os.path.join(self.repo, ".gitignore")).splitlines()
++        self.assertEqual(lines, ["build/", ".via/"])
++
++    def test_init_stops_when_gitignore_cannot_be_updated(self):
++        target = os.path.join(self.repo, "real-ignore")
++        write(target, "")
++        os.symlink(target, os.path.join(self.repo, ".gitignore"))
++        r = self.run_cli("init")
++        self.assertEqual(r.returncode, 1)
++        self.assertFalse(os.path.exists(os.path.join(self.repo, ".via")))
++
++    # --- pass record ---
++
++    def test_pass_writes_a_record_for_the_current_code_state(self):
++        run_dir, _, _ = self.merge(record([finding(severity="low")]))
++        out = self.ok("pass", run_dir)
++        rec = self.pass_record()
++        self.assertEqual(rec["tree"], self.worktree_tree())
++        self.assertEqual(rec["findings_open"], 0)
++        self.assertEqual(os.path.abspath(rec["run"]), os.path.abspath(run_dir))
++        self.assertEqual(out["tree"], rec["tree"])
++
++    def test_pass_counts_open_high_and_med_findings_that_are_not_ticketed(self):
++        run_dir, _, _ = self.merge(record([
++            finding(severity="high"), finding(rule="a", severity="med", route="ticket"),
++            finding(rule="b", severity="low"), finding(rule="c", severity="med", route="fix-now")]))
++        self.ok("pass", run_dir)
++        self.assertEqual(self.pass_record()["findings_open"], 2)
++
++    def test_editing_code_after_a_pass_changes_the_tree_the_record_no_longer_matches(self):
++        run_dir, _, _ = self.merge(record([]))
++        self.ok("pass", run_dir)
++        recorded = self.pass_record()["tree"]
++        write(os.path.join(self.repo, "app", "Home.kt"), "fun Home() { /* edited */ }\n")
++        self.assertNotEqual(recorded, self.worktree_tree())
++
++    def test_run_folder_files_do_not_change_the_tree(self):
++        run_dir, _, _ = self.merge(record([]))
++        self.ok("pass", run_dir)
++        before = self.pass_record()["tree"]
++        write(os.path.join(run_dir, "shot.png"), "x")
++        self.assertEqual(before, self.worktree_tree())
++
++    def test_pass_refuses_a_run_that_was_never_merged(self):
++        run_dir = self.new_run(record([]))
++        r = self.run_cli("pass", run_dir)
++        self.assertEqual(r.returncode, 1)
++        self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "via-check-ok")))
++
++    # --- refusals: nothing is written ---
++
++    def assert_refused_without_writing(self, rec_text, code):
++        run_dir = self.ok("init")["run_dir"]
++        path = os.path.join(run_dir, "findings.json")
++        write(path, rec_text)
++        r = self.run_cli("merge", run_dir)
++        self.assertEqual(r.returncode, code, r.stdout + r.stderr)
++        self.assertEqual(read(path), rec_text)
++        self.assertFalse(os.path.exists(os.path.join(self.repo, LEDGER)))
++
++    def test_invalid_records_are_refused(self):
++        bad_finding = finding()
++        del bad_finding["rule"]
++        bad_severity = finding(severity="urgent")
++        for rec in ("not json", json.dumps([]), json.dumps(record([bad_finding])),
++                    json.dumps(record([bad_severity])), json.dumps({**record([]), "mode": "nope"}),
++                    json.dumps({**record([]), "version": 2})):
++            with self.subTest(rec=rec[:40]):
++                self.assert_refused_without_writing(rec, 1)
++
++    def test_a_secret_shaped_value_in_the_record_exits_2(self):
++        self.assert_refused_without_writing(json.dumps(record([finding(issue="key " + FAKE_KEY)])), 2)
++
++    def test_a_symlinked_ledger_is_refused(self):
++        target = os.path.join(self.repo, "elsewhere.md")
++        write(target, "keep\n")
++        os.makedirs(os.path.join(self.repo, "docs", "design"))
++        os.symlink(target, os.path.join(self.repo, LEDGER))
++        run_dir = self.new_run(record([finding()]))
++        r = self.run_cli("merge", run_dir)
++        self.assertEqual(r.returncode, 1)
++        self.assertEqual(read(target), "keep\n")
++
++    def test_a_run_folder_outside_the_project_run_area_is_refused(self):
++        outside = os.path.join(os.path.dirname(self.repo), "stray")
++        write(os.path.join(outside, "findings.json"), json.dumps(record([])))
++        self.assertEqual(self.run_cli("merge", outside).returncode, 1)
++
++    def test_outputs_are_json_on_stdout_and_stderr_names_the_problem(self):
++        r = self.run_cli("merge", os.path.join(self.repo, ".via", "runs", "missing"))
++        self.assertEqual(r.returncode, 1)
++        self.assertTrue(r.stderr.startswith("Stopped:"))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/plugins/via/scripts/via_run.py b/plugins/via/scripts/via_run.py
+new file mode 100644
+index 0000000..bf46b8d
+--- /dev/null
++++ b/plugins/via/scripts/via_run.py
+@@ -0,0 +1,415 @@
++#!/usr/bin/env python3
++"""via-run: the bookkeeping behind Via's check and audit runs.
++
++Claude makes the design calls and writes a run record (findings.json). This tool does the rest:
++stable finding IDs, the findings ledger, the run folder and the pass record the gate reads.
++
++Usage: via_run.py init   [--project DIR]
++       via_run.py merge  RUN_DIR [--project DIR]
++       via_run.py reject ID --reason TEXT [--project DIR]
++       via_run.py pass   RUN_DIR [--project DIR]
++
++Order for a run: init, write RUN_DIR/findings.json, merge, then pass once the code is final.
++The ledger lives in docs/design/via.md between two marker comments. Everything outside them is left alone.
++Stdout is JSON. Exit 0 on success, 1 when the input is invalid or unsafe (nothing is written),
++2 on a secret-shaped value.
++"""
++import argparse
++import hashlib
++import html
++import json
++import os
++import re
++import subprocess
++import sys
++import tempfile
++import time
++
++RUN_AREA = os.path.join(".via", "runs")
++IGNORE_LINE = ".via/"
++LEDGER = os.path.join("docs", "design", "via.md")
++START, END = "<!-- via:ledger:start -->", "<!-- via:ledger:end -->"
++PASS_FILE = "via-check-ok"
++
++SEVERITIES = {"high", "med", "low"}
++VERDICTS = {"real", "wrong", "unsure"}
++ROUTES = {"fix-now", "ticket"}
++MODES = {"check", "audit"}
++
++# Same pattern the gemini-review scripts, via_setup.py and claude/hooks/review-gate.py use to stop on a
++# secret. Each script ships alone, so the copies stay: when you add a key pattern, add it to all of them.
++SECRET_RE = re.compile(
++    r"(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|AQ\.[0-9A-Za-z_-]{20,}|gh[pousr]_[0-9A-Za-z]{36}"
++    r"|github_pat_[0-9A-Za-z_]{20,}|glpat-[0-9A-Za-z_-]{20,}|(^|[^0-9A-Za-z_-])sk-[0-9A-Za-z_-]{20,}"
++    r"|[sr]k_live_[0-9A-Za-z]{10,}|xox[baprs]-[0-9A-Za-z-]{10,}"
++    r"|eyJ[0-9A-Za-z_-]{10,}\.eyJ[0-9A-Za-z_-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY)"
++)
++
++
++def die(message, code=1):
++    print("Stopped: %s" % message, file=sys.stderr)
++    sys.exit(code)
++
++
++def has_secret(value):
++    return bool(SECRET_RE.search(str(value)))
++
++
++def write_atomic(path, text):
++    directory = os.path.dirname(path)
++    os.makedirs(directory, exist_ok=True)
++    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".via-")
++    try:
++        with os.fdopen(fd, "w", encoding="utf-8") as f:
++            f.write(text)
++        # mkstemp makes the file 0600. The ledger and .gitignore are shared project files, so keep
++        # the mode they had, or the usual 0644 for a new one.
++        os.chmod(tmp, os.stat(path).st_mode & 0o777 if os.path.exists(path) else 0o644)
++        os.replace(tmp, path)
++    except BaseException:
++        if os.path.exists(tmp):
++            os.unlink(tmp)
++        raise
++
++
++def read_text(path):
++    try:
++        with open(path, encoding="utf-8") as f:
++            return f.read()
++    except FileNotFoundError:
++        return None
++    except (OSError, UnicodeDecodeError) as e:
++        die("cannot read %s (%s). Nothing was changed." % (path, e))
++
++
++def inside(path, root):
++    path, root = os.path.realpath(path), os.path.realpath(root)
++    return path == root or path.startswith(root + os.sep)
++
++
++def emit(payload):
++    json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
++    print()
++
++
++# --- git ---
++
++def git(args, cwd, env=None):
++    try:
++        r = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=30)
++    except (OSError, subprocess.SubprocessError) as e:
++        die("git failed (%s). Nothing was changed." % e)
++    if r.returncode != 0:
++        die("git failed: %s Nothing was changed." % r.stderr.strip())
++    return r.stdout.strip()
++
++
++def worktree_tree(cwd):
++    """Tree hash of the working tree on a copy of the index, the same way the review gate does it."""
++    index = os.path.abspath(os.path.join(cwd, git(["rev-parse", "--git-path", "index"], cwd)))
++    fd, tmp = tempfile.mkstemp(prefix="via-run-index-")
++    os.close(fd)
++    try:
++        if os.path.exists(index):
++            with open(index, "rb") as src, open(tmp, "wb") as dst:
++                dst.write(src.read())
++        else:
++            os.remove(tmp)  # git creates it
++        env = {**os.environ, "GIT_INDEX_FILE": tmp}
++        git(["add", "-A"], cwd, env)
++        return git(["write-tree"], cwd, env)
++    finally:
++        if os.path.exists(tmp):
++            os.remove(tmp)
++
++
++# --- run record ---
++
++def is_text(value):
++    return isinstance(value, str) and value.strip() != ""
++
++
++def check_record(rec):
++    """Return a message naming the first problem, or None when the record is valid."""
++    if not isinstance(rec, dict):
++        return "findings.json must be a JSON object."
++    if rec.get("version") != 1:
++        return "version must be 1."
++    if rec.get("mode") not in MODES:
++        return "mode must be one of %s." % ", ".join(sorted(MODES))
++    scope = rec.get("scope")
++    if scope != "all" and not (isinstance(scope, list) and scope and all(is_text(s) for s in scope)):
++        return 'scope must be "all" or a list of screen names.'
++    if not (isinstance(rec.get("platforms"), list) and all(is_text(p) for p in rec["platforms"])):
++        return "platforms must be a list of names."
++    findings = rec.get("findings")
++    if not isinstance(findings, list):
++        return "findings must be a list."
++    for i, f in enumerate(findings):
++        where = "findings[%d]" % i
++        if not isinstance(f, dict):
++            return "%s must be an object." % where
++        for key in ("screen", "rule", "issue", "fix", "source"):
++            if not is_text(f.get(key)):
++                return "%s.%s must be non-empty text." % (where, key)
++        if f.get("severity") not in SEVERITIES:
++            return "%s.severity must be one of %s." % (where, ", ".join(sorted(SEVERITIES)))
++        loc = f.get("location")
++        if not (isinstance(loc, dict) and is_text(loc.get("file"))):
++            return "%s.location.file must be non-empty text." % where
++        line = loc.get("line")
++        if line is not None and not (isinstance(line, int) and not isinstance(line, bool) and line >= 0):
++            return "%s.location.line must be a whole number." % where
++        if f.get("verdict") not in VERDICTS | {None}:
++            return "%s.verdict must be one of %s or null." % (where, ", ".join(sorted(VERDICTS)))
++        if f.get("route") not in ROUTES | {None}:
++            return "%s.route must be one of %s or null." % (where, ", ".join(sorted(ROUTES)))
++        if f.get("ticket") is not None and not is_text(f["ticket"]):
++            return "%s.ticket must be text." % where
++    for i, s in enumerate(rec.get("screenshots", [])):
++        if not (isinstance(s, dict) and all(is_text(s.get(k)) for k in ("path", "screen", "theme", "size"))
++                and isinstance(s.get("redacted"), bool)):
++            return "screenshots[%d] needs path, screen, theme, size and a true/false redacted." % i
++    for i, l in enumerate(rec.get("lessons", [])):
++        if not (isinstance(l, dict) and is_text(l.get("text")) and is_text(l.get("source"))
++                and l.get("scope") in ("project", "general")):
++            return "lessons[%d] needs text, source and scope project or general." % i
++    for key in ("skills", "integrations"):
++        if key in rec and not isinstance(rec[key], dict):
++            return "%s must be an object." % key
++    return None
++
++
++def slug(screen):
++    return re.sub(r"[^a-z0-9]+", "-", screen.lower()).strip("-") or "screen"
++
++
++def assign_ids(findings):
++    """Stable IDs: hash of screen, rule and file. The line is not part of it, so edits above a
++    finding do not change its ID. Same-key findings are numbered in line order."""
++    groups = {}
++    for f in findings:
++        key = (slug(f["screen"]), f["rule"], f["location"]["file"])
++        groups.setdefault(key, []).append((f["location"].get("line") or 0, f))
++    for (screen, rule, path), members in groups.items():
++        digest = hashlib.sha256("\0".join((screen, rule, path)).encode("utf-8")).hexdigest()[:8]
++        base = "VIA-%s-%s" % (screen, digest)
++        for n, (_, f) in enumerate(sorted(members, key=lambda m: m[0])):  # stable: ties keep record order
++            f["id"] = base if n == 0 else "%s-%d" % (base, n + 1)
++
++
++def covers(scope, screen):
++    return scope == "all" or screen in scope
++
++
++def merge_findings(ledger, rec, run_name):
++    """Update the ledger from a run and set each run finding's status. Returns the counts."""
++    counts = {"new": 0, "open": 0, "fixed": 0, "rejected": 0, "regressed": 0}
++    seen = set()
++    now = time.strftime("%Y-%m-%dT%H:%M:%S")
++    for f in rec["findings"]:
++        fid, entry = f["id"], ledger.get(f["id"])
++        seen.add(fid)
++        if entry is None:
++            f["status"] = "new"
++            counts["new"] += 1
++            ledger[fid] = {"id": fid, "status": "new", "first_seen": now}
++            entry = ledger[fid]
++        elif entry["status"] == "rejected":
++            f["status"] = "rejected"
++            counts["rejected"] += 1
++            continue
++        else:
++            if entry["status"] == "fixed":
++                counts["regressed"] += 1
++            f["status"] = entry["status"] = "open"
++            counts["open"] += 1
++        entry.update({"screen": f["screen"], "rule": f["rule"], "severity": f["severity"],
++                      "file": f["location"]["file"], "line": f["location"].get("line"),
++                      "issue": f["issue"], "last_seen": now, "run": run_name})
++        if f.get("ticket"):
++            entry["ticket"] = f["ticket"]
++    for fid, entry in ledger.items():
++        if fid not in seen and entry["status"] in ("new", "open") and covers(rec["scope"], entry.get("screen", "")):
++            entry["status"] = "fixed"
++            entry["fixed_in"] = run_name
++            counts["fixed"] += 1
++    return counts
++
++
++# --- ledger file ---
++
++def ledger_path(project):
++    path = os.path.join(project, LEDGER)
++    if os.path.islink(path) or not inside(os.path.dirname(path), project):
++        die("%s is a symlink or leaves the project. Nothing was changed." % LEDGER)
++    return path
++
++
++def cell(value):
++    return html.escape(str(value if value is not None else ""), quote=False).replace("|", "\\|").replace("\n", " ")
++
++
++def render_block(ledger):
++    entries = [ledger[k] for k in sorted(ledger)]
++    data = json.dumps({"findings": entries}, indent=2, ensure_ascii=False).replace("<", "\\u003c")
++    rows = ["| ID | Screen | Severity | Status | Location | Issue |", "|---|---|---|---|---|---|"]
++    for e in entries:
++        where = e.get("file", "") + (":%s" % e["line"] if e.get("line") else "")
++        rows.append("| %s |" % " | ".join(cell(v) for v in (
++            e["id"], e.get("screen"), e.get("severity"), e.get("status"), where, e.get("issue"))))
++    return "%s\n```json\n%s\n```\n\n%s\n%s" % (START, data, "\n".join(rows), END)
++
++
++def load_ledger(text):
++    """Return (entries by ID, start, end) where start/end bound the marker block, or None, None."""
++    if text is None or START not in text or END not in text or text.index(START) > text.index(END):
++        return {}, None, None
++    start, end = text.index(START), text.index(END) + len(END)
++    body = text[start + len(START):text.index(END)]
++    m = re.search(r"```json\n(.*?)\n```", body, re.S)
++    if not m:
++        return {}, start, end
++    try:
++        entries = json.loads(m.group(1))["findings"]
++        return {e["id"]: e for e in entries}, start, end
++    except (ValueError, KeyError, TypeError):
++        die("the ledger block in %s is not valid JSON. Fix or delete it by hand, nothing was changed." % LEDGER)
++
++
++def open_ledger(project):
++    """Return (path, file text or "", entries by ID, block start, block end)."""
++    path = ledger_path(project)
++    text = read_text(path)
++    ledger, start, end = load_ledger(text)
++    return path, text or "", ledger, start, end
++
++
++def save_ledger(path, text, ledger, start, end):
++    block = render_block(ledger)
++    if start is not None:
++        out = text[:start] + block + text[end:]
++    elif text:
++        out = text + ("" if text.endswith("\n") else "\n") + "\n" + block + "\n"
++    else:
++        out = "# Design decisions and Via ledger\n\n" + block + "\n"
++    write_atomic(path, out)
++
++
++# --- run folder ---
++
++def ensure_ignored(project):
++    path = os.path.join(project, ".gitignore")
++    if os.path.islink(path):
++        die(".gitignore is a symlink. Nothing was written.")
++    text = read_text(path) or ""
++    if IGNORE_LINE in [line.strip() for line in text.splitlines()]:
++        return
++    write_atomic(path, text + ("" if not text or text.endswith("\n") else "\n") + IGNORE_LINE + "\n")
++
++
++def resolve_run(project, run_arg):
++    area = os.path.join(project, RUN_AREA)
++    run_dir = os.path.abspath(run_arg)
++    if not os.path.isdir(run_dir) or not inside(run_dir, area) or os.path.realpath(run_dir) == os.path.realpath(area):
++        die("%s is not a run folder made by `init` in this project." % run_arg)
++    record = os.path.join(run_dir, "findings.json")
++    if os.path.islink(record) or not os.path.isfile(record):
++        die("%s has no findings.json (or it is a symlink)." % run_arg)
++    return run_dir, record
++
++
++def load_record(path):
++    text = read_text(path)
++    if has_secret(text):
++        die("findings.json holds a secret-shaped value. Remove it; nothing was written.", 2)
++    try:
++        rec = json.loads(text)
++    except ValueError:
++        die("findings.json is not valid JSON. Nothing was changed.")
++    problem = check_record(rec)
++    if problem:
++        die("%s Nothing was changed." % problem)
++    return rec
++
++
++# --- commands ---
++
++def cmd_init(project, args):
++    base = os.path.join(project, RUN_AREA)
++    if os.path.islink(os.path.join(project, ".via")) or os.path.islink(base):
++        die(".via is a symlink. Nothing was written.")
++    ensure_ignored(project)  # before anything lands in the run folder
++    os.makedirs(base, exist_ok=True)
++    stamp, n = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), 1
++    while True:
++        run_dir = os.path.join(base, stamp if n == 1 else "%s-%d" % (stamp, n))
++        try:
++            os.mkdir(run_dir)
++            break
++        except FileExistsError:
++            n += 1
++    emit({"run_dir": run_dir})
++
++
++def cmd_merge(project, args):
++    run_dir, record_path = resolve_run(project, args.run_dir)
++    rec = load_record(record_path)
++    assign_ids(rec["findings"])
++    path, text, ledger, start, end = open_ledger(project)
++    counts = merge_findings(ledger, rec, os.path.basename(run_dir))
++    rec["merged_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
++    save_ledger(path, text, ledger, start, end)
++    write_atomic(record_path, json.dumps(rec, indent=2, ensure_ascii=False) + "\n")
++    emit({**counts, "ledger": path})
++
++
++def cmd_reject(project, args):
++    if not args.reason.strip():
++        die("a rejection needs a reason.")
++    if has_secret(args.reason):
++        die("the reason looks like a secret. Nothing was written.", 2)
++    path, text, ledger, start, end = open_ledger(project)
++    if args.id not in ledger:
++        die("%s is not in the ledger. Nothing was changed." % args.id)
++    ledger[args.id].update({"status": "rejected", "reason": args.reason.strip(),
++                            "rejected_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
++    save_ledger(path, text, ledger, start, end)
++    emit({"id": args.id, "status": "rejected"})
++
++
++def cmd_pass(project, args):
++    run_dir, record_path = resolve_run(project, args.run_dir)
++    rec = load_record(record_path)
++    if not rec.get("merged_at") or any("status" not in f for f in rec["findings"]):
++        die("this run was not merged yet. Run `merge` first. Nothing was recorded.")
++    open_count = sum(1 for f in rec["findings"] if f["severity"] in ("high", "med")
++                     and f["status"] in ("new", "open") and f.get("route") != "ticket")
++    tree = worktree_tree(project)
++    marker = os.path.abspath(os.path.join(project, git(["rev-parse", "--git-path", PASS_FILE], project)))
++    write_atomic(marker, json.dumps({"tree": tree, "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
++                                     "run": run_dir, "findings_open": open_count}))
++    emit({"tree": tree, "findings_open": open_count, "path": marker})
++
++
++def main():
++    common = argparse.ArgumentParser(add_help=False)
++    common.add_argument("--project")
++    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
++    sub = ap.add_subparsers(dest="command", required=True)
++    sub.add_parser("init", parents=[common])
++    for name in ("merge", "pass"):
++        sub.add_parser(name, parents=[common]).add_argument("run_dir")
++    rej = sub.add_parser("reject", parents=[common])
++    rej.add_argument("id")
++    rej.add_argument("--reason", required=True)
++    args = ap.parse_args()
++    project = os.path.abspath(args.project or os.getcwd())
++    if not os.path.isdir(project):
++        die("%s is not a folder." % project)
++    {"init": cmd_init, "merge": cmd_merge, "reject": cmd_reject, "pass": cmd_pass}[args.command](project, args)
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())

@@ -1,0 +1,74 @@
+{
+  "id": "nfx-58",
+  "source": "nousfx",
+  "ui": false,
+  "exact": true,
+  "inexact_reasons": [],
+  "ticket": "Objective: find real bugs and security issues (not style). Repo /Users/me/Projects/NousFX, branch cesar/NFX-58, uncommitted. Scope: `git diff bd11c8022268880aadd32eebf84d2d7af511f871` plus untracked files (`git ls-files --others --exclude-standard`): claude/skills/prototype-fidelity/SKILL.md, scripts/test_rules_single_copy.py. Ticket NFX-58: trim always-loaded rules to one copy; each rule in one source; moved rules count as kept in scripts/real_machine_regression.py; delete claude/CLAUDE.delegation.md and its install.sh step. Out of scope: changing what the rules say. Check especially: install.sh still valid after removing the delegation block (bash -n, variables, set -u); regression script classes (moved/reworded) can't hide a truly dropped rule; handoff SKILL.md keeps every rule from the old global rules (save-location logic); no broken references to CLAUDE.delegation.md or to \"Prototype fidelity in CLAUDE.md\" left (grep, excluding graphify-out and .git). Do not edit files. Output format: `ID | severity | file:line | problem | suggested fix`, or `NO FINDINGS`.",
+  "base": "bd11c8022268880aadd32eebf84d2d7af511f871",
+  "patch_file": "nfx-58.patch",
+  "opus_findings": [
+    {
+      "id": "real_machine_regression.py-covered-hides-drops",
+      "severity": "high",
+      "confidence": 60,
+      "file": "scripts/real_machine_regression.py",
+      "line": 74,
+      "problem": "The new `covered()` fallback (lines 94-96, threshold `COVERED_WORDS` at line 31) builds `known_words` from the generated rules plus every SKILL.md and agent file. A line counts as kept when 70% of its 5+ letter words appear anywhere in that large pool. That hides real drops. Proof: run against today's `~/.claude/CLAUDE.md`, the \"Gemini roles: ...\" rule is classified `reworded`, yet it is in no generated source and no skill (only in the uncommitted `.claude/proposed-local.claude.md`). The same happened to a test line built from common skill words. `--fail-on-dropped` passes even though nothing carries the rule.",
+      "fix": "Compare word coverage against a single target, not the whole pool: the closest generated line, or one skill sentence or paragraph (for example, the best `difflib` match above a looser ratio). Or report `covered` as its own class that `--fail-on-dropped` still fails on. Add a test where a rule made of common skill words is removed and must show as `dropped`.",
+      "quote": ""
+    },
+    {
+      "id": "real_machine_regression.py-partial-move",
+      "severity": "med",
+      "confidence": 60,
+      "file": "scripts/real_machine_regression.py",
+      "line": 89,
+      "problem": "`moved_to_skill` marks the whole line `moved` once 50% of its sentences appear in a skill. The other half of a multi-sentence rule can be dropped without notice.",
+      "fix": "Require every sentence (or every sentence with 6+ words) to be found in the skills or the generated rules. Or list the sentences that were not found in the report.",
+      "quote": ""
+    },
+    {
+      "id": "real_machine_regression.py-word-punct",
+      "severity": "low",
+      "confidence": 60,
+      "file": "scripts/real_machine_regression.py",
+      "line": 43,
+      "problem": "The `words()` regex `[a-z][a-z/_.-]{4,}` keeps trailing `.` and `-`, so \"review.\" and \"review\" count as different words. Results then depend on where a word sits in the sentence.",
+      "fix": "Strip trailing `.-/` from each match, or use `\\b[a-z][a-z_]{4,}\\b`.",
+      "quote": ""
+    },
+    {
+      "id": "handoff-SKILL.md-continue-path",
+      "severity": "low",
+      "confidence": 60,
+      "file": "claude/skills/handoff/SKILL.md",
+      "line": 31,
+      "problem": "The closing line always says \"continue from .claude/handoff.md\". The new save logic can write a root `HANDOFF.md` or a file in the temp folder instead, so this points the next session at the wrong file.",
+      "fix": "Say \"continue from <the path just printed>\".",
+      "quote": ""
+    },
+    {
+      "id": "install.sh-stale-delegation-section",
+      "severity": "low",
+      "confidence": 60,
+      "file": "install.sh",
+      "line": 13,
+      "problem": "install.sh no longer writes CLAUDE.md, but there are two leftovers. (1) On machines not yet on nousfx_sync, the old \"# Delegation policy\" section it appended stays in `~/.claude/CLAUDE.md` forever, so the rules are still duplicated. (2) The guard's reason (\"installing over it would fight the sync\") now describes CLAUDE.md writes that no longer happen.",
+      "fix": "Have install.sh print a one-time note (or a RUNBOOK step) to remove the old \"# Delegation policy\" section or run nousfx_sync. Reword the guard comment to give the real reason it still refuses.",
+      "quote": ""
+    }
+  ],
+  "judged": {
+    "real_machine_regression.py-covered-hides-drops": "real",
+    "real_machine_regression.py-partial-move": "real",
+    "real_machine_regression.py-word-punct": "skip",
+    "handoff-SKILL.md-continue-path": "real",
+    "install.sh-stale-delegation-section": "skip"
+  },
+  "captured_from": {
+    "session": "d85c8133-6353-47ec-aa49-eb8cd320220f.jsonl",
+    "agent": "a457f581c5ed2e892"
+  },
+  "judged_notes": "Session: tightened covered() and the half-moved rule, fixed the handoff path wording; other lows not mentioned."
+}

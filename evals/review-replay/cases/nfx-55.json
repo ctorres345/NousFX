@@ -1,0 +1,74 @@
+{
+  "id": "nfx-55",
+  "source": "nousfx",
+  "ui": false,
+  "exact": true,
+  "inexact_reasons": [],
+  "ticket": "Scope: `git diff 80acaec47b15cbf931a54568d7a206baf9ed7c1b` plus untracked files from `git ls-files --others --exclude-standard` (new: scripts/nousfx_outside.py, scripts/test_nousfx_outside.py, harness/skills.lock.json). Skip the lock's checksums; do check it is well-formed.\n\nWhat it does: sync (scripts/nousfx_sync.py) now reads harness/skills.lock.json (pinned third-party skills: repo, path, commit, sha256), fetches missing ones into <state>/outside-skills/<name>-<sha12>/ using the secure fetch code in plugins/via/scripts/via_skills.py, then links them through scripts/nousfx_skills.py (manifest, collisions, --restore). Rules: a failed skill is reported and left out, others still apply, exit 1; a hand-installed copy identical to the pin is replaced without --yes-replace (backed up first); --check/--dry-run never fetch.\n\nFocus on: path traversal or unsafe writes under the state folder (skill names, cache dir names), a failed fetch leaving partial state, links to a cache dir that does not exist, the `keep` logic unlinking or keeping the wrong links, --restore correctness for auto-replaced copies, Windows behaviour, anything that could replace a user's folder that is not an exact match, TOCTOU between same_as_lock and apply.",
+  "base": "80acaec47b15cbf931a54568d7a206baf9ed7c1b",
+  "patch_file": "nfx-55.patch",
+  "opus_findings": [
+    {
+      "id": "nousfx_outside.py-edited-cache-deleted",
+      "severity": "med",
+      "confidence": 60,
+      "file": "scripts/nousfx_outside.py",
+      "line": 114,
+      "problem": "The cache folder is the real target of ~/.agents/skills/<name> and ~/.claude/skills/<name>. A user who edits the skill through that link (for example ~/.claude/skills/grilling/SKILL.md) makes the cache \"edited\". The next real sync then runs shutil.rmtree(final) with no backup and no journal entry, so the edits are lost and --restore cannot bring them back. This is the one path where a folder that is not an exact match gets replaced without --yes-replace.",
+      "fix": "Move the edited folder into the run's backup (or <state>/outside-skills/.edited-<name>-<stamp>) instead of deleting it. Or treat \"edited\" as a collision that needs --yes-replace NAME, and print it.",
+      "quote": ""
+    },
+    {
+      "id": "nousfx_outside.py-rmtree-then-replace-gap",
+      "severity": "low",
+      "confidence": 60,
+      "file": "scripts/nousfx_outside.py",
+      "line": 114,
+      "problem": "rmtree(final) runs before os.replace(tmp, final). If the rmtree fails halfway, or os.replace fails, the old cache is partly or fully gone. The skill is then in `failed`, so `keep` leaves its existing links pointing at a missing or half-deleted folder. That is exactly the \"links to a cache dir that does not exist\" case.",
+      "fix": "First rename final aside (for example to .old-<name>), then os.replace(tmp, final), then remove or back up the aside copy. If the replace fails, rename the aside copy back.",
+      "quote": ""
+    },
+    {
+      "id": "nousfx_outside.py-oserror-uncaught",
+      "severity": "low",
+      "confidence": 60,
+      "file": "scripts/nousfx_outside.py",
+      "line": 56,
+      "problem": "status() and same_as_lock() call via_skills.disk_tree, which open()s and reads every file. The callers are ensure() before its try block, and the identical() lambda inside nousfx_skills.plan. An unreadable file in a cache or hand-installed folder raises PermissionError or OSError. main() catches only SyncError, so the whole sync dies with a traceback instead of reporting one skill. disk_tree also blocks forever on a FIFO, and reads a whole folder into memory with no size limit, even when the folder is a user symlink to something large.",
+      "fix": "Wrap both calls: in status, treat OSError as \"edited\"; in same_as_lock, return False on OSError. Before reading, skip non-regular files (stat.S_ISREG) and cap the file count and bytes, as read_tree does (MAX_FILES, MAX_BYTES).",
+      "quote": ""
+    },
+    {
+      "id": "nousfx_outside.py-stage-dir-shared",
+      "severity": "low",
+      "confidence": 60,
+      "file": "scripts/nousfx_outside.py",
+      "line": 104,
+      "problem": "The staging folder <state>/outside-skills/.stage-<name> has a fixed name. Two syncs running at once (two terminals, or a hook plus a manual run) rmtree each other's staging folder mid-write. The worst outcome is a spurious \"files written do not match\" failure, or a replace with another run's files.",
+      "fix": "Make the staging folder with tempfile.mkdtemp(dir=root, prefix=\".stage-\" + name + \"-\").",
+      "quote": ""
+    },
+    {
+      "id": "nousfx_outside.py-clash-case-fold",
+      "severity": "low",
+      "confidence": 60,
+      "file": "scripts/nousfx_outside.py",
+      "line": 42,
+      "problem": "The clash check against NousFX's own skills uses exact name matching. On macOS and Windows (case-insensitive), a lock name like \"Handoff\" lands on the same link path as the shipped \"handoff\". The two sources would then fight over the same manifest entry.",
+      "fix": "Compare via_skills.fold(n) of both sets.",
+      "quote": ""
+    }
+  ],
+  "judged": {
+    "nousfx_outside.py-edited-cache-deleted": "real",
+    "nousfx_outside.py-rmtree-then-replace-gap": "real",
+    "nousfx_outside.py-oserror-uncaught": "real",
+    "nousfx_outside.py-stage-dir-shared": "real",
+    "nousfx_outside.py-clash-case-fold": "real"
+  },
+  "captured_from": {
+    "session": "a8dba66d-cb05-47de-bdba-a2d8e96fcc75.jsonl",
+    "agent": "a1dc97e89ea7fcf98"
+  },
+  "judged_notes": "Table: all five 'Yes' and fixed."
+}

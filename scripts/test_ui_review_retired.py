@@ -18,7 +18,8 @@ def read(path):
 def grep(pattern):
     # --untracked: a new file is searched before it is committed (NFX-96). The pathspecs keep tool state out
     # (.claude/ settings, worktrees and drafts, graphify-out/) whatever this machine's exclude files say.
-    r = subprocess.run(["git", "grep", "--untracked", "-l", "-i", "-E", pattern, "--", ".", ":(exclude).claude", ":(exclude)graphify-out"], cwd=ROOT, capture_output=True, text=True)
+    # evals/review-replay/cases holds frozen past diffs (NFX-130): history, not live text, scrubbed of home paths.
+    r = subprocess.run(["git", "grep", "--untracked", "-l", "-i", "-E", pattern, "--", ".", ":(exclude).claude", ":(exclude)graphify-out", ":(exclude)evals/review-replay/cases"], cwd=ROOT, capture_output=True, text=True)
     assert r.returncode in (0, 1), r.stderr  # 1 is "no match"; anything else means the search did not run
     return set(r.stdout.split())
 

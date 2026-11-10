@@ -1,0 +1,129 @@
+{
+  "id": "nfx-57",
+  "source": "nousfx",
+  "ui": false,
+  "exact": true,
+  "inexact_reasons": [],
+  "ticket": "Scope: `git diff cede9d98835cce283cdd89766daf387f48394e32` plus the untracked files claude/hooks/nousfx-drift.py and scripts/test_nousfx_drift.py (list with `git ls-files --others --exclude-standard`). Read-only; do not edit.\n\nWhat it does (NFX-57): a Claude Code SessionStart hook (`nousfx-drift.py`, installed by `scripts/nousfx_sync.py` into ~/.claude/hooks and registered in settings.json) that prints one JSON line warning when (1) `nousfx_sync.py --check --summary` exits 1 with a JSON counts line, or (2) the local clone is behind origin/main (last-fetched ref). It starts a detached background `git fetch` (at most every 10 min). Requirements: never write/sync anything but that fetch; never fail the session (always exit 0, errors = silence); finish in under 2 s; message never mentions install.sh; works on Windows (PowerShell hook, `python`); agy gets a rules line instead (no session-start event).\n\nThings worth probing hard:\n- The hook runs with cwd = the clone and bare names `git` (Windows resolves bare names from the cwd first). Is the clone path a trust boundary here? What if the repo path in settings.json is attacker-influenced?\n- `--repo`/`--tools` are written into a shell command string in settings.json (bash on POSIX, PowerShell on Windows): quoting/injection when the path has spaces, quotes, `$`, backticks, `'`.\n- Anything in `merge_settings`/`replace_owned` that could drop or duplicate the user's other SessionStart/PreToolUse hooks (e.g. substring match on \"review-gate.py\" / \"nousfx-drift.py\").\n- `--summary` exit-code semantics vs the existing `--check`; crash exit code 1 being mistaken for drift.\n- Detached-process flags on Windows (DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP) and POSIX (start_new_session), zombie/hang risk, stdout inheritance causing the hook to wait for the child.\n- Timeout handling: subprocess.run(timeout=...) kills only the direct child; does a slow sync child leave grandchildren that keep the pipe open and block the hook past 2 s?\n- Test flakiness/timing assumptions in scripts/test_nousfx_drift.py (sleeps, stub git on PATH, posix-only sh script).\nAlso see docs/sync.md (\"Drift warning\") and harness/overlays/agy.overlay.md for claims the code must match.",
+  "base": "cede9d98835cce283cdd89766daf387f48394e32",
+  "patch_file": "nfx-57.patch",
+  "opus_findings": [
+    {
+      "id": "nousfx-drift.py-windows-cwd-lookup",
+      "severity": "high",
+      "confidence": 60,
+      "file": "claude/hooks/nousfx-drift.py",
+      "line": 62,
+      "problem": "On Windows, bare `git` (here and at line 83) is resolved by CreateProcess, which searches the parent process's current folder, not the `cwd=` passed to the child. The hook's own cwd is the project opened in Claude Code, so a `git.exe` in any opened repo runs at every session start. The docstring at lines 14-15 claims the opposite. NFX-56 already fixed this same class of bug in gemini_common.py.",
+      "fix": "Call `os.chdir(args.repo)` in main() right after the isfile check, before any subprocess. Or resolve git to an absolute path that skips cwd, the way gemini_common.which() does. Add a test that puts a stub `git` in the hook's cwd and asserts it never runs.",
+      "quote": ""
+    },
+    {
+      "id": "agy.overlay.md-no-clone-path",
+      "severity": "med",
+      "confidence": 60,
+      "file": "harness/overlays/agy.overlay.md",
+      "line": 7,
+      "problem": "The rule tells agy to run the check \"in the NousFX clone\", but the generated agy rules never give the clone's path (build_rules does not inject it). The model cannot find the clone, so the check silently never happens. It also always passes `--tools claude,agy`, so a machine synced with only one tool reports false drift every session.",
+      "fix": "Have sync substitute the real clone path and the tools list it actually used into the line (e.g. a placeholder filled in build_rules/plan_agy), or write a small generated command into the plugin.",
+      "quote": ""
+    },
+    {
+      "id": "nousfx-drift.py-windows-console-flash",
+      "severity": "med",
+      "confidence": 60,
+      "file": "claude/hooks/nousfx-drift.py",
+      "line": 80,
+      "problem": "DETACHED_PROCESS gives git.exe no console. When it starts console children (git-remote-https, credential-manager, ssh), Windows creates a new visible console window for them, so a window can flash at session start. Nothing else stops an interactive credential prompt either.",
+      "fix": "Use CREATE_NO_WINDOW (0x08000000) together with CREATE_NEW_PROCESS_GROUP instead of DETACHED_PROCESS. Set env GIT_TERMINAL_PROMPT=0 and GCM_INTERACTIVE=never for the fetch, and pass `-c credential.interactive=false`.",
+      "quote": ""
+    },
+    {
+      "id": "nousfx_sync.py-hook-cmd-quoting",
+      "severity": "low",
+      "confidence": 60,
+      "file": "scripts/nousfx_sync.py",
+      "line": 191,
+      "problem": "`--repo \"{repo}\"` and `\"{script}\"` are put inside double quotes. bash then expands `$(...)`, backticks and `$VAR`, and PowerShell expands `$var` and backtick escapes. A clone path containing `$` or a backtick runs code or breaks the hook (Windows paths may contain both). Same pre-existing pattern for the gate path.",
+      "fix": "On POSIX quote with shlex.quote. On PowerShell use single quotes with `'` doubled. Or refuse paths containing quote, `$` or backtick, with a SyncError.",
+      "quote": ""
+    },
+    {
+      "id": "nousfx_sync.py-replace-owned-drops-user-hooks",
+      "severity": "low",
+      "confidence": 60,
+      "file": "scripts/nousfx_sync.py",
+      "line": 178,
+      "problem": "replace_owned drops the whole entry when any hook in it merely contains the substring \"nousfx-drift.py\" (or \"review-gate.py\"). That also deletes the user's other hooks grouped in the same entry. Non-dict entries or hooks raise AttributeError, which is not caught as a SyncError, so it surfaces as a crash with exit 1.",
+      "fix": "Match only entries whose hooks list is exactly our single owned hook (compare the command), or remove only our hook object from the entry. Type-check and skip non-dict items.",
+      "quote": ""
+    },
+    {
+      "id": "nousfx_sync.py-reorder-false-drift",
+      "severity": "low",
+      "confidence": 60,
+      "file": "scripts/nousfx_sync.py",
+      "line": 179,
+      "problem": "replace_owned always re-appends our entry at the end. If the user or Claude Code later adds another SessionStart/PreToolUse entry after it, `--check` sees settings.json differ purely by order. The new drift hook then warns \"out of date (1 file)\" every session until the next sync.",
+      "fix": "Replace the owned entry in place at its existing index, and append only when it is absent.",
+      "quote": ""
+    },
+    {
+      "id": "nousfx-drift.py-platform-flag-kills-fetch",
+      "severity": "low",
+      "confidence": 60,
+      "file": "claude/hooks/nousfx-drift.py",
+      "line": 79,
+      "problem": "`args.platform == \"windows\"` on POSIX passes creationflags, and Popen raises ValueError there, so `--platform windows` silently disables the fetch. Process flags should follow the real OS, not the message-only test seam.",
+      "fix": "Use only `os.name == \"nt\"` for the creation flags.",
+      "quote": ""
+    },
+    {
+      "id": "nousfx-drift.py-fetch-starved-by-slow-sync",
+      "severity": "low",
+      "confidence": 60,
+      "file": "claude/hooks/nousfx-drift.py",
+      "line": 128,
+      "problem": "The fetch starts only if time is left after the sync check. When the sync check uses the whole 2 s budget (e.g. a cold Windows start with cygpath calls), no fetch ever starts and \"behind\" data never refreshes.",
+      "fix": "Start the background fetch first, at the top of main (it does not block), then run the checks.",
+      "quote": ""
+    },
+    {
+      "id": "nousfx-drift.py-sessionstart-all-sources",
+      "severity": "low",
+      "confidence": 60,
+      "file": "scripts/nousfx_sync.py",
+      "line": 192,
+      "problem": "The SessionStart entry has no matcher, so the hook also runs on resume, clear and compact. Each run repeats the warning and re-injects the context.",
+      "fix": "Add `\"matcher\": \"startup\"` to the SessionStart entry (and update docs/sync.md).",
+      "quote": ""
+    },
+    {
+      "id": "test_nousfx_drift.py-posix-only-stub",
+      "severity": "low",
+      "confidence": 60,
+      "file": "scripts/test_nousfx_drift.py",
+      "line": 166,
+      "problem": "The Behind tests install a `#!/bin/sh` stub named `git`, which cannot run on Windows, and the requirements say the hook must work there. The stub's `sleep 3` child also outlives tearDown's rmtree.",
+      "fix": "Skip Behind on `os.name == \"nt\"` (or write a .py stub with a .cmd/.exe shim). Shorten the sleep, or wait for or kill the child in tearDown.",
+      "quote": ""
+    }
+  ],
+  "judged": {
+    "nousfx-drift.py-windows-cwd-lookup": "real",
+    "agy.overlay.md-no-clone-path": "real",
+    "nousfx-drift.py-windows-console-flash": "real",
+    "nousfx_sync.py-hook-cmd-quoting": "skip",
+    "nousfx_sync.py-replace-owned-drops-user-hooks": "skip",
+    "nousfx_sync.py-reorder-false-drift": "real",
+    "nousfx-drift.py-platform-flag-kills-fetch": "real",
+    "nousfx-drift.py-fetch-starved-by-slow-sync": "real",
+    "nousfx-drift.py-sessionstart-all-sources": "real",
+    "test_nousfx_drift.py-posix-only-stub": "real"
+  },
+  "captured_from": {
+    "session": "13f93b7d-4fa5-4cf4-b469-1b39b3d7371d.jsonl",
+    "agent": "ad71eef08ad361286"
+  },
+  "judged_notes": "Table 'Verdict' after round 1: real/fix for the listed; quoting and replace-owned were skipped on purpose."
+}
