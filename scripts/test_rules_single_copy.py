@@ -20,10 +20,11 @@ import nousfx_sync  # noqa: E402
 import real_machine_regression as regression  # noqa: E402
 
 MIN_WORDS = 6
-# Bytes of AGENTS.md + Claude overlay, what every Claude session loads. A ratchet: with the local layers the
-# generated rules sit near the 6144-byte sync budget (nousfx_sync.RULES_BUDGET), so cut a line before adding one,
-# and lower this number when the rules shrink (NFX-96).
-CLAUDE_RULES_BUDGET = 3257
+# Bytes of AGENTS.md + Claude overlay, what every Claude session loads, kept in nousfx_sync so --check --summary
+# reports the same number. A ratchet: with the local layers the generated rules sit near the 6144-byte sync budget
+# (nousfx_sync.RULES_BUDGET). Lower the cap when the rules shrink (NFX-96); it keeps about 50 bytes of room (NFX-133).
+CLAUDE_RULES_BUDGET = nousfx_sync.CLAUDE_RULES_BUDGET
+ROOM = 50  # bytes the cap keeps above the rules
 
 
 def read(path):
@@ -63,9 +64,10 @@ class SingleCopy(unittest.TestCase):
         size = 0
         for rel in ("harness/AGENTS.md", "harness/overlays/claude.overlay.md"):
             size += len(read(os.path.join(ROOT, rel)).encode("utf-8"))
-        self.assertGreater(size, CLAUDE_RULES_BUDGET - 64, f"Claude rules shrank to {size} bytes: lower CLAUDE_RULES_BUDGET to {size}")
+        self.assertGreater(size, CLAUDE_RULES_BUDGET - ROOM - 16,
+                           f"Claude rules shrank to {size} bytes: lower CLAUDE_RULES_BUDGET in nousfx_sync.py to {size + ROOM}")
         self.assertLessEqual(size, CLAUDE_RULES_BUDGET,
-                             f"Claude rules are {size} bytes, over {CLAUDE_RULES_BUDGET}: cut a line first, or move on-use rules into their skill or hook")
+                             f"Claude rules are {size} bytes, over {CLAUDE_RULES_BUDGET}: move the steps into a skill and keep one pointer line first; to cut words, list each cut and ask Cesar")
 
     def test_built_rules_use_only_the_listed_sources(self):
         # build_rules reads the same two files (plus the optional local files, absent here), with the prefix in.

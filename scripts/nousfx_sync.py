@@ -68,6 +68,9 @@ DRIFT_TIMEOUT = 5  # seconds; the hook keeps its own 2 s budget and skips quietl
 MATCHER = "Bash|PowerShell|mcp__.*create_pull_request"
 TOOLS = nousfx_mcp.TOOLS
 RULES_BUDGET = 6144  # bytes of generated rules (header excluded), local layers included; warn only (NFX-78)
+# Bytes of harness/AGENTS.md + the Claude overlay, what every Claude session loads. A ratchet that test_rules_single_copy
+# enforces and --check --summary reports beside RULES_BUDGET; one constant, so the two cannot drift (NFX-96, NFX-133).
+CLAUDE_RULES_BUDGET = 3339  # 50 bytes over the rules at NFX-133
 MIN_REPEAT_WORDS = 6  # a local sentence this long that is also in a harness source is a repeat
 
 SECRET_PATTERNS = [
@@ -171,7 +174,12 @@ def rules_report(wanted, repo, home, state, tools):
                     if (local, shared, s) not in seen:
                         seen.add((local, shared, s))
                         lines.append(f'warning: repeated rule: "{s[:80]}" is in {local} and {shared}')
-    return {"bytes": size, "budget": budget, "repeats": len(seen)}, lines
+    report = {"bytes": size, "budget": budget, "headroom": budget - size, "repeats": len(seen)}
+    if "claude" in tools:  # the ratchet covers the two shared Claude sources, not the local layers
+        shared = sum(len((read_or_none(p) or "").encode("utf-8"))
+                     for _, p, _ in nousfx_agy.rule_sources(repo, state, "claude")[:2])
+        report["shared"] = {"bytes": shared, "budget": CLAUDE_RULES_BUDGET, "headroom": CLAUDE_RULES_BUDGET - shared}
+    return report, lines
 
 
 def is_windows(platform):

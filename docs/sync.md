@@ -25,7 +25,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
 | none | back up, write, then self-test the gate hook |
 | `--dry-run` | print a diff, write nothing |
 | `--check` | list drifted files, exit 1 on drift, write nothing |
-| `--check --summary` | the same exit code, but one JSON line of counts (`files`, `skills`, `outside`) and a `rules` object (`bytes`, `budget`, `repeats`). The drift warning reads it |
+| `--check --summary` | the same exit code, but one JSON line of counts (`files`, `skills`, `outside`) and a `rules` object (`bytes`, `budget`, `headroom`, `repeats`, and `shared` with the same size keys for the Claude rules, against `CLAUDE_RULES_BUDGET`). The drift warning reads it |
 | `--restore` | put back the last backup (files that did not exist are removed) |
 | `--clean-backups` | also move the `.bak-<stamp>` files the old copy-based `install.sh` left behind into the backup (otherwise they are only listed) |
 | `--yes-replace NAME` | let my skill NAME replace a folder sync does not own (moved into the backup first) |
