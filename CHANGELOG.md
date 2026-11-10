@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.0 (unreleased)
+
+### Tickets
+- Done is now written as proofs. Every acceptance criterion in the ticket template ends in a `Proof:` line (a command, or `manual: <step>`), and a new Failure modes section says how the work could break and what it does then. The jira-sync ready check flags a `ready-for-agent` ticket that lacks either, and the PR template has an "Acceptance criterion, proof, result" table. The template has one source (the `project-setup` asset), and `scripts/test_ticket_template_single_copy.py` fails when `docs/agents/ticket-template.md` drifts from it (NFX-104).
+
 ## 1.1.0 (2026-11-09)
 
 ### Review gate

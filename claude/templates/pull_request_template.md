@@ -7,6 +7,13 @@
 ## How to test
 <!-- Steps or commands a reviewer can run. -->
 
+## Acceptance criteria
+<!-- One row per criterion in the ticket: its proof (command or manual step) and what it showed. -->
+
+| Acceptance criterion | Proof | Result |
+|---|---|---|
+|  |  |  |
+
 ## Screenshots / recording
 <!-- Required for any UI/UX change (feature or bugfix): before and after, light and dark, relevant device sizes.
      Use a screen recording for motion, flows, or bugs that only show over time. Write "N/A (no UI change)" otherwise. -->
