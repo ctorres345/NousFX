@@ -99,6 +99,21 @@ prove.py attest LIST ──► stamp MAC, kind, tree, branch and proof hash matc
 - What it proves: each command proof exited 0 on this exact tree and branch, with no file edited, for this exact list of proofs.
 - What it does not prove: that a proof is a good one. The proofs come from the list the branch author supplies, CI does not re-run them, and the key is same-user readable, so a deliberate forger is not stopped (a `setsid` child can also outlive the process-group kill). A proof weakened to `true` changes the hash, and review-loop compares each proof with its criterion. Manual proofs are not run: the line shows `manual:m` so the goal can require 0.
 
+#### `/goal` condition template (NFX-106)
+
+Paste this as the end of a `/goal`, with N set to the turns you will allow (for example 40). The evaluator reads only the transcript, so each part is something the transcript shows:
+
+```text
+Done when the PR body or the last prove.py output shows "AC-Proof: n/n manual:0 <tree> <sha>" with n/n complete and <sha> matching the ticket's proofs,
+python3 -B scripts/run_checks.py passes,
+and review-loop recorded the review with 0 open (the --mark output shows "--findings 0"),
+at most N turns.
+```
+
+- "review recorded with 0 open" is the `--mark` call with `--findings 0`; a `--skip` does not count.
+- `manual:0` means the goal fails while a manual proof is left, so a hands-off run needs command proofs only.
+- Every finding then has a disposition (`fix-now`, `follow-up` or `note`, see the review-loop skill); the PR body carries the follow-up drafts and the notes.
+
 ### In CI
 
 - `review-gate.py run-check --ref origin/<base>` reads the command from the base branch and runs it in the PR checkout. The workflow takes the gate from the base branch too, so a PR cannot change the command or the script that reads it.
