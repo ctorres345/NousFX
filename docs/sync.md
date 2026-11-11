@@ -243,12 +243,11 @@ A cloud session or the desktop app runs on whatever model I picked, so the sessi
 The ladder, which also lives in the agent's description so it costs no rules bytes:
 
 1. Run the implementer once with the plan.
-2. On `FAILED`, run it once more with `effort: high`.
-3. If that fails too, the main session takes the ticket over.
+2. On `FAILED`, or a reply without `DONE` or `FAILED` (a turn-cap stop), the main session takes the ticket over. There is no retry: a probe could not confirm that the Agent call honours a per-call `effort: high`, and a second run on the same model would only repeat the first. Add the retry once an override is proven.
 
 The main session also takes over, with a note in the PR, for size L, migrations, UI work that needs `/via check`, one long chain of dependent steps, and any diff that `tier.py` puts at tier 3 or marks `ui: true`.
 
-The implementer has Bash, and nothing in code stops it from committing or running the gate. Its body forbids both by name, and the main session checks after each run that HEAD did not move and no review marker was written.
+The implementer has Bash, and nothing in code stops it from committing or running the gate. Its body forbids both by name, and the main session notes HEAD and the review marker before each run and checks after it that both are unchanged. The marker is `.git/claude-review-ok` (`git rev-parse --git-path claude-review-ok`): compare its hash, or that it is absent, because it often exists already and `git status` cannot show it.
 
 To run it on another model, change the `balanced` entry in `harness/models.toml` (every `balanced` agent changes with it), or give `implementer.md` its own `effort:`. A local model, such as Qwen through OpenCode, takes over the same way once a mapping exists (NFX-49).
 
