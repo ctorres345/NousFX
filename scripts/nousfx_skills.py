@@ -8,7 +8,9 @@ Layout (H = home):
                             (agy: H/.gemini/config/plugins/nousfx/skills)
   <state>/skills-manifest.json  every link sync created. Sync owns only what is listed there.
 
-Rules: a folder that is not in the manifest is never overwritten or deleted. A NousFX skill replaces
+Rules: a folder that is not in the manifest is never overwritten or deleted. The one exception is a link
+(never a folder) at a name in RETIRED that points into this repo: those are removed even when unrecorded
+(NFX-127). A NousFX skill replaces
 one only when its name is passed as --yes-replace NAME, and the old folder is moved into the run's
 backup first. Every change is journaled in <backup root>/skills.json so --restore can undo it.
 Pinned outside skills (harness/skills.lock.json, see nousfx_outside.py) are one more source: their
