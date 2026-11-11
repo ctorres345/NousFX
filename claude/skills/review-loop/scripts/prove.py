@@ -6,7 +6,8 @@ Python only, standard library only; runs the same on macOS and Windows.
     python3 -B prove.py run LIST [--timeout SECONDS]
     python3 -B prove.py attest LIST
 
-LIST is a Markdown file taken from the ticket (or the PR table). Every line with `Proof:` is one proof:
+LIST is a Markdown file taken from the ticket's acceptance criteria (a PR table's cells have no `Proof:` prefix, so
+they are not read). Every line with `Proof:` is one proof:
     Proof: `command`        run at the repo top level; must exit 0 and leave the working tree unchanged
     Proof: manual: <step>   listed by attest, never run and never counted
 Any other `Proof:` line is refused, so a typo cannot drop a criterion. Prose such as a `Proof:` in backticks is not
@@ -23,6 +24,7 @@ docs/review-gate.md. The stamp helpers are the review gate's (claude/hooks/revie
 skill's folder, so the install layout ~/.claude/{hooks,skills} and the repo layout claude/{hooks,skills} both work.
 """
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import os
@@ -31,7 +33,7 @@ import sys
 import time
 
 DEFAULT_TIMEOUT = 600
-PROOF_LINE = re.compile(r"(?<![`\w])Proof:[ \t]*(.*?)[ \t]*$")
+PROOF_LINE = re.compile(r"(?<![-`\w])Proof:[ \t]*(.*?)[ \t]*$")
 COMMAND = re.compile(r"`([^`]*)`\.?")
 MANUAL = "manual:"
 KIND = "proof"
@@ -49,10 +51,10 @@ def fail(message):
 def load_gate():
     """The review gate module next to this skill: the abspath first (the installed ~/.claude copy, whatever the
     skill folder links to), then the realpath (a repo checkout)."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    paths = [os.path.join(here, "..", "..", "..", "hooks", "review-gate.py")]
-    real = os.path.dirname(os.path.realpath(__file__))
-    paths.append(os.path.join(real, "..", "..", "..", "hooks", "review-gate.py"))
+    paths = []
+    for me in (os.path.abspath(__file__), os.path.realpath(__file__)):
+        # normpath, so the `..` steps are taken in the path as written: the OS would walk them through a symlink
+        paths.append(os.path.normpath(os.path.join(os.path.dirname(me), "..", "..", "..", "hooks", "review-gate.py")))
     path = next((p for p in paths if os.path.isfile(p)), None)
     if path is None:
         raise Refused("cannot find review-gate.py next to the skills folder; re-run the sync")
@@ -68,7 +70,7 @@ def load_gate():
 
 
 def read_list(path):
-    """(proofs, sha): the list's bytes are read once, and the hash and the parse use those same bytes.
+    """(proofs, sha): the list is read once, and the hash comes from the proofs parsed from that read.
     A proof is ("command", text) or ("manual", text), in file order."""
     try:
         with open(path, "rb") as f:
@@ -97,6 +99,11 @@ def read_list(path):
     return proofs, proofs_sha(proofs)
 
 
+def split(proofs):
+    """(commands, manual): the texts of the command proofs and of the manual ones."""
+    return ([t for kind, t in proofs if kind == "command"], [t for kind, t in proofs if kind == "manual"])
+
+
 def proofs_sha(proofs):
     """Hash of the normalized, ordered proofs: the wording around them can change, a proof cannot."""
     body = "\n".join(f"{kind}:{text}" for kind, text in proofs)
@@ -119,18 +126,20 @@ def prepare(gate, cwd):
 def run(args):
     cwd = os.getcwd()
     gate = load_gate()
-    proofs, sha = read_list(args.list)
     name = gate.PROOF_STAMP_FILE
     try:
-        gate.remove_stamp(cwd, name)  # a refused run must not leave an older stamp behind
+        gate.remove_stamp(cwd, name)  # first: any refusal below must not leave an older stamp behind
     except Exception as e:
         raise Refused(f"cannot prepare the proofs: {e}") from None
+    if args.timeout < 1:
+        raise Refused("--timeout must be at least 1 second")
+    proofs, sha = read_list(args.list)
     branch, tree = prepare(gate, cwd)
     try:
         key = gate.stamp_key(cwd)  # before the run, so a key a proof replaces never signs the stamp
     except Exception as e:
         raise Refused(f"cannot read the stamp key: {e}") from None
-    commands = [text for kind, text in proofs if kind == "command"]
+    commands, manual = split(proofs)
     try:
         for i, command in enumerate(commands, 1):
             print(f"Proof {i}/{len(commands)}: {command}", flush=True)
@@ -141,25 +150,19 @@ def run(args):
                 raise Refused(f"proof {i} ({command}) {why}. No stamp recorded.")
         gate.remove_stamp(cwd, name)  # a proof is branch code: it may have written a stamp itself
         fields = {"kind": KIND, "tree": tree, "branch": branch, "list_sha": sha, "passed": len(commands),
-                  "total": len(commands), "manual": len(proofs) - len(commands), "exit": 0,
+                  "total": len(commands), "manual": len(manual), "exit": 0,
                   "time": time.strftime("%Y-%m-%dT%H:%M:%S")}
         gate.write_stamp(cwd, fields, key, name)
     except Refused:
         raise
     except Exception as e:
-        _quietly(gate.remove_stamp, cwd, name)
+        with contextlib.suppress(Exception):
+            gate.remove_stamp(cwd, name)
         raise Refused(f"the proofs could not finish: {e}. No stamp recorded.") from None
-    manual = f", {len(proofs) - len(commands)} manual not run" if len(proofs) > len(commands) else ""
-    print(f"{len(commands)}/{len(commands)} proofs passed{manual}. Stamp recorded for tree {tree[:10]}: "
+    note = f", {len(manual)} manual not run" if manual else ""
+    print(f"{len(commands)}/{len(commands)} proofs passed{note}. Stamp recorded for tree {tree[:10]}: "
           "`prove.py attest` prints the AC-Proof line until a file or the list changes.")
     return 0
-
-
-def _quietly(fn, *a):
-    try:
-        fn(*a)
-    except Exception:
-        pass
 
 
 def attest(args):
@@ -171,8 +174,7 @@ def attest(args):
                              gate.PROOF_STAMP_FILE)
     if not stamp:
         raise Refused("no valid proof stamp for this tree, branch and proof list; run `prove.py run` again")
-    commands = [text for kind, text in proofs if kind == "command"]
-    manual = [text for kind, text in proofs if kind == "manual"]
+    commands, manual = split(proofs)
     if not (stamp.get("passed") == stamp.get("total") == len(commands) > 0) or stamp.get("manual") != len(manual):
         raise Refused("the proof stamp does not match the list; run `prove.py run` again")
     print(f"AC-Proof: {len(commands)}/{len(commands)} manual:{len(manual)} {tree} {sha}")
@@ -194,8 +196,6 @@ def main(argv=None):
     p.add_argument("list")
     p.set_defaults(fn=attest)
     args = parser.parse_args(argv)
-    if getattr(args, "timeout", 1) < 1:
-        return fail("--timeout must be at least 1 second")
     try:
         return args.fn(args)
     except Refused as e:

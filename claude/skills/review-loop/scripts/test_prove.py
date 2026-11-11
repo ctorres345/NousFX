@@ -7,6 +7,7 @@ Each test runs the CLI in a throwaway git repo under a temp dir; the real repo a
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,19 @@ class Run(Base):
     def test_proof_word_in_backticks_is_prose_not_a_proof(self):
         path = self.write_list("Each criterion ends in a `Proof:` line.\n" + ac("`true`"))
         self.assertEqual(self.prove("run", path).returncode, 0)
+
+    def test_any_refused_run_removes_an_older_stamp(self):
+        self.assertEqual(self.prove("run", self.write_list(ac("`true`"))).returncode, 0)
+        malformed = self.write_list(ac("`true`") + "- [ ] x. Proof: pytest\n", name="m.md")
+        self.assertEqual(self.prove("run", malformed).returncode, 2)
+        self.assertFalse(os.path.exists(self.stamp_path()))
+        self.assertEqual(self.prove("run", self.write_list(ac("`true`"))).returncode, 0)
+        self.assertEqual(self.prove("run", malformed, "--timeout", "0").returncode, 2)
+        self.assertFalse(os.path.exists(self.stamp_path()))
+
+    def test_ac_proof_in_prose_is_not_a_proof_line(self):
+        text = "Scope: attest prints `AC-Proof: 2/2 <tree> <sha>`.\nAC-Proof: 1/1 manual:0 x y\n" + ac("`true`")
+        self.assertEqual(self.prove("run", self.write_list(text)).returncode, 0)
 
     def test_detached_head_is_refused(self):
         self.git("checkout", "-q", "--detach")
@@ -242,6 +256,27 @@ class GateFiles(unittest.TestCase):
         gate = load_gate()
         self.assertEqual(gate.STAMP_FILE, "claude-review-check-pass")
         self.assertEqual(gate.PROOF_STAMP_FILE, "claude-proof-pass")
+
+    def test_a_symlinked_skill_folder_loads_the_installed_gate(self):
+        """~/.claude/skills/review-loop links into a repo; the gate must come from ~/.claude/hooks, not the repo."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home, repo = os.path.join(tmp, "home"), os.path.join(tmp, "repo")
+            os.makedirs(os.path.join(home, "skills"))
+            os.makedirs(os.path.join(home, "hooks"))
+            shutil.copytree(os.path.join(HERE, ".."), os.path.join(repo, "claude", "skills", "review-loop"))
+            os.makedirs(os.path.join(repo, "claude", "hooks"))
+            marks = {}
+            for where, mark in ((home, "installed"), (os.path.join(repo, "claude"), "repo")):
+                with open(os.path.join(where, "hooks", "review-gate.py"), "w") as f:
+                    f.write(f"PROOF_STAMP_FILE = 'x'\nMARK = '{mark}'\n")
+                marks[mark] = where
+            os.symlink(os.path.join(repo, "claude", "skills", "review-loop"), os.path.join(home, "skills", "review-loop"))
+            code = ("import importlib.util,sys\n"
+                    "spec = importlib.util.spec_from_file_location('p', sys.argv[1]); m = importlib.util.module_from_spec(spec)\n"
+                    "spec.loader.exec_module(m); print(m.load_gate().MARK)")
+            r = subprocess.run([sys.executable, "-B", "-c", code, os.path.join(home, "skills", "review-loop", "scripts", "prove.py")],
+                               capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.stdout.strip(), "installed", r.stderr)
 
     def test_a_gate_without_named_stamps_is_refused(self):
         """An old installed gate raises TypeError on name=; prove.py says to re-run the sync instead."""
