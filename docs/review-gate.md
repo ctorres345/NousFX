@@ -106,11 +106,11 @@ Paste this as the end of a `/goal`, with N set to the turns you will allow (for 
 ```text
 Done when the PR body or the last prove.py output shows "AC-Proof: n/n manual:0 <tree> <sha>" with n/n complete and <sha> matching the ticket's proofs,
 python3 -B scripts/run_checks.py passes,
-and review-loop recorded the review with 0 open (the --mark output shows "--findings 0"),
+and review-loop ran "--mark --findings 0" and its output says "review recorded for tree" without "(skipped:",
 at most N turns.
 ```
 
-- "review recorded with 0 open" is the `--mark` call with `--findings 0`; a `--skip` does not count.
+- "review recorded with 0 open" is the `--mark` call with `--findings 0` that prints `review recorded for tree <tree>`; a refused mark prints an error instead, and a `--skip` adds `(skipped: ...)`, so neither counts.
 - `manual:0` means the goal fails while a manual proof is left, so a hands-off run needs command proofs only.
 - Every finding then has a disposition (`fix-now`, `follow-up` or `note`, see the review-loop skill); the PR body carries the follow-up drafts and the notes.
 

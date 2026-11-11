@@ -38,6 +38,8 @@ class Dispositions(unittest.TestCase):
     def test_required_findings_cannot_be_notes(self):
         self.assertIn("A `high`, or a `med` at 60 or more, is always `fix-now`", self.sec)
         self.assertIn("`rejected` is not a disposition", self.sec)
+        self.assertIn("report it as open and count it in `--findings`", self.sec)
+        self.assertIn("A `med` under 60 is never `fix-now`", self.sec)
 
     def test_follow_up_is_a_draft_that_claude_never_files(self):
         self.assertIn("docs/agents/ticket-template.md", self.sec)
@@ -93,6 +95,7 @@ class GoalTemplate(unittest.TestCase):
         self.assertIn("AC-Proof: n/n manual:0", text)
         self.assertIn("run_checks.py passes", text)
         self.assertIn("review recorded with 0 open", text)
+        self.assertIn('"review recorded for tree" without "(skipped:"', text)
         self.assertIn("at most N turns", text)
 
     def test_readme_points_at_the_template(self):

@@ -80,7 +80,7 @@ Gemini is extra: `reviewer` stays the required review. Each call sends code or s
 
 ## Dispositions
 When the loop ends, every finding has one outcome. `rejected` is not a disposition: it means the finding was not real (step 4 records the reason). Every real finding gets exactly one of:
-- `fix-now`: in scope and cheap (touches files already in the diff, no new design decision). A `high`, or a `med` at 60 or more, is always `fix-now`.
+- `fix-now`: in scope and cheap (touches files already in the diff, no new design decision). A `high`, or a `med` at 60 or more, is always `fix-now`; if the loop ends with one still unfixed, report it as open and count it in `--findings`. A `med` under 60 is never `fix-now`: it is a `follow-up` or a `note`.
 - `follow-up`: not cheap or out of scope. Draft a ticket (a title and one line, shaped by `docs/agents/ticket-template.md`) and keep it for the final report. Draft only and never create the ticket yourself; Cesar files it. The PR body lists the drafts under "Follow-ups".
 - `note`: accepted as is, only for a `low` or a `med` under 60. A `note` needs a reason ("skipped: low confidence" is one), and the PR body lists the notes.
 
