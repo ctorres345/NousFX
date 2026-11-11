@@ -12,7 +12,8 @@ If that module is missing, any command mentioning `gh` and `pr` blocks.
 Body check (NFX-85): once the review check passes, a create also needs a `Review-Gate: <HEAD tree>` line in
 its PR body (--body, -b, --body-file, -F, a heredoc inside --body "$(cat <<EOF ...)", or the `body` field
 of a create-PR MCP tool). No body, --fill, a stale hash, a body built at run time or a file without the line
-blocks, and the message prints the exact lines to paste (the output of `attest`).
+blocks, and the message prints the exact lines to paste (the output of `attest`) and, when the repo has one,
+the path of its PR template (NFX-135).
 
 Branch check (NFX-119): the branch must be named <prefix>/<JIRA-KEY> (for example cesar/MOB-23). The prefix is
 `[branch] prefix` in ~/.config/nousfx/local.toml (the file sync reads; home from the user record, USERPROFILE on
@@ -1241,6 +1242,21 @@ Then pass the body with --body "..." or --body-file FILE (a heredoc inside --bod
 BODY_NO_LINES = """The gate cannot print the lines to paste: {error}
 Fix that, run python3 "{script}" attest, and put its lines in the PR body."""
 
+# NFX-135: where a repo keeps its PR template, first match wins. The gate runs in every repo, so the message
+# names the file that exists there, never a fixed path.
+PR_TEMPLATES = (".github/pull_request_template.md", "claude/templates/pull_request_template.md")
+
+
+def pr_template(cwd):
+    """Repo-relative path of the first PR template that exists at the repo root, else None. A git failure or an
+    unreadable folder gives None; GateTimeout still propagates."""
+    try:
+        root = git(["rev-parse", "--show-toplevel"], cwd)
+    except RuntimeError:
+        return None
+    return next((p for p in PR_TEMPLATES if os.path.isfile(os.path.join(root, *p.split("/")))), None)
+
+
 BODY_WHY = {
     "none": "this PR create passes no PR body, so it has no `Review-Gate: <HEAD tree>` line.",
     "missing": "the PR body has no `Review-Gate: <HEAD tree>` line on a line of its own.",
@@ -1324,6 +1340,9 @@ def body_blocked(cwd, source):
                     "`review-gate.py attest` itself wants it clean: commit or clean first.")
     except NO_ATTESTATION as e:
         fix = BODY_NO_LINES.format(error=e, script=SCRIPT)
+    template = pr_template(cwd)
+    if template:
+        fix += "\nPR template: " + template
     return BODY_BLOCK.format(why=why, fix=fix)
 
 
