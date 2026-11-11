@@ -58,7 +58,8 @@ EXCLUDABLE = (tuple(f"{tool}({p})" for p in SECRETS for tool in ("Read", "Edit")
 # worktree's .git/worktrees/<name>/, a submodule's .git/modules/<name>/ or a separate git dir, so the rule
 # matches the (unique) file name anywhere. The gate itself writes them from python, which no Read or Edit
 # rule sees. deny.toml cannot exclude these: they are part of the review gate, not a preference.
-GATE_FILES = ("claude-review-ok", "claude-review-stamp-key", "claude-review-check-pass", "claude-branch-ok")
+GATE_FILES = ("claude-review-ok", "claude-review-stamp-key", "claude-review-check-pass", "claude-branch-ok",
+              "claude-proof-pass")
 GATE_RULES = tuple(f"{tool}(//**/{name})" for name in GATE_FILES for tool in ("Read", "Edit"))
 RULES = EXCLUDABLE + GATE_RULES
 # Best-effort ask rules (permissions.ask) for the gate's waivers, which only the user may approve (NFX-101).

@@ -89,6 +89,7 @@ CHECK_FILE = ".nousfx/project.toml"
 CHECK_TIMEOUT = 1800
 CHECK_LOG = "claude-review-check.log"
 STAMP_FILE = "claude-review-check-pass"  # in the git dir, written only by `run-check --stamp` (NFX-97)
+PROOF_STAMP_FILE = "claude-proof-pass"  # in the git dir, written only by prove.py (NFX-105); the gate never reads it
 STAMP_KEY = "claude-review-stamp-key"
 GIT_ENV_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
 
@@ -448,22 +449,23 @@ def stamp_mac(key, fields):
     return hmac.new(key, body, hashlib.sha256).hexdigest()
 
 
-def remove_stamp(cwd):
+def remove_stamp(cwd, name=STAMP_FILE):
     with contextlib.suppress(FileNotFoundError):
-        os.remove(git_path(STAMP_FILE, cwd))
+        os.remove(git_path(name, cwd))
 
 
-def write_stamp(cwd, fields, key):
+def write_stamp(cwd, fields, key, name=STAMP_FILE):
     stamp = {**fields, "mac": stamp_mac(key, fields)}
-    with open(git_path(STAMP_FILE, cwd), "w", encoding="utf-8") as f:
+    with open(git_path(name, cwd), "w", encoding="utf-8") as f:
         json.dump(stamp, f)
 
 
-def valid_stamp(cwd, expected):
+def valid_stamp(cwd, expected, name=STAMP_FILE):
     """The stamp's fields when its MAC is right and it matches every key of `expected` (stamp_fields), else None.
-    A missing, unreadable or forged stamp is None, so the caller runs the check."""
+    A missing, unreadable or forged stamp is None, so the caller runs the check. `name` picks another stamp file
+    in the git dir (prove.py's proof stamp, NFX-105)."""
     try:
-        with open(git_path(STAMP_FILE, cwd), encoding="utf-8") as f:
+        with open(git_path(name, cwd), encoding="utf-8") as f:
             stamp = json.load(f)
         mac = stamp.pop("mac")
         if not isinstance(mac, str) or not hmac.compare_digest(mac, stamp_mac(stamp_key(cwd), stamp)):

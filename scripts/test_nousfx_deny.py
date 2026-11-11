@@ -44,7 +44,7 @@ class Rules(unittest.TestCase):
 
     def test_gate_files_are_off_limits_in_any_git_dir(self):
         """NFX-101: matched by name anywhere, so .git/, worktree, submodule and separate git dirs all count."""
-        self.assertEqual(len(GATE_FILES), 4)
+        self.assertEqual(len(GATE_FILES), 5)
         for name in GATE_FILES:
             for tool in ("Read", "Edit"):
                 self.assertIn(f"{tool}(//**/{name})", RULES)
