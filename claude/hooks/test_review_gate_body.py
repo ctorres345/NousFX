@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_review_gate_check import ALLOWED, BLOCKED, GATE, Base  # noqa: E402
 
 
-class Body(Base):
+class BodyBase(Base):
     def setUp(self):
         super().setUp()
         self.mark("--findings", "0", "--tier", "2", "--reasons", "test")
@@ -38,6 +38,8 @@ class Body(Base):
         self.assertIn("    Review-Tier: 2 (test)\n", r.stderr)
         self.assertNotIn("no review recorded", r.stderr)
 
+
+class Body(BodyBase):
     def test_no_body_blocks_and_prints_the_lines(self):
         self.assert_blocked_with_lines(self.create("gh pr create --title x"), "passes no PR body")
 
@@ -223,6 +225,64 @@ class Body(Base):
         self.assert_blocked_with_lines(hook(None), "passes no PR body")
         self.assert_blocked_with_lines(hook("no line"), "no `Review-Gate: <HEAD tree>`")
         self.assertEqual(hook(f"## Summary\n{self.line}\n").returncode, ALLOWED)
+
+
+class Template(BodyBase):
+    """NFX-135: the block message names the PR template that exists in the repo being gated."""
+    GITHUB = ".github/pull_request_template.md"
+    SHIPPED = "claude/templates/pull_request_template.md"
+
+    def put(self, rel):
+        path = os.path.join(self.repo, *rel.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("## Summary\n")
+
+    def blocked(self):
+        r = self.create("gh pr create --title x")
+        self.assertEqual(r.returncode, BLOCKED, r.stderr)
+        return r.stderr
+
+    def test_the_github_template_is_named(self):
+        self.put(self.GITHUB)
+        self.assertIn("PR template: " + self.GITHUB + "\n", self.blocked())
+
+    def test_the_shipped_template_is_named_when_github_has_none(self):
+        self.put(self.SHIPPED)
+        err = self.blocked()
+        self.assertIn("PR template: " + self.SHIPPED + "\n", err)
+        self.assertNotIn(self.GITHUB, err)
+
+    def test_github_wins_when_both_exist(self):
+        self.put(self.GITHUB)
+        self.put(self.SHIPPED)
+        err = self.blocked()
+        self.assertIn(self.GITHUB, err)
+        self.assertNotIn(self.SHIPPED, err)
+
+    def test_no_template_means_no_template_line(self):
+        self.assertNotIn("PR template", self.blocked())
+
+    def test_the_hint_is_one_line_and_every_block_reason_keeps_it(self):
+        self.put(self.GITHUB)
+        for command in ("gh pr create --fill", "gh pr create --title x --body 'no line here'"):
+            with self.subTest(command=command):
+                r = self.create(command)
+                self.assertEqual(r.returncode, BLOCKED, r.stderr)
+                self.assertEqual(r.stderr.count("PR template:"), 1)
+
+    def test_a_subfolder_cwd_finds_the_template_at_the_repo_root(self):
+        self.put(self.GITHUB)
+        sub = os.path.join(self.repo, "sub")
+        os.makedirs(sub)
+        r = self.create("gh pr create --title x", cwd=sub)
+        self.assertEqual(r.returncode, BLOCKED, r.stderr)
+        self.assertIn("PR template: " + self.GITHUB, r.stderr)
+
+    def test_the_shipped_template_path_exists_in_this_repo(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        self.assertTrue(os.path.isfile(os.path.join(here, "..", "templates", "pull_request_template.md")))
+        self.assertIn(self.SHIPPED, open(GATE, encoding="utf-8").read())
 
 
 class Attest(Base):

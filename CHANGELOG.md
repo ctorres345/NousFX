@@ -7,6 +7,7 @@
 
 ### Review gate
 - A commit on the wrong branch is caught where it happens. The subject must start with the branch's Jira key (`NFX-86: x`, or `NFX-85, NFX-86: x`). Locally, a new advisory `claude/githooks/commit-msg` and the Claude hook (on a literal `git commit -m`) warn and never block. In CI, a new step runs the base gate's `check-commits`, which fails a PR with a commit that names another key or none; merge commits and subjects git writes itself (`Merge`, `Revert`, `fixup!`, `squash!`) are skipped, and a base gate without `check-commits` only warns (NFX-86).
+- When the gate blocks a PR create for a missing `Review-Gate:` line, its message now also names the repo's PR template: `.github/pull_request_template.md`, else `claude/templates/pull_request_template.md`, and nothing when neither exists, because the gate runs in every repo. The review-loop skill now shows `--labels env-none,size-S`: the labels are one comma-separated argument, and a space-separated list fails (NFX-135).
 
 ### Rules
 - After a merge the agent runs one `after-merge` skill (delete the branches, move the ticket to Done, run `/handoff`), and the rules keep a single pointer line. `--check --summary` now also reports the shared-rules size, its cap and the headroom under each cap, both read from `nousfx_sync.CLAUDE_RULES_BUDGET`. The ratchet keeps 50 bytes of room, its failure message points to a skill before a cut, and "from docs and config" is back in the runbook line (NFX-133).
