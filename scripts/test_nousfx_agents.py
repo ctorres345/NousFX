@@ -88,7 +88,7 @@ class Mapping(AgentBase):
         description = re.search(r"(?m)^description: (.*)$", text).group(1)
         for phrase in ("ready-for-agent", "size S or M", "size L", "migrations", "/via check",
                        "long chain of dependent steps",  # the limits
-                       "On FAILED", "effort high", "take the ticket over on Opus",  # the ladder
+                       "On FAILED", "without DONE or FAILED", "effort high", "take the ticket over on Opus",  # the ladder
                        "no edits while it runs", "git status and HEAD show no commit", "review marker",
                        "read the full diff", "tier.py", "tier 3", "ui true",  # the main session's duties
                        "Review fixes stay with you"):
