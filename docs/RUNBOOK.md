@@ -278,7 +278,7 @@ Each command below uses the version in two forms; set them once in the shell, fo
 
    It must end with `checks exit: 0`.
 
-3. Date the heading in a PR on a ticket branch (`cesar/<KEY>`). Change `## X.Y.Z (unreleased)` to `## X.Y.Z (YYYY-MM-DD)`, with today's date. Use exactly that form: `test_the_stub_is_gone_once_1_2_0_is_cut` in `scripts/test_ui_review_retired.py` counts a `## X.Y.Z` heading without "unreleased" as released, and from 1.2.0 on it fails while the retired stub is still there (NFX-127); `## v1.2.0` or `## [1.2.0]` would slip past it. Before the PR, `grep -n "^## " CHANGELOG.md` shows every heading in that form. For 1.2.0, the same PR deletes the retired stub's folder and its tests in `scripts/test_ui_review_retired.py` (NFX-127), or the check fails. Then I merge the PR.
+3. Date the heading in a PR on a ticket branch (`cesar/<KEY>`). Change `## X.Y.Z (unreleased)` to `## X.Y.Z (YYYY-MM-DD)`, with today's date. Use exactly that form. Before the PR, `grep -n "^## " CHANGELOG.md` shows every heading in that form. Then I merge the PR.
 4. Tag that PR's merge commit, not whatever `main` holds now (later PRs may have merged), and push the tag. With `V` and `N` (the PR number, `N=73`) set, in one shell; it stops if the PR has no merge commit or that commit lacks the dated heading:
 
    ```bash

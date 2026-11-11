@@ -8,7 +8,9 @@ Layout (H = home):
                             (agy: H/.gemini/config/plugins/nousfx/skills)
   <state>/skills-manifest.json  every link sync created. Sync owns only what is listed there.
 
-Rules: a folder that is not in the manifest is never overwritten or deleted. A NousFX skill replaces
+Rules: a folder that is not in the manifest is never overwritten or deleted. The one exception is a link
+(never a folder) at a name in RETIRED that points into this repo: those are removed even when unrecorded
+(NFX-127). A NousFX skill replaces
 one only when its name is passed as --yes-replace NAME, and the old folder is moved into the run's
 backup first. Every change is journaled in <backup root>/skills.json so --restore can undo it.
 Pinned outside skills (harness/skills.lock.json, see nousfx_outside.py) are one more source: their
@@ -32,6 +34,9 @@ import stat
 import subprocess
 
 MANIFEST = "skills-manifest.json"
+# Skills deleted from the repo. Their links from before the manifest existed are not recorded in it, so sync
+# removes them by name, and only when they point into this repo (NFX-127).
+RETIRED = frozenset({"ui" + "-review"})  # split so the retirement test finds no other file naming it
 BAK_RE = re.compile(r"\.bak-\d{8}-\d{6}$")
 
 
@@ -189,6 +194,19 @@ def plan(repo, home, state, yes_replace=(), clean_backups=False, extra_roots=(),
         if os.path.basename(path) in want or os.path.basename(path) in keep:
             continue
         p.actions.append({"op": "unlink" if _is_link(path) else "forget", "path": path})
+    for name in sorted(RETIRED - set(want)):
+        shared = os.path.join(agents, name)
+        repo_src = (os.path.join(repo, "claude", "skills", name), os.path.join(repo, "plugins", "via", "skills", name))
+
+        def into(path, root, targets):
+            return _is_link(path) and os.path.normpath(os.path.join(root, _readlink(path) or "")) in targets
+
+        # A link to the shared folder is ours only while that folder is absent or itself a link into the repo.
+        owned = repo_src + ((shared,) if not os.path.lexists(shared) or into(shared, agents, repo_src) else ())
+        for root in (agents, claude_dir, *extra_roots):
+            path = os.path.join(root, name)
+            if path not in manifest and into(path, root, owned):  # recorded ones are handled above
+                p.actions.append({"op": "unlink", "path": path})
     p.broken = [path for path in sorted(manifest)
                 if os.path.islink(path) and not os.path.exists(path)]
     p.old_backups = old_backups(os.path.join(home, ".claude"))
