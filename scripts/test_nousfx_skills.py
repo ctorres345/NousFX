@@ -15,6 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_nousfx_sync import SYNC, Base, write  # noqa: E402
 
 
+OLD = "ui" + "-review"  # the retired skill (NFX-127); split so test_ui_review_retired.py finds no other file naming it
+
+
 class SkillsBase(Base):
     def setUp(self):
         super().setUp()
@@ -92,6 +95,41 @@ class Links(SkillsBase):
         self.run_ok("--restore")
         self.assertTrue(os.path.islink(os.path.join(self.agents, "beta")))
         self.assertEqual(len(self.owned()), 6)
+
+    def test_retired_skill_links_missing_from_the_manifest_are_removed(self):
+        # NFX-127: links made before the manifest existed are not recorded in it.
+        self.run_ok()
+        gone = os.path.join(self.repo, "claude", "skills", OLD)  # never exists in the repo
+        os.makedirs(self.claude, exist_ok=True)
+        os.symlink(gone, os.path.join(self.agents, OLD))
+        os.symlink(os.path.join(self.agents, OLD), os.path.join(self.claude, OLD))
+        self.assertNotIn(os.path.join(self.agents, OLD), self.owned())
+        self.run_ok()
+        self.assertFalse(os.path.lexists(os.path.join(self.agents, OLD)))
+        self.assertFalse(os.path.lexists(os.path.join(self.claude, OLD)))
+        self.assertEqual(len(self.owned()), 6)
+        self.run_ok("--restore")  # undoes that sync, so the old link comes back
+        self.assertTrue(os.path.islink(os.path.join(self.agents, OLD)))
+
+    def test_a_retired_name_that_is_not_our_link_is_left_alone(self):
+        self.run_ok()
+        other = self.stash(OLD)  # a real folder, someone else's
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        write(os.path.join(elsewhere, "SKILL.md"), "# mine\n")
+        os.symlink(elsewhere, os.path.join(self.claude, OLD))
+        self.run_ok()
+        self.assertTrue(os.path.exists(os.path.join(other, "SKILL.md")))
+        self.assertTrue(os.path.islink(os.path.join(self.claude, OLD)))
+        self.assertTrue(os.path.exists(os.path.join(elsewhere, "SKILL.md")))
+
+    def test_a_retired_name_linked_to_someone_elses_shared_folder_is_left_alone(self):
+        self.run_ok()
+        other = self.stash(OLD)  # a real folder at agents/OLD, as another installer leaves it
+        os.makedirs(self.claude, exist_ok=True)
+        os.symlink(other, os.path.join(self.claude, OLD))
+        self.run_ok()
+        self.assertTrue(os.path.islink(os.path.join(self.claude, OLD)))
+        self.assertTrue(os.path.exists(os.path.join(other, "SKILL.md")))
 
     def test_removed_skill_whose_link_became_a_folder_is_not_deleted(self):
         self.run_ok()
