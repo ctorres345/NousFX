@@ -80,6 +80,25 @@ run-check --stamp ──► trusted check (as --mark) ──► pass, tree uncha
 - Any changed, added or removed file that git does not ignore changes the tree, so the stamp no longer matches and `--mark` runs the check. So do another branch, a changed command or timeout on the default branch, or a different source.
 - Limit: the key is readable by the same user, so this stops a stray write, not a deliberate forger. The mark itself is a plain file, and CI runs the check on every PR anyway.
 
+### Proof stamp and the AC-Proof line (NFX-105)
+
+`claude/skills/review-loop/scripts/prove.py` runs a ticket's `Proof:` lines and stamps them, so a `/goal` condition can name one line instead of trusting a sentence.
+
+```
+prove.py run LIST ──► every `Proof:` line parses? ──► run each proof in order (stop at the first fail)
+                       │ no: refuse                     │ fail, timeout, edits files, detached HEAD: refuse, no stamp
+                       └─► all pass: write signed claude-proof-pass
+prove.py attest LIST ──► stamp MAC, kind, tree, branch and proof hash match? ──► AC-Proof: n/n manual:m <tree> <sha>
+```
+
+- LIST is any Markdown file holding the ticket's acceptance criteria. `Proof: \`command\`` is run at the repo top level (default 600 s each, `--timeout`). `Proof: manual: <step>` is listed and never run or counted. Any other `Proof:` line is refused, so a typo cannot drop a criterion. A list with no command proof is refused.
+- The stamp is `{kind: "proof", tree, branch, list_sha, passed, total, manual, exit, time, mac}` in the git dir. It reuses the pass stamp's helpers and key (`name=` picks the file), and the `kind` field keeps the two stamps from standing in for each other. `list_sha` is the SHA-256 of the normalized, ordered proofs, not of the file: reworded criteria keep it, a changed, added, removed or reordered proof does not. The list is read once, so the hash and the run use the same bytes.
+- A proof that fails, times out, edits any file git does not ignore, or runs on a detached HEAD writes no stamp and removes an older one. The key is read before the run and the stamp is removed after it, as in the pass stamp, because a proof is branch code.
+- `attest` never runs anything. It prints the line plus each command and each manual step, so review-loop can compare them with the ticket's criteria. Change the tree, the branch or a proof and `attest` refuses until `run` is repeated.
+- The gate hook does not read this stamp, and `review-gate.py attest` is unchanged. Put the `AC-Proof:` line in the PR body; `/goal` can compare its count and `<sha>`.
+- What it proves: each command proof exited 0 on this exact tree and branch, with no file edited, for this exact list of proofs.
+- What it does not prove: that a proof is a good one. The proofs come from the list the branch author supplies, CI does not re-run them, and the key is same-user readable, so a deliberate forger is not stopped (a `setsid` child can also outlive the process-group kill). A proof weakened to `true` changes the hash, and review-loop compares each proof with its criterion. Manual proofs are not run: the line shows `manual:m` so the goal can require 0.
+
 ### In CI
 
 - `review-gate.py run-check --ref origin/<base>` reads the command from the base branch and runs it in the PR checkout. The workflow takes the gate from the base branch too, so a PR cannot change the command or the script that reads it.
@@ -243,5 +262,5 @@ This is a guardrail against a mistaken or lazy agent, not against someone editin
 - It does not prove the review was good, or that findings were fixed beyond the mark's count.
 - A skip passes. The log shows the reason so a human can see it.
 - The gate script comes from the base branch, so a PR cannot weaken the check on itself. A change to the gate takes effect only after it merges.
-- Locally, sync makes the honor system harder to fake, not impossible (NFX-101). Deny rules keep Claude's file tools off the marker, the pass stamp, the stamp key and the branch-name exception (`claude-review-ok`, `claude-review-check-pass`, `claude-review-stamp-key`, `claude-branch-ok`, in any git dir). Ask rules make `--skip`, `--tier-override` and `--allow-branch` prompt you, even in auto or bypass mode. Block and usage messages no longer print a ready-made waiver command (`--skip`, `--tier-override`, `--allow-branch`). Known limits: the ask rules match command text, so `python3 -c`, a copy of the gate, `eval`, a variable holding the flag, quotes inside it or a glob for the path get past them, and the stamp key is same-user 0600, so a signature on the marker would prove nothing. The control is CI plus branch protection (on this repo, `main` requires `check`, admins included, since 2026-11-08).
+- Locally, sync makes the honor system harder to fake, not impossible (NFX-101). Deny rules keep Claude's file tools off the marker, the pass stamp, the proof stamp, the stamp key and the branch-name exception (`claude-review-ok`, `claude-review-check-pass`, `claude-proof-pass`, `claude-review-stamp-key`, `claude-branch-ok`, in any git dir). Ask rules make `--skip`, `--tier-override` and `--allow-branch` prompt you, even in auto or bypass mode. Block and usage messages no longer print a ready-made waiver command (`--skip`, `--tier-override`, `--allow-branch`). Known limits: the ask rules match command text, so `python3 -c`, a copy of the gate, `eval`, a variable holding the flag, quotes inside it or a glob for the path get past them, and the stamp key is same-user 0600, so a signature on the marker would prove nothing. The control is CI plus branch protection (on this repo, `main` requires `check`, admins included, since 2026-11-08).
 - Real enforcement needs a human reviewer or a trusted runner that does the review. Branch protection plus this check only makes skipping visible. The check command (above) adds one real proof: the tests ran and passed on this tree.
