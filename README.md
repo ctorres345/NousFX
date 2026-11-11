@@ -31,7 +31,7 @@ cd NousFX && ./install.sh
 
 On Windows, in PowerShell, run `.\install.ps1` instead. Both scripts only run `scripts/nousfx_sync.py`: they show its dry run, ask, then run it for real. Arguments pass through, so `./install.sh --tools claude,agy` also sets up agy (Antigravity CLI). The modes `--check` and `--restore` go to `scripts/nousfx_sync.py` directly.
 
-Then start a **new** Claude Code session (hooks and agents load at session start) and run `/agents`. You should see `Explore`, `researcher`, `reviewer-light`, `reviewer`, `reviewer-high`, `reviewer-deep`, `architect` and `test-runner`.
+Then start a **new** Claude Code session (hooks and agents load at session start) and run `/agents`. You should see `Explore`, `researcher`, `reviewer-light`, `reviewer`, `reviewer-high`, `reviewer-deep`, `architect`, `implementer` and `test-runner`.
 
 The sync writes `~/.claude/CLAUDE.md` (the rules, generated), the agents, skills and hooks, registers the review gate in `~/.claude/settings.json`, adds a deny list there so Claude's file tools cannot read secret files or edit lockfiles, and allows auto mode to delete my merged `cesar/` branches. It backs up every file it changes under `~/.config/nousfx/backups/`, never writes through a symlink it does not own, and skips a skill folder you made by hand (a collision, with a diff) until you pass `--yes-replace NAME`. What it writes and every switch is in [docs/sync.md](docs/sync.md).
 
@@ -112,6 +112,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/agents/Explore.md` | Haiku code search; replaces the built-in Explore |
 | `claude/agents/researcher.md` | Haiku docs and API lookups |
 | `claude/agents/test-runner.md` | Haiku build and test runner; returns only failures |
+| `claude/agents/implementer.md` | Sonnet builder for ready-for-agent tickets of size S or M, from a plan the main session writes |
 | `claude/agents/reviewer.md` | Read-only Opus code reviewer (tier 2) |
 | `claude/agents/reviewer-light.md` | Read-only Sonnet reviewer (tiers 0 and 1) |
 | `claude/agents/reviewer-high.md` | Read-only Opus reviewer at high effort (tier 3) |

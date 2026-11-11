@@ -76,7 +76,7 @@ The steps I repeat by hand for NousFX. Each one changes my own machine only, exc
    "autoCompactWindow": 300000
    ```
 
-6. Start a **new** session (hooks and agents load at session start) and run `/agents`. I should see `Explore`, `researcher`, `reviewer-light`, `reviewer`, `reviewer-high`, `reviewer-deep`, `architect` and `test-runner`.
+6. Start a **new** session (hooks and agents load at session start) and run `/agents`. I should see `Explore`, `researcher`, `reviewer-light`, `reviewer`, `reviewer-high`, `reviewer-deep`, `architect`, `implementer` and `test-runner`.
 7. Run the [smoke checks](#smoke-checks).
 
 The design skills Via uses are not in this repo. `harness/skills.lock.json` pins most of them and sync installs them (see the README). Missing ones are skipped and reported.

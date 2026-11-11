@@ -77,6 +77,27 @@ class Mapping(AgentBase):
             self.assertEqual(len(re.findall(r"^effort:", text, re.M)), 1, name)
             self.assertIn(f"\neffort: {effort}\n", text, name)
 
+    def test_implementer_is_a_balanced_agent_with_its_limits_ladder_and_duties(self):
+        """NFX-129: Sonnet builds ready-for-agent S/M tickets; the description carries dispatch, ladder, duties."""
+        self.sync()
+        text = self.agent("implementer")
+        self.assertIn("\nmodel: sonnet\n", text)
+        self.assertEqual(len(re.findall(r"^effort:", text, re.M)), 1)
+        self.assertIn("\neffort: medium\n", text)
+        self.assertRegex(text, r"(?m)^maxTurns: \d+$")
+        description = re.search(r"(?m)^description: (.*)$", text).group(1)
+        for phrase in ("ready-for-agent", "size S or M", "size L", "migrations", "/via check",
+                       "long chain of dependent steps",  # the limits
+                       "On FAILED", "without DONE or FAILED", "no retry", "take the ticket over on Opus",  # the ladder
+                       "no edits while it runs", "note HEAD", "review marker", "claude-review-ok", "both are unchanged",
+                       "read the full diff", "git diff HEAD", "tier.py", "tier 3", "ui true",  # the main session's duties
+                       "Review fixes stay with you"):
+            self.assertIn(phrase, description, phrase)
+        body = text.split("-->", 1)[1]
+        for phrase in ("DONE", "FAILED", "Changed files", "Proofs", "Open decisions",  # the return format
+                       "git commit", "git push", "review-gate.py", "--mark"):  # forbidden by name
+            self.assertIn(phrase, body, phrase)
+
     def test_the_balanced_role_is_its_own_entry(self):
         self.sync()
         models = os.path.join(self.repo, "harness", "models.toml")

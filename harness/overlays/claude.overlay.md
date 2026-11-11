@@ -1,6 +1,7 @@
 ## Claude Code
 - A missing tool is not a stop: load it with `ToolSearch`. Report a blocker only after the obvious fix failed, with what you tried.
 - Lookups (Haiku): `Explore` for code, `researcher` for docs and APIs, `test-runner` for noisy build/test output, over cavecrew/caveman-explore.
+- Exception: `implementer` codes S/M tickets.
 - When done, ask once whether to open the PR; on yes, run `review-loop` yourself, then `gh pr create`. If the `review-gate.py` hook blocks, run the loop, never work around it; skip only with the user's explicit approval.
 - UI work: `/via spec` at kickoff, `/via check` before asking about the PR, unasked. Requests to review, critique, polish or optimize UI/UX, design, responsiveness or accessibility: `/via audit`.
 - Token hygiene: Grep or offset/limit for files over ~20K chars; never Read old transcripts or unchanged files again. Send long output to a file; read the tail.

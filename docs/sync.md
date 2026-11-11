@@ -230,6 +230,27 @@ harness/models.toml     per tool, each role -> model + effort (claude: haiku / s
 - Sync never deletes an agent file I removed from the sources.
 - The one intended difference from `claude/agents/*.md` is the generated header. The golden test in `scripts/test_nousfx_agents.py` enforces it, so the old files stay as the reference for that test.
 
+### Who writes the code: the `implementer`
+
+A cloud session or the desktop app runs on whatever model I picked, so the session model cannot decide who writes routine code. The `implementer` agent can: it has `role: balanced` (Sonnet, medium), so the model follows the job and not the session.
+
+| Agent | Role | Job |
+| --- | --- | --- |
+| Main session | whatever I picked | Plans, hands the plan to the implementer, checks the result, fixes review findings, runs `review-loop` |
+| `implementer` | `balanced` | Builds a ready-for-agent ticket of size S or M from the plan, runs the ticket's `Proof:` commands and returns `DONE` or `FAILED` |
+| Reviewers | `balanced` / `strong` | Read-only, picked by `tier.py` as before |
+
+The ladder, which also lives in the agent's description so it costs no rules bytes:
+
+1. Run the implementer once with the plan.
+2. On `FAILED`, or a reply without `DONE` or `FAILED` (a turn-cap stop), the main session takes the ticket over. There is no retry: a probe could not confirm that the Agent call honours a per-call `effort: high`, and a second run on the same model would only repeat the first. Add the retry once an override is proven.
+
+The main session also takes over, with a note in the PR, for size L, migrations, UI work that needs `/via check`, one long chain of dependent steps, and any diff that `tier.py` puts at tier 3 or marks `ui: true`.
+
+The implementer has Bash, and nothing in code stops it from committing or running the gate. Its body forbids both by name, and the main session notes HEAD and the review marker before each run and checks after it that both are unchanged. The marker is `.git/claude-review-ok` (`git rev-parse --git-path claude-review-ok`): compare its hash, or that it is absent, because it often exists already and `git status` cannot show it.
+
+To run it on another model, change the `balanced` entry in `harness/models.toml` (every `balanced` agent changes with it), or give `implementer.md` its own `effort:`. A local model, such as Qwen through OpenCode, takes over the same way once a mapping exists (NFX-49).
+
 ## agy
 
 I keep agy in one folder that sync owns, and I leave my own agy files alone.
