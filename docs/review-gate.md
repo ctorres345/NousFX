@@ -110,6 +110,7 @@ and review-loop ran "--mark --findings 0" and its output says "review recorded f
 at most N turns.
 ```
 
+- `run_checks.py` is this repo's check command; in another repo, name that project's check command instead.
 - "review recorded with 0 open" is the `--mark` call with `--findings 0` that prints `review recorded for tree <tree>`; a refused mark prints an error instead, and a `--skip` adds `(skipped: ...)`, so neither counts.
 - `manual:0` means the goal fails while a manual proof is left, so a hands-off run needs command proofs only.
 - Every finding then has a disposition (`fix-now`, `follow-up` or `note`, see the review-loop skill); the PR body carries the follow-up drafts and the notes.
