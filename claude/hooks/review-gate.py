@@ -35,6 +35,9 @@ in F is below the tier in J (tier.py's JSON for the PR diff). Overrides count on
 `check-commits BRANCH --base REF` (CI, NFX-86) exits 1 when a non-merge commit in REF..HEAD does not name the
 branch's Jira key in its subject. The Claude hook also warns (never blocks) on a literal `git commit -m` subject.
 
+`--repo-copy PATH` (the project's cloud fallback hook, NFX-107) runs this gate from the default branch's copy and blocks a PR
+create when the repo's gate or parser at PATH differs from this one. A branch cannot pass itself by editing its copy.
+
 Mark mode: `review-gate.py --mark --findings N` or `--mark --skip "reason"` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
 `--tier 0-3 [--reasons "..."]` (from the review loop's tier.py) is stored too; `attest` then prints a separate
@@ -64,6 +67,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1205,6 +1209,35 @@ def can_create(tool):
     return tool.lower() in ("bash", "powershell") or bool(MCP_PR_CREATE.search(tool))
 
 
+COPY_BLOCK = """\
+Blocked: the gate copy differs from main: {path} is not the review gate the default branch has.
+A branch could edit its own gate to pass, so a PR is not opened from here. Restore it (git checkout <the default branch's origin ref> -- .claude/hooks)
+or, if the change is intended, merge it to main first. CI is the real check.
+"""
+
+
+def copy_differs(path):
+    """True when the gate or the parser next to `path` is not byte for byte this one. Anything but a regular file of
+    the same size (a missing file, a FIFO that would hang the read, a link to /dev/zero) counts as different."""
+    here = os.path.dirname(SCRIPT)
+    for ours, theirs in ((SCRIPT, path), (os.path.join(here, "pr_create_parser.py"),
+                                          os.path.join(os.path.dirname(path), "pr_create_parser.py"))):
+        try:
+            info = os.stat(theirs)
+            if not stat.S_ISREG(info.st_mode):
+                return True
+            with open(ours, "rb") as a:
+                want = a.read()
+            if info.st_size != len(want):
+                return True
+            with open(theirs, "rb") as b:
+                if b.read(len(want) + 1) != want:
+                    return True
+        except Exception:
+            return True
+    return False
+
+
 def gate(argv):
     """Claude PreToolUse hook: parse the payload, then ask evaluate(). A hook that times out lets the call
     through, so the gate keeps to the budget the hook command passes (`--budget N`, below its timeout)."""
@@ -1224,7 +1257,7 @@ def gate(argv):
             return 0  # a tool that cannot open a PR: never break unrelated work
         print(PAYLOAD_BLOCK.format(error=f"{type(e).__name__}: {e}"), file=sys.stderr)
         return 2
-    code = evaluate(tool, command, cwd, body)
+    code = evaluate(tool, command, cwd, body, option(argv, "--repo-copy"))
     if code == 0 and tool.lower() in ("bash", "powershell"):
         warning = commit_warning(command, cwd, tool.lower() == "powershell")  # NFX-86: advisory, never blocks
         if warning:
@@ -1348,18 +1381,19 @@ def body_blocked(cwd, source):
     return BODY_BLOCK.format(why=why, fix=fix)
 
 
-def evaluate(tool, command, cwd, body=None):
+def evaluate(tool, command, cwd, body=None, repo_copy=None):
     """Exit code for one tool call. The single decision path for the hook and for `check`.
-    body: the PR body of a create-PR MCP tool (shell commands carry theirs in the command)."""
+    body: the PR body of a create-PR MCP tool (shell commands carry theirs in the command).
+    repo_copy: the repo's own copy of this gate (--repo-copy), which a PR create must match (NFX-107)."""
     global TREES
     TREES = {}
     try:
-        return decide(tool, command, cwd, body)
+        return decide(tool, command, cwd, body, repo_copy)
     finally:
         TREES = None
 
 
-def decide(tool, command, cwd, body):
+def decide(tool, command, cwd, body, repo_copy=None):
     if MCP_PR_CREATE.search(tool):
         calls = [(cwd, {"kind": "mcp", "value": body})]
     elif PARSER_ERROR:
@@ -1390,6 +1424,9 @@ def decide(tool, command, cwd, body):
             if not (isinstance(command, str) and mentions_create(command)):
                 return 0
             calls = [(None if CD_MENTION.search(command) else cwd, {"kind": "unknown"})]  # the parse lost any cd
+    if calls and repo_copy and copy_differs(repo_copy):
+        print(COPY_BLOCK.format(path=repo_copy), file=sys.stderr)
+        return 2
     if calls and not MCP_PR_CREATE.search(tool) and isinstance(command, str) and GIT_REPO_VARS.search(command):
         print(GIT_VARS_BLOCK, file=sys.stderr)
         return 2
