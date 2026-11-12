@@ -1,6 +1,6 @@
 # Platforms
 
-**Web**, **Compose** and **Flutter** are built. SwiftUI comes with NFX-11.
+**Web**, **Compose** and **Flutter** are built. There is no SwiftUI table: no priority project is native SwiftUI (NFX-11 was closed as won't do).
 
 ## Web
 
@@ -21,8 +21,11 @@ Run each one that is in your skill list. Skip, with a reason, any that is not.
 | `ui-ux-pro-max` | Always. |
 | `design:accessibility-review` | Always. |
 | `design:design-critique` | Always. |
+| `break-ui` | Always, on the screens in scope. |
+| `emil-design-eng` | The screens have motion, or polish is the question. |
+| `review-animations` | The changed screens or their code have animation. |
 
-When a page is both, run both and say so. Pinned third-party skills (Impeccable) arrive in a later release. Vercel's web-design-guidelines skill is not pinned, because it fetches its rules from a branch at runtime (see `docs/sync.md`).
+When a page is both, run both and say so. Vercel's web-design-guidelines skill is not pinned, because it fetches its rules from a branch at runtime (see `docs/sync.md`).
 
 ### Capture
 `scripts/via_capture.py` takes four shots per screen with headless Chrome or Chromium: light and dark, at phone (390x844) and desktop (1280x800). It needs no install. Set `VIA_CHROME` to a browser path if it is not found.
@@ -68,6 +71,9 @@ Run each one that is in your skill list. Skip, with a reason, any that is not.
 | `ui-ux-pro-max` | Always. |
 | `design:accessibility-review` | Always. |
 | `design:design-critique` | Always. |
+| `break-ui` | Always, on the screens in scope. |
+| `emil-design-eng` | The screens have motion, or polish is the question. |
+| `review-animations` | The changed screens or their code have animation. |
 
 ### Capture
 The route adds one temporary test file to the project, runs it, and puts every file back, also after a failure.

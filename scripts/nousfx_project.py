@@ -50,9 +50,11 @@ COPIES = {
         os.path.join("claude", "skills", "review-loop", "references", "fable.md"),
     os.path.join(".claude", "skills", "review-loop", "references", "gemini.md"):
         os.path.join("claude", "skills", "review-loop", "references", "gemini.md"),
+    os.path.join(".claude", "skills", "review-loop", "references", "security.md"):
+        os.path.join("claude", "skills", "review-loop", "references", "security.md"),
 }
 # These follow the repo's SKILL.md copy: created when it exists, so a stub never points at a missing file (NFX-114).
-FOLLOW_SKILL = frozenset(os.path.join(".claude", "skills", "review-loop", "references", n) for n in ("fable.md", "gemini.md"))
+FOLLOW_SKILL = frozenset(os.path.join(".claude", "skills", "review-loop", "references", n) for n in ("fable.md", "gemini.md", "security.md"))
 SKILL_COPY = os.path.join(".claude", "skills", "review-loop", "SKILL.md")
 SKILLS_TARGET_REL = os.path.join(".claude", "skills")
 CHECK_REL = os.path.join(".nousfx", "project.toml")

@@ -17,7 +17,8 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNNER = os.path.join(HERE, "via_eval.py")
 CASES = os.path.join(os.path.dirname(HERE), "evals", "cases.json")
-KINDS = {"route", "second-opinion", "unattended-route", "unattended-reject", "never-commits"}
+KINDS = {"route", "second-opinion", "unattended-route", "unattended-reject", "never-commits",
+         "platform-skills"}
 ROUTE_DEF = "def cmd_route(project, args):\n"  # the fixture's commit goes in as route's first statement
 
 

@@ -5,7 +5,9 @@ Python only, standard library only; runs the same on macOS and Windows.
 
     python3 -B tier.py [--base HASH] [--labels fable-review,size-L] [--cwd DIR]
 
-Prints one JSON object: {"tier", "reasons", "ui", "stats"}. Exits 2 (nothing on stdout) when the branch has no
+Prints one JSON object: {"tier", "reasons", "ui", "security", "stats"}. "security" lists the security skills the
+diff calls for (NFX-124): agentic-actions-auditor for a path under .github/workflows/, sharp-edges for a security
+keyword in a code file's path or changed lines. It is empty when none applies. Exits 2 (nothing on stdout) when the branch has no
 merge base with the default branch; any other error gives Tier 2 with the reason, never a lower tier.
 """
 import argparse
@@ -49,6 +51,11 @@ RISK_NAMES = (".gitattributes", "review-gate.py", "pr_create_parser.py", "*.grad
 RISK_KEYWORDS = frozenset("""auth oauth authorization authorize authentication authenticate login logout password
 passwd credential credentials token jwt crypto cryptography encrypt encryption decrypt keystore keychain secret
 secrets tokens passwords encrypted decrypted authenticated authorized authz authn payment payments billing migration migrations schema mutex semaphore atomic synchronized""".split())
+# NFX-124: whole-word keywords that call for the sharp-edges skill: the auth and crypto words of RISK_KEYWORDS (not
+# payment, schema or lock words, which stay Tier 3 only) plus session and web-security words.
+SECURITY_KEYWORDS = (RISK_KEYWORDS - frozenset("""payment payments billing migration migrations schema mutex semaphore
+atomic synchronized""".split())) | frozenset("session sessions cookie cookies csrf cors tls ssl".split())
+WORKFLOWS_DIR = ".github/workflows/"
 WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 MAX_KEYWORD_REASONS = 10
 
@@ -103,21 +110,34 @@ def risk_path_hit(path, project_paths):
     return any(project_path_match(p, name, norm(g)) for g in project_paths)
 
 
-def path_keyword(path):
-    """A risk keyword used as a whole word in a folder or file name, or None."""
+def path_keyword(path, keywords=RISK_KEYWORDS):
+    """A keyword (default: a risk keyword) used as a whole word in a folder or file name, or None."""
     for w in words(norm(path)):
-        if w in RISK_KEYWORDS:
+        if w in keywords:
             return w
     return None
 
 
-def line_keywords(lines):
+def line_keywords(lines, keywords=RISK_KEYWORDS):
     found = []
     for line in lines:
         for w in words(line):
-            if w in RISK_KEYWORDS and w not in found:
+            if w in keywords and w not in found:
                 found.append(w)
     return found
+
+
+def security_skills(files):
+    """Security skills the diff calls for (NFX-124), in a fixed order. Deleted and renamed workflows count: a path
+    in the diff is enough. sharp-edges reads code files only (docs and generated files are skipped)."""
+    skills = []
+    if any(norm(x["path"]).startswith(WORKFLOWS_DIR) for x in files):
+        skills.append("agentic-actions-auditor")
+    code = [x for x in files if not (is_ignored(x["path"]) or is_doc(x["path"]))]
+    if any(path_keyword(x["path"], SECURITY_KEYWORDS)
+           or line_keywords(x["added"] + x.get("removed_lines", []), SECURITY_KEYWORDS) for x in code):
+        skills.append("sharp-edges")
+    return skills
 
 
 def is_ui(path):
@@ -194,7 +214,8 @@ def classify(files, labels=(), project_paths=()):
     if ui_path and tier < 1:
         tier = 1
         reasons.append("Tier 1: UI change (%s)" % ui_path)
-    return {"tier": tier, "reasons": reasons, "ui": ui_path is not None, "stats": stats}
+    return {"tier": tier, "reasons": reasons, "ui": ui_path is not None, "security": security_skills(files),
+            "stats": stats}
 
 
 # ---- git layer -------------------------------------------------------------------------------------------------
@@ -388,7 +409,7 @@ def fallback(reason, labels, base=None):
         reasons.append("Tier 3: label fable-review")
     else:
         tier = bump_size_l(2, reasons, labels)
-    return {"tier": tier, "reasons": reasons, "ui": False,
+    return {"tier": tier, "reasons": reasons, "ui": False, "security": [],
             "stats": {"lines": 0, "files": 0, "hunks": 0, "base": base}}
 
 
