@@ -65,7 +65,7 @@ class GeminiInLoop(unittest.TestCase):
     def test_final_argon_call_comes_before_the_record_step(self):
         self.assertIn("However the loop ends", section(LOOP, "Loop"))
         self.assertIn("make the final Argon call", section(LOOP, "Record the review"))
-        self.assertIn("then `tier.py`, then Record the review", GEMINI)
+        self.assertIn("Then run `tier.py`, then Record the review", GEMINI)
 
     def test_a_fix_after_the_final_call_gets_a_reviewer_or_counts_open(self):
         for phrase in ("has no reviewer yet", "run one more round with the tier's reviewer", "count it as open in `--findings`",

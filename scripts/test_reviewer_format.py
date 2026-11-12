@@ -96,7 +96,7 @@ class ReviewLoopSkill(unittest.TestCase):
 
     def test_reviewer_gets_the_test_result_and_a_budget_under_its_turn_limit(self):
         # NFX-96: a reviewer that ran the suite hit its turn limit and sent no report.
-        self.assertIn("the result of your latest test run", self.text)
+        self.assertIn('your last full run (or "not run this round")', self.text)
         budget = int(re.search(r"report within (\d+) tool calls", self.text).group(1))
         stated = int(re.search(r"reviewers stop at (\d+) turns", self.text).group(1))
         limits = []
