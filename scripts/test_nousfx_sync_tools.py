@@ -734,6 +734,17 @@ class Project(Fixture):
         shutil.copy(os.path.join(ROOT, "claude", "skills", "project-setup", "assets", "settings.json"), settings)
         self.assertNotIn("a hook from before NFX-98", self.ok("--project", self.proj, "--tools", "claude").stdout)
 
+    def test_a_hook_that_runs_the_copy_itself_gets_the_nfx_107_note(self):
+        settings = self.files(".claude", "settings.json")
+        mid = ('f="$CLAUDE_PROJECT_DIR/.claude/hooks/review-gate.py"; [ -f "$HOME/.claude/hooks/review-gate.py" ] '
+               '|| [ ! -f "$f" ] || python3 "$f" --budget 55')
+        write(settings, json.dumps({"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": mid}]}]}}))
+        out = self.ok("--project", self.proj, "--tools", "claude").stdout
+        self.assertIn("a hook from before NFX-107", out)
+        self.assertNotIn("a hook from before NFX-98", out)
+        shutil.copy(os.path.join(ROOT, "claude", "skills", "project-setup", "assets", "settings.json"), settings)
+        self.assertNotIn("a hook from before NFX-107", self.ok("--project", self.proj, "--tools", "claude").stdout)
+
     def test_project_without_a_list_gets_no_agy_files(self):
         os.remove(os.path.join(self.proj, ".nousfx", "mcp.toml"))
         r = self.sync("--project", self.proj, "--tools", "agy")
@@ -752,18 +763,197 @@ class ProjectSetupSkill(Base):
         for flag in ("--project", "--check", "--dry-run", "--yes-replace"):
             self.assertIn(flag, sync)
 
+    def hook_command(self):
+        asset = jload(os.path.join(ROOT, "claude", "skills", "project-setup", "assets", "settings.json"))
+        return asset["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+
+    @staticmethod
+    def git_in(proj):
+        return lambda *a: subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *a], cwd=proj,
+                                         capture_output=True, text=True, check=True)
+
+    def cloud_repo(self, origin_head=None, fetched=True):
+        """A repo whose committed gate copy is NousFX's; origin/main (and origin/HEAD) point at that commit."""
+        proj, home = os.path.join(self.tmp, "proj"), os.path.join(self.tmp, "h")
+        for rel in ("hooks/review-gate.py", "hooks/pr_create_parser.py", "skills/review-loop/scripts/tier.py"):
+            write(os.path.join(proj, ".claude", *rel.split("/")), read(os.path.join(ROOT, "claude", *rel.split("/"))))
+        git = self.git_in(proj)
+        git("init", "-q", "-b", "work")
+        git("add", "-A")
+        git("commit", "-q", "-m", "x")
+        if fetched:
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            if origin_head:
+                git("update-ref", "refs/remotes/origin/" + origin_head, "HEAD")
+                git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/" + origin_head)
+        return proj, home
+
+    def run_hook(self, proj, home, command, tool="Bash"):
+        env = {"PATH": os.environ["PATH"], "HOME": home, "CLAUDE_PROJECT_DIR": proj}
+        payload = json.dumps({"tool_name": tool, "tool_input": {"command": command}, "cwd": proj})
+        return subprocess.run(["sh", "-c", self.hook_command()], env=env, input=payload, capture_output=True,
+                              text=True, cwd=self.tmp)
+
     def test_project_hook_runs_the_repo_gate_only_without_a_global_one(self):
         """NFX-98: the repo copy is the cloud fallback, so the project hook skips it when ~/.claude has a gate."""
-        asset = jload(os.path.join(ROOT, "claude", "skills", "project-setup", "assets", "settings.json"))
-        command = asset["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-        proj, home = os.path.join(self.tmp, "proj"), os.path.join(self.tmp, "h")
-        write(os.path.join(proj, ".claude", "hooks", "review-gate.py"), "print('repo gate')\n")
+        proj, home = self.cloud_repo()
+        gate = os.path.join(proj, ".claude", "hooks", "review-gate.py")
+        write(gate, "print('repo gate')\n")  # edited, uncommitted: must never run
+        self.assertNotIn("repo gate", self.run_hook(proj, home, "ls").stdout)
+        write(os.path.join(home, ".claude", "hooks", "review-gate.py"), "print('global')\n")
+        r = self.run_hook(proj, home, "gh pr create")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))  # local: the global hook judges
+
+    def test_edited_gate_copy_blocks_a_pr_and_never_runs(self):
+        """NFX-107 AC1: cloud sessions judge with main's gate, which blocks a PR when the repo copy differs."""
+        proj, home = self.cloud_repo()
+        gate = os.path.join(proj, ".claude", "hooks", "review-gate.py")
+        write(gate, read(gate) + "\nprint('EDITED COPY RAN')\nraise SystemExit(0)\n")
+        for command in ("gh pr create --title x", "git status && gh pr create"):
+            r = self.run_hook(proj, home, command)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("the gate copy differs from main", r.stderr)
+            self.assertNotIn("EDITED COPY RAN", r.stdout + r.stderr)
+        r = self.run_hook(proj, home, "x", tool="mcp__github__create_pull_request")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("the gate copy differs from main", r.stderr)
+        r = self.run_hook(proj, home, "ls -la")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))  # other commands keep working
+
+    def test_a_copy_that_is_not_a_regular_file_blocks_instead_of_hanging(self):
+        proj, home = self.cloud_repo()
+        gate = os.path.join(proj, ".claude", "hooks", "review-gate.py")
+        os.remove(gate)
+        os.mkfifo(gate)
+        r = subprocess.run(["sh", "-c", self.hook_command()], env={"PATH": os.environ["PATH"], "HOME": home,
+                           "CLAUDE_PROJECT_DIR": proj}, input=json.dumps({"tool_name": "Bash", "tool_input": {
+                               "command": "gh pr create"}, "cwd": proj}), capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("the gate copy differs from main", r.stderr)
+        os.remove(gate)
+        os.symlink("/dev/zero", gate)
+        r = self.run_hook(proj, home, "gh pr create")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("the gate copy differs from main", r.stderr)
+
+    def test_edited_parser_copy_blocks_a_pr_too(self):
+        proj, home = self.cloud_repo()
+        parser = os.path.join(proj, ".claude", "hooks", "pr_create_parser.py")
+        write(parser, read(parser) + "\n# edited\n")
+        r = self.run_hook(proj, home, "gh pr create")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("the gate copy differs from main", r.stderr)
+
+    def test_unchanged_copy_is_judged_normally(self):
+        proj, home = self.cloud_repo()
+        r = self.run_hook(proj, home, "gh pr create")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)  # no review recorded: the gate's own block
+        self.assertNotIn("differs from main", r.stderr)
+        self.assertNotIn("fetch origin", r.stderr)
+
+    def test_unfetched_origin_blocks_a_pr_create_only(self):
+        proj, home = self.cloud_repo(fetched=False)
+        r = self.run_hook(proj, home, "gh pr create")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("fetch origin first", r.stderr)
+        r = self.run_hook(proj, home, "x", tool="mcp__github__create_pull_request")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        r = self.run_hook(proj, home, "ls")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+    def test_origin_head_picks_the_default_branch_from_a_short_list(self):
+        """origin/HEAD counts when it is main, master, develop or trunk; any other name falls back to origin/main."""
+        for head, read_ref, other_ref in (("develop", "develop", "main"), ("trunk", "trunk", "main"),
+                                          ("elsewhere", "main", "elsewhere")):
+            with self.subTest(origin_head=head):
+                shutil.rmtree(os.path.join(self.tmp, "proj"), ignore_errors=True)
+                proj, home = self.cloud_repo(origin_head=head)
+                git = self.git_in(proj)
+                gate = os.path.join(proj, ".claude", "hooks", "review-gate.py")
+                write(gate, read(gate) + "\n# a newer gate\n")
+                git("commit", "-q", "-a", "-m", "newer gate")
+                git("update-ref", "refs/remotes/origin/" + read_ref, "HEAD~1")  # old gate: differs from the copy
+                git("update-ref", "refs/remotes/origin/" + other_ref, "HEAD")  # same as the copy: would not block
+                r = self.run_hook(proj, home, "gh pr create")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("differs from main", r.stderr)
+
+    def test_a_deleted_gate_copy_still_blocks_a_pr(self):
+        """A branch that deletes the copy must not switch the gate off: main still has one to compare with."""
+        proj, home = self.cloud_repo()
+        os.remove(os.path.join(proj, ".claude", "hooks", "review-gate.py"))
+        r = self.run_hook(proj, home, "gh pr create")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("the gate copy differs from main", r.stderr)
+
+    def test_a_failed_extract_blocks_even_when_the_branch_deleted_its_copy(self):
+        """Main has a gate but its parser is missing, so the extract fails: a deleted copy must not pass."""
+        proj, home = self.cloud_repo()
+        git = self.git_in(proj)
+        git("rm", "-q", ".claude/hooks/pr_create_parser.py")
+        git("commit", "-q", "-m", "no parser")
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        shutil.rmtree(os.path.join(proj, ".claude"))
+        r = self.run_hook(proj, home, "gh pr create")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("could not be extracted", r.stderr)
+        self.assertEqual(self.run_hook(proj, home, "ls").returncode, 0)
+
+    def test_other_ways_to_open_a_pr_are_blocked_when_origin_is_unfetched(self):
+        proj, home = self.cloud_repo(fetched=False)
+        for command in ("gh pr new", "gh pr cre''ate --title x", "X=create; gh pr $X", "hub pull-request -m x",
+                        "gh api graphql -f query='mutation { createPullRequest(input:{}) { pullRequest { url } } }'", "gh api repos/o/r/pulls -f title=x", "glab mr create"):
+            with self.subTest(command=command):
+                r = self.run_hook(proj, home, command)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("fetch origin first", r.stderr)
+
+    def test_unrelated_words_are_not_blocked_when_origin_is_unfetched(self):
+        proj, home = self.cloud_repo(fetched=False)
+        for command in ("cat high_priority.txt", 'git commit -m "fix right-hand problem"', "ls"):
+            with self.subTest(command=command):
+                r = self.run_hook(proj, home, command)
+                self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+    def test_main_without_a_gate_copy_blocks_only_where_the_branch_adds_one(self):
+        """The PR that first adds the copy cannot be judged in the cloud; a repo with no copy at all is left alone."""
+        proj, home = self.cloud_repo()
+        git = self.git_in(proj)
+        git("rm", "-q", "-r", "--cached", ".claude")
+        git("commit", "-q", "-m", "drop the copy")
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        r = self.run_hook(proj, home, "gh pr create")  # the working tree still has a copy: it is being added
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("no review gate copy to compare with", r.stderr)
+        shutil.rmtree(os.path.join(proj, ".claude"))
+        r = self.run_hook(proj, home, "gh pr create")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+
+    def test_parallel_hooks_on_a_fresh_session_all_pass(self):
+        """Eight hooks racing to extract the gate must not delete each other's files."""
+        proj, home = self.cloud_repo()
         env = {"PATH": os.environ["PATH"], "HOME": home, "CLAUDE_PROJECT_DIR": proj}
-        run = lambda: subprocess.run(["sh", "-c", command], env=env, capture_output=True, text=True,
-                                     stdin=subprocess.DEVNULL).stdout
-        self.assertEqual(run(), "repo gate\n")  # cloud: no ~/.claude gate
-        write(os.path.join(home, ".claude", "hooks", "review-gate.py"), "x\n")
-        self.assertEqual(run(), "")  # local: the global hook judges, the repo copy stays out
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": proj})
+        procs = [subprocess.Popen(["sh", "-c", self.hook_command()], env=env, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(8)]
+        for pr in procs:
+            out, err = pr.communicate(payload)
+            self.assertEqual((pr.returncode, err), (0, ""), out)
+
+    def test_the_extracted_gate_is_reused_while_main_is_unchanged(self):
+        proj, home = self.cloud_repo()
+        gate = os.path.join(subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=proj, text=True,
+                                           capture_output=True).stdout.strip(), "nousfx-gate", "current", "hooks", "review-gate.py")
+        self.run_hook(proj, home, "ls")
+        first = os.stat(gate).st_ino
+        self.run_hook(proj, home, "ls")
+        self.assertEqual(os.stat(gate).st_ino, first)  # parallel hooks never delete the gate another one is running
+
+    def test_project_hook_runs_isolated(self):
+        """NFX-107 AC2: python3 -I -B, and the copy it runs is main's, outside the working tree."""
+        command = self.hook_command()
+        self.assertIn('exec python3 -I -B "$d/hooks/review-gate.py"', command)
+        self.assertNotIn('python3 "$f"', command)
 
     def test_skill_and_gate_doc_agree_on_the_repo_gate_copy(self):
         """NFX-98: locally the global gate counts; the repo copy is only the cloud fallback."""

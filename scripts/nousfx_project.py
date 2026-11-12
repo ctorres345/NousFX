@@ -138,19 +138,34 @@ OLD_HOOK_NOTE = ("note: {path} runs the repo's gate copy even when {glob} exists
                  "cloud fallback.")
 
 
-def _old_project_hook(project):
-    """True when the repo's .claude/settings.json runs the gate copy with no check for the global gate.
-    Sync does not write that file (it is merged by hand), so this is a note, not drift."""
+def _hook_commands(project):
+    """The PreToolUse hook commands in the repo's .claude/settings.json that mention the gate copy.
+    Sync does not write that file (it is merged by hand), so a finding here is a note, not drift."""
     path = os.path.join(project, ".claude", "settings.json")
     if _linked(project, path):
-        return False
+        return []
     try:
         data = json.loads(_read(path) or "{}")
         groups = data.get("hooks", {}).get("PreToolUse", [])
         commands = [h.get("command", "") for g in groups for h in g.get("hooks", [])]
     except (ValueError, AttributeError, TypeError):
-        return False
-    return any(isinstance(c, str) and GATE_COPY in c and GLOBAL_GATE not in c for c in commands)
+        return []
+    return [c for c in commands if isinstance(c, str) and GATE_COPY in c]
+
+
+def _old_project_hook(project):
+    """True when the hook runs the gate copy with no check for the global gate."""
+    return any(GLOBAL_GATE not in c for c in _hook_commands(project))
+
+
+NOT_ISOLATED_NOTE = ("note: {path} runs the repo's gate copy itself (a hook from before NFX-107), so a branch can edit "
+                     "the gate that judges it. Merge the review-gate hook from project-setup's assets/settings.json "
+                     "again: it runs main's copy, isolated.")
+
+
+def _unisolated_project_hook(project):
+    """True when the hook runs the gate copy but not through nousfx-gate (NFX-107)."""
+    return any("nousfx-gate" not in c for c in _hook_commands(project))
 
 
 def plan_project(repo, project, SyncError, yes_replace=()):
@@ -202,6 +217,8 @@ def _plan(repo, project, SyncError, yes_replace):
     _copies(p, repo, project, SyncError)
     if _old_project_hook(project):
         p.notes.append(OLD_HOOK_NOTE.format(path=os.path.join(project, ".claude", "settings.json"), glob=GLOBAL_GATE))
+    elif _unisolated_project_hook(project):
+        p.notes.append(NOT_ISOLATED_NOTE.format(path=os.path.join(project, ".claude", "settings.json")))
 
     link = os.path.join(project, SKILLS_LINK_REL)
     skills = os.path.join(project, SKILLS_TARGET_REL)
