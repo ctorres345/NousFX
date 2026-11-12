@@ -674,13 +674,17 @@ class Project(Fixture):
     def add_copy_sources(self):
         """review-loop and the agents, as NousFX ships them (the gate is already in the fixture repo)."""
         for rel in (("claude", "skills", "review-loop", "SKILL.md"),
-                    ("claude", "skills", "review-loop", "scripts", "tier.py"), ("harness", "models.toml")):
+                    ("claude", "skills", "review-loop", "scripts", "tier.py"),
+                    ("claude", "skills", "review-loop", "references", "fable.md"),
+                    ("claude", "skills", "review-loop", "references", "gemini.md"), ("harness", "models.toml")):
             write(os.path.join(self.repo, *rel), read(os.path.join(ROOT, *rel)))
         shutil.copytree(os.path.join(ROOT, "harness", "agents"), os.path.join(self.repo, "harness", "agents"))
 
     COPIES = ((".claude", "hooks", "review-gate.py"), (".claude", "hooks", "pr_create_parser.py"),
               (".claude", "agents", "reviewer.md"), (".claude", "skills", "review-loop", "SKILL.md"),
-              (".claude", "skills", "review-loop", "scripts", "tier.py"))
+              (".claude", "skills", "review-loop", "scripts", "tier.py"),
+              (".claude", "skills", "review-loop", "references", "fable.md"),
+              (".claude", "skills", "review-loop", "references", "gemini.md"))
 
     def test_stale_copies_are_drift_and_a_run_refreshes_them(self):
         self.add_copy_sources()
@@ -712,6 +716,19 @@ class Project(Fixture):
         self.ok("--project", self.proj, "--tools", "claude")
         for rel in self.COPIES:
             self.assertFalse(os.path.lexists(self.files(*rel)), rel)
+        self.assertEqual(self.sync("--project", self.proj, "--tools", "claude", "--check").returncode, 0)
+
+    def test_the_skill_copy_brings_its_references(self):
+        """NFX-114: a repo that keeps SKILL.md gets the two reference files too, so the stubs never dangle."""
+        self.add_copy_sources()
+        write(self.files(".claude", "skills", "review-loop", "SKILL.md"), "stale\n")
+        r = self.sync("--project", self.proj, "--tools", "claude", "--check")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.ok("--project", self.proj, "--tools", "claude")
+        for name in ("fable.md", "gemini.md"):
+            rel = ("claude", "skills", "review-loop", "references", name)
+            self.assertEqual(read(self.files(".claude", *rel[1:])), read(os.path.join(ROOT, *rel)))
+        self.assertFalse(os.path.lexists(self.files(".claude", "skills", "review-loop", "scripts", "tier.py")))
         self.assertEqual(self.sync("--project", self.proj, "--tools", "claude", "--check").returncode, 0)
 
     def test_a_symlinked_copy_is_left_alone_and_the_run_goes_on(self):

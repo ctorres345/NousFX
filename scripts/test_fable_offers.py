@@ -13,6 +13,7 @@ def read(*parts):
 
 
 SKILL = read("claude", "skills", "review-loop", "SKILL.md")
+FABLE_REF = read("claude", "skills", "review-loop", "references", "fable.md")  # NFX-114: the moved section
 
 
 def section(text, title):
@@ -28,7 +29,7 @@ class FableOffers(unittest.TestCase):
                 self.assertNotIn("Optional deep pass", read(*rel))
 
     def test_section_names_the_three_offers(self):
-        s = section(SKILL, "Fable offers")
+        s = section(FABLE_REF, "Fable offers")
         self.assertTrue(s, "missing '## Fable offers' section")
         self.assertIn("`architect`", s)
         self.assertIn("first time the tier is 3", s)
@@ -39,7 +40,7 @@ class FableOffers(unittest.TestCase):
         self.assertGreaterEqual(s.count("`reviewer-deep`"), 2)
 
     def test_section_states_the_limits(self):
-        s = section(SKILL, "Fable offers")
+        s = section(FABLE_REF, "Fable offers")
         for phrase in ("never every round", "Tier 0 or 1", "unattended", "/goal", "only after the user says yes",
                        "one line", "at most once per loop"):
             with self.subTest(phrase=phrase):
@@ -65,7 +66,7 @@ class FableOffers(unittest.TestCase):
 
     def test_plan_check_waits_for_a_round_that_remains(self):
         self.assertIn("before the next round, if a round remains", section(SKILL, "Step 1"))
-        self.assertIn("if a round remains (round 1 if Step 1 picked Tier 3)", section(SKILL, "Fable offers"))
+        self.assertIn("if a round remains (round 1 if Step 1 picked Tier 3)", section(FABLE_REF, "Fable offers"))
 
     def test_final_report_has_a_row_for_fable_offers(self):
         self.assertIn("Fable offers (made, accepted or declined, outcome)", section(SKILL, "Final report"))
