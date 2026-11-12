@@ -75,6 +75,7 @@ run-check --stamp ──► trusted check (as --mark) ──► pass, tree uncha
 
 - `review-gate.py run-check --stamp` reads the check like `--mark` (default branch first), streams its output, and writes `claude-review-check-pass` in the git dir: `{tree, branch, command, source, timeout, exit, time, mac}`.
 - The MAC is HMAC-SHA256 over the other fields, with a random key in `claude-review-stamp-key` in the git dir (mode 0600, created on first use). A stamp written by hand or by a test does not verify. The key is read before the run, and both the stamp run and `--mark` remove any stamp the check command wrote, so a failing check cannot leave one for the next mark.
+- In a review round with no fixes, `run-check --stamp` is the only full suite run. A round with fixes runs the suite once after the last fix, and the delta round and the post-Argon fix add none (NFX-138).
 - review-loop waits for `run-check --stamp` to exit before `--mark`; a mark that starts first finds no stamp and runs the check.
 - `--mark` deletes the stamp when it reaches the check, used or not, so one stamp serves one mark. A mark refused before that (a bad `--tier`) leaves it for the next try.
 - Any changed, added or removed file that git does not ignore changes the tree, so the stamp no longer matches and `--mark` runs the check. So do another branch, a changed command or timeout on the default branch, or a different source.

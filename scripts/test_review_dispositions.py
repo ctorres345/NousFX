@@ -65,8 +65,9 @@ class DeltaRound(unittest.TestCase):
         self.assertIn("revert that fix", self.sec)
         self.assertIn("`follow-up`", self.sec)
 
-    def test_full_suite_still_runs(self):
-        self.assertIn("full test suite", self.sec)
+    def test_the_stamp_run_tests_the_final_tree(self):
+        # NFX-138: the delta round adds no suite run of its own.
+        self.assertIn("No suite run here: `run-check --stamp` tests the final tree", self.sec)
 
     def test_runs_before_record_the_review(self):
         self.assertLess(SKILL.index("## Delta round"), SKILL.index("## Record the review"))
