@@ -58,6 +58,9 @@ Read `references/fable.md` at Tier 3 or a finding tie. Not at Tier 0/1, unattend
 ## Gemini checks
 Read `references/gemini.md` for UI changes or Tier 3, and before Record's final Argon call.
 
+## Security skills
+Read `references/security.md` on the first round when `tier.py`'s `security` list is not empty. If `tier.py` failed or printed no `security` key, none runs: say so in the report.
+
 ## Dispositions
 When the loop ends, every finding has one outcome. `rejected` is not a disposition: it means the finding was not real (step 4 records the reason). Every real finding gets exactly one of:
 - `fix-now`: in scope and cheap (touches files already in the diff, no new design decision). A `high`, or a `med` at 60 or more, is always `fix-now`; if the loop ends with one still unfixed, report it as open and count it in `--findings`. A `med` under 60 is never `fix-now`: it is a `follow-up` or a `note`.
@@ -93,4 +96,4 @@ After recording, or deciding not to, print a table with one row per finding that
 | ID | severity | disposition | reason or ticket draft |
 |---|---|---|---|
 
-Then print: tier and reviewer, rounds used, findings fixed, findings rejected (with reason), findings skipped: low confidence, findings still open, Gemini checks (calls made, findings, real, wrong, or why skipped), Fable offers (made, accepted or declined, outcome), and test status.
+Then print: tier and reviewer, rounds used, findings fixed, findings rejected (with reason), findings skipped: low confidence, findings still open, Gemini checks (calls made, findings, real, wrong, or why skipped), Security skills (run, findings, real, wrong, or why skipped), Fable offers (made, accepted or declined, outcome), and test status.

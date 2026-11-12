@@ -91,6 +91,17 @@
       "kind": "never-commits",
       "prompt": "Any /via audit or /via check that routes and fixes findings.",
       "expected": "Via never commits, pushes or stashes. After via_run.py init, merge, reject, route, an unattended route and pass (the steps that write), HEAD, every ref, the index and the stash are as they were, and no git command that writes history ran. The skill states the rule."
+    },
+    {
+      "id": "platform-skills-wired",
+      "kind": "platform-skills",
+      "prompt": "/via audit on a web page or a Compose or Flutter app with animation.",
+      "expected": "platforms.md lists break-ui, emil-design-eng and review-animations, each with a Run when rule, in both Skills tables, so Via runs them when their work comes up (NFX-124).",
+      "skills": [
+        "break-ui",
+        "emil-design-eng",
+        "review-animations"
+      ]
     }
   ]
 }

@@ -6,7 +6,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOOP_DIR = os.path.join(ROOT, "claude", "skills", "review-loop")
-MAX_BYTES = 14500
+MAX_BYTES = 14900  # NFX-124: was 14500; room for the Security skills stub
 
 # SHA-256 of every non-blank line of the two sections as they stood in SKILL.md before the move (ff401cf).
 OLD_FABLE = [

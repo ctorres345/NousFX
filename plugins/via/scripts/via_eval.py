@@ -9,6 +9,8 @@ script level, on a throwaway git repo per case, with no model calls and nothing 
   second-opinion     `via_second_opinion.py` exits 10 (fresh-context fallback) when Gemini is missing.
   unattended-route   with VIA_UNATTENDED=1, `route` changes nothing and prints the decisions as pending.
   unattended-reject  with VIA_UNATTENDED=1, `reject` refuses.
+  platform-skills    references/platforms.md lists the named skills, each with a "Run when" rule, in both
+                     Skills tables (Web, and Compose and Flutter).
   never-commits      a full run leaves HEAD, refs, index and stash alone, and runs only read-only git
                      commands (a `git` shim on PATH logs every call). SKILL.md states the rule.
 --scripts points the checks at another copy of the Via scripts (the tests use it to break one on purpose).
@@ -30,6 +32,7 @@ import nousfx_testhome as th  # noqa: E402 - fakes the user record, so a check's
 PLUGIN = os.path.dirname(HERE)
 DEFAULT_CASES = os.path.join(PLUGIN, "evals", "cases.json")
 SKILL = os.path.join(PLUGIN, "skills", "via", "SKILL.md")
+PLATFORMS = os.path.join(PLUGIN, "skills", "via", "references", "platforms.md")
 NEVER_COMMIT_RULE = "Never commit, push or stash."
 LEDGER = os.path.join("docs", "design", "via.md")
 TIMEOUT = 120
@@ -273,8 +276,31 @@ def check_never_commits(case, scripts, tmp):
     expect(not others and not changed, "Via ran git %s and changed %s" % (others or "-", changed or "-"))
 
 
+def skill_tables(text):
+    """The rows of every `### Skills` table in platforms.md, as a list of {skill: run-when} dicts."""
+    tables = []
+    for body in re.findall(r"^### Skills\n(.*?)(?=^#{1,3} |\Z)", text, re.M | re.S):
+        rows = {}
+        for line in body.splitlines():
+            m = re.match(r"\|\s*`([^`]+)`\s*\|\s*(.+?)\s*\|\s*$", line)
+            if m:
+                rows[m.group(1)] = m.group(2)
+        tables.append(rows)
+    return tables
+
+
+def check_platform_skills(case, scripts, tmp):
+    tables = skill_tables(read(PLATFORMS))
+    expect(len(tables) == 2, "platforms.md has %d Skills tables, expected 2 (Web, Compose and Flutter)" % len(tables))
+    for name, rows in zip(("Web", "Compose and Flutter"), tables):
+        for skill in case["skills"]:
+            expect(skill in rows, "the %s Skills table has no row for %s" % (name, skill))
+            expect(rows[skill], "the %s row for %s has an empty Run when" % (name, skill))
+
+
 CHECKS = {"route": check_route, "second-opinion": check_second_opinion, "unattended-route": check_unattended_route,
-          "unattended-reject": check_unattended_reject, "never-commits": check_never_commits}
+          "unattended-reject": check_unattended_reject, "never-commits": check_never_commits,
+          "platform-skills": check_platform_skills}
 
 
 def load_cases(path):

@@ -392,6 +392,51 @@ class ProjectRiskPaths(GitCase):
                 self.load()
 
 
+class SecuritySkills(unittest.TestCase):
+    """NFX-124: which security skills the diff calls for."""
+
+    def skills(self, files):
+        return tier.classify(files)["security"]
+
+    def test_plain_diff_calls_for_none(self):
+        self.assertEqual(self.skills([code(30)]), [])
+
+    def test_workflow_path_calls_for_the_auditor(self):
+        self.assertEqual(self.skills([f(".github/workflows/ci.yml", added=3)]), ["agentic-actions-auditor"])
+
+    def test_workflow_deleted_still_counts(self):
+        self.assertEqual(self.skills([f(".github/workflows/ci.yml", removed=5)]), ["agentic-actions-auditor"])
+
+    def test_other_github_paths_do_not(self):
+        for path in (".github/CODEOWNERS", ".github/actions/setup/action.yml", ".github/workflows-notes.txt"):
+            self.assertEqual(self.skills([f(path, added=2)]), [], path)
+
+    def test_session_keyword_in_added_line_calls_for_sharp_edges(self):
+        self.assertEqual(self.skills([f("src/app.py", text=["x = sessionless_mode()"])]), [])  # whole words only
+        self.assertEqual(self.skills([f("src/app.py", text=["session = load(request)"])]), ["sharp-edges"])
+
+    def test_keyword_in_path_or_removed_line(self):
+        self.assertEqual(self.skills([f("src/jwt_utils.py", added=1)]), ["sharp-edges"])
+        self.assertEqual(self.skills([f("src/app.py", added=1, removed_text=["verify_csrf(request)"])]), ["sharp-edges"])
+
+    def test_payment_and_lock_words_are_tier_3_only(self):
+        r = tier.classify([f("src/app.py", text=["charge the payment", "mutex.lock()"])])
+        self.assertEqual(r["tier"], 3)
+        self.assertEqual(r["security"], [])
+
+    def test_docs_and_generated_files_are_skipped(self):
+        self.assertEqual(self.skills([f("docs/auth.md", text=["the password flow"])]), [])
+        self.assertEqual(self.skills([f("package-lock.json", text=["token"])]), [])
+
+    def test_both_skills_in_a_fixed_order(self):
+        files = [f("src/login.py", added=1), f(".github/workflows/ci.yml", added=1)]
+        self.assertEqual(self.skills(files), ["agentic-actions-auditor", "sharp-edges"])
+
+    def test_untracked_file_without_removed_lines_is_read(self):
+        untracked = {"path": "src/login.py", "added": ["x = 1"], "removed": 0, "hunks": 1}  # as untracked_files() builds it
+        self.assertEqual(self.skills([untracked]), ["sharp-edges"])
+
+
 class Cli(GitCase):
     def branch_with(self, rel, text, name="cesar/X-1"):
         self.set_origin("main")
@@ -414,6 +459,15 @@ class Cli(GitCase):
         self.assertEqual(out["stats"]["files"], 1)
         self.assertEqual(out["stats"]["base"], self.git("rev-parse", "main"))
         self.assertFalse(out["ui"])
+
+    def test_deleted_workflow_is_found_through_git(self):
+        self.write(".github/workflows/ci.yml", "name: ci\n")
+        self.commit("add workflow")
+        self.set_origin("main")
+        self.git("checkout", "-qb", "cesar/X-2")
+        self.git("rm", "-q", ".github/workflows/ci.yml")
+        self.commit("drop workflow")
+        self.assertEqual(self.result()["security"], ["agentic-actions-auditor"])
 
     def test_removed_security_line_is_found_through_git(self):
         self.write("src/app.py", "x = 1\nrequire_auth(request)\n")
