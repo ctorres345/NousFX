@@ -41,7 +41,7 @@ Merge into existing files, and keep what is already there.
 | `.claude/settings.json` | [`assets/settings.json`](assets/settings.json), merged. It includes `attribution` with empty `commit` and `pr`, so Claude Code adds no `Co-Authored-By` trailer and no "Generated with Claude Code" line |
 | `.claude/hooks/review-gate.py`, `.claude/hooks/pr_create_parser.py` | The same two files from the gate your tool runs (this repo's `claude/hooks/` is the source), together: the gate imports the parser. Only the cloud fallback; the hook runs main's copy, isolated, and blocks a PR when these differ from it (`docs/review-gate.md`) |
 | `.claude/agents/` | `reviewer.md`, `test-runner.md` from `~/.claude/agents/` |
-| `.claude/skills/` | `review-loop` (`SKILL.md` and `scripts/tier.py`) from `~/.claude/skills/`, unchanged, without backups or tests. Do not point its gate at the repo copy: it marks with the gate the hook config names, which is `~/.claude/hooks` locally. Do not install `pr`: its body format conflicts with the PR template |
+| `.claude/skills/` | `review-loop` (`SKILL.md`, `scripts/tier.py` and `references/*.md`) from `~/.claude/skills/`, unchanged, without backups or tests. Do not point its gate at the repo copy: it marks with the gate the hook config names, which is `~/.claude/hooks` locally. Do not install `pr`: its body format conflicts with the PR template |
 | `docs/agents/ticket-template.md` | [`assets/ticket-template.md`](assets/ticket-template.md) |
 | `docs/agents/triage-labels.md` | Append [`assets/work-labels.md`](assets/work-labels.md) |
 | `CLAUDE.md` | Add build and test commands and pointers to `docs/agents/`, if missing |

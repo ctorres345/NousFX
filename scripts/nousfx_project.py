@@ -9,8 +9,9 @@ What a repo gets, besides its MCP files (nousfx_mcp.py) and agy plugin manifest 
   (note only)          a line when .nousfx/project.toml has no [check] command (NFX-54): the review gate
                        cannot record a review without one. Sync never invents a command.
   shared copies        .claude/hooks (gate and parser), .claude/agents/<name>.md for agents NousFX ships,
-                       .claude/skills/review-loop (SKILL.md, scripts/tier.py): refreshed only when the repo already
-                       has them (NFX-98). project-setup picks which; a stale copy is drift, a missing one is not.
+                       .claude/skills/review-loop (SKILL.md, scripts/tier.py, references/*.md): refreshed only when the repo already
+                       has them (NFX-98); references/*.md are also created when SKILL.md is there, so the stubs never
+                       dangle. project-setup picks which; a stale copy is drift, a missing one is not (except those).
 
 Rules:
 - A file the repo wrote by hand is never replaced on its own. Sync shows the diff, says how to confirm
@@ -45,7 +46,14 @@ COPIES = {
         os.path.join("claude", "skills", "review-loop", "SKILL.md"),
     os.path.join(".claude", "skills", "review-loop", "scripts", "tier.py"):
         os.path.join("claude", "skills", "review-loop", "scripts", "tier.py"),
+    os.path.join(".claude", "skills", "review-loop", "references", "fable.md"):
+        os.path.join("claude", "skills", "review-loop", "references", "fable.md"),
+    os.path.join(".claude", "skills", "review-loop", "references", "gemini.md"):
+        os.path.join("claude", "skills", "review-loop", "references", "gemini.md"),
 }
+# These follow the repo's SKILL.md copy: created when it exists, so a stub never points at a missing file (NFX-114).
+FOLLOW_SKILL = frozenset(os.path.join(".claude", "skills", "review-loop", "references", n) for n in ("fable.md", "gemini.md"))
+SKILL_COPY = os.path.join(".claude", "skills", "review-loop", "SKILL.md")
 SKILLS_TARGET_REL = os.path.join(".claude", "skills")
 CHECK_REL = os.path.join(".nousfx", "project.toml")
 NO_CHECK_NOTE = ("note: no check command in {path}. The review gate refuses to record a review without one "
@@ -113,10 +121,11 @@ def _linked(project, path):
 def _copies(plan, repo, project, SyncError):
     """Add each shared copy the repo already has to the plan, with its NousFX text (NFX-98). Missing copies are
     left out; a copy behind a symlink gets a note, like CLAUDE.md and the hook, so the rest of the run goes on."""
-    def add(path, text_of):
-        if not os.path.lexists(path):
+    def add(path, text_of, present=None):
+        present = present or path  # the file whose existence turns the copy on
+        if not os.path.lexists(present):
             return
-        if _linked(project, path):
+        if _linked(project, path) or _linked(project, present):
             plan.notes.append(f"left alone (the copy or a folder above it is a symlink, not read): {path}")
             return
         text = text_of()
@@ -124,7 +133,8 @@ def _copies(plan, repo, project, SyncError):
             plan.files[path] = text  # an identical copy is left out by the caller's diff
 
     for rel, src in COPIES.items():
-        add(os.path.join(project, rel), lambda src=src: _read(os.path.join(repo, src)))
+        add(os.path.join(project, rel), lambda src=src: _read(os.path.join(repo, src)),
+            os.path.join(project, SKILL_COPY) if rel in FOLLOW_SKILL else None)
     claude = os.path.join(project, ".claude")
     if os.path.isdir(os.path.join(claude, "agents")):
         for path, text in nousfx_agents.plan_agents(repo, claude, SyncError).items():
