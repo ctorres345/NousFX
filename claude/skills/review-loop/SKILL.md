@@ -12,7 +12,12 @@ Run it once per feature, not per edit, and do not wait for the user to type `/re
 
 ## Step 0: simplify (once)
 
-Invoke the `simplify` skill via the Skill tool on the same scope, so the reviewer sees the final code. If the skill cannot be invoked, say so and continue. Re-run the tests afterwards; if simplify broke them, fix or revert that change before starting the loop. Simplify does not count as a round.
+Count the changed lines: insertions + deletions from `git diff --shortstat <base hash> -- . ':(exclude)*test*'`, plus `wc -l` of the untracked non-test files. The tier does not matter here.
+
+- Under 100 changed lines: do the four checks yourself (reuse, simplification, efficiency, altitude), apply the fixes, and print `Step 0 inline: N changed lines`.
+- 100 changed lines or more: Invoke the `simplify` skill via the Skill tool on the same scope. If the skill cannot be invoked, say so and continue.
+
+Either way the reviewer sees the final code. Re-run the tests afterwards; if the cleanup broke them, fix or revert that change before starting the loop. Step 0 does not count as a round.
 
 ## Step 1: pick the tier
 

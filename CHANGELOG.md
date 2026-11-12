@@ -19,6 +19,7 @@
 
 ### Review cost
 - `scripts/review_replay.py` replays past tier-2 reviews with any reviewer and compares findings, tokens and cost, against a switch rule written first in `evals/review-replay/README.md`. First result: Sonnet at high effort caught 5 of 7 comparable real medium findings (rule: 90%), so `reviewer` stays on Opus; it cost $1.19 against $2.64 for Opus on the same six cases. Results are in `evals/review-replay/RESULTS.md` (NFX-130).
+- `review-loop` Step 0 no longer launches the four `simplify` agents for a small diff. Under 100 changed lines (insertions plus deletions, tests excluded, untracked files counted) it does the four checks inline, applies the fixes and prints `Step 0 inline: N changed lines`; 100 or more still invokes `simplify`. The count ignores the risk tier, and the loop's reviewer still sees the final code (NFX-139).
 
 ### Skills
 - The retired `ui-review` stub is gone, as 1.1.0 said. `/ui-review` now finds nothing; use `/via spec`, `/via check` or `/via audit` (NFX-127). Sync also removes the old `ui-review` links that an earlier install left in `~/.agents/skills` and `~/.claude/skills`, which its manifest never recorded; a retired-skills list in `scripts/nousfx_skills.py` names them, and only links into this repo are touched. A real `ui-review` folder (the old `install.sh` copied files) is left alone: delete `~/.claude/skills/ui-review` by hand if it is there.
