@@ -2,6 +2,9 @@
 
 ## 1.2.0 (unreleased)
 
+### Skills
+- New `local-assist` skill: `local_summary.py -- <cmd>` runs a build or test command and, on failure, has the Ollama model on my PC (`[local_assist]` `url` and `model` in `local.toml`) summarize the log in at most 120 words. It only talks to loopback or private addresses, ignores proxy variables and redirects, and on any problem prints `local-assist unavailable: <reason>` and exits 3, which means run `test-runner` instead (NFX-142).
+
 ### Tickets
 - Done is now written as proofs. Every acceptance criterion in the ticket template ends in a `Proof:` line (a command, or `manual: <step>`), and a new Failure modes section says how the work could break and what it does then. The jira-sync ready check flags a `ready-for-agent` ticket that lacks either, and the PR template has an "Acceptance criterion, proof, result" table. The template has one source (the `project-setup` asset), and `scripts/test_ticket_template_single_copy.py` fails when `docs/agents/ticket-template.md` drifts from it (NFX-104).
 
