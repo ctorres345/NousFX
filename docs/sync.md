@@ -186,6 +186,13 @@ claude/skills/*, plugins/via/skills/via   sources
 - Old `install.sh` backups (`*.bak-YYYYMMDD-HHMMSS` of `CLAUDE.md`, `settings.json` and the files under `agents/`, `skills/`, `hooks/` in `~/.claude`) are listed in every run and never moved on their own. `--clean-backups` moves them into the run's backup, so `--restore` brings them back. `projects/`, `plugins/` and everything else are out of scope.
 - On Windows a failed symlink falls back to a junction. The command is fixed (`cmd /c mklink /J`); nothing in the environment can replace it. `NOUSFX_NO_SYMLINK=1` only forces that fallback and is test-only: tests pass `--platform windows` with a stand-in `cmd` first on PATH.
 
+### local-assist
+
+`claude/skills/local-assist` summarizes a failing build or test log with the Ollama model on my PC, so the agent reads about 120 words instead of the log. It reads `[local_assist]` (`url`, `model`) from `~/.config/nousfx/local.toml` (copy `harness/local.toml.example`; NFX-142).
+
+- The URL must resolve to loopback or a private address (10/8, 172.16/12, 192.168/16), checked before any request. Proxy variables and redirects are ignored, so a log never goes to a public host.
+- When anything is off (no config, host down, model missing, timeout, bad reply) it prints `local-assist unavailable: <reason>` and exits 3. The agent then runs `test-runner` with the same command.
+
 ### Outside skills
 
 Skills I use but do not write (Matt Pocock's workflow set, `ui-ux-pro-max`, the Android set, `material-3`, Emil Kowalski's `emil-design-eng`, `break-ui` and `write-swift`, Cloudflare's `security-audit`, and Trail of Bits' `sharp-edges` and `agentic-actions-auditor`) are pinned in `harness/skills.lock.json`. It has the same format as Via's `plugins/via/skills.lock.json`: a repo, a path, a full commit and a sha256 for each skill.

@@ -5,3 +5,9 @@
 # Ticket branches are <prefix>/<KEY>. Lowercase letters, digits and dashes, no leading dash, no slash.
 # Without it, sync uses your git user.name cleaned up ("Ana Lopez" -> "ana-lopez") and says so.
 prefix = "your-name"
+
+[local_assist]
+# The Ollama host for the local-assist skill. http only, loopback or a private address only.
+# Use an IP address: a host name can stall on DNS before the 2 s preflight starts.
+# url = "http://192.168.86.27:11434"
+# model = "gemma4:12b"
