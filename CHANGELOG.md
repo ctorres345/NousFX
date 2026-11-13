@@ -6,7 +6,7 @@
 - The prototype page is easier to compare and to read (NFX-82). At 700 px and narrower each finding gets a CSS-only Before/After switch (After selected) so you no longer scroll past two 844 px frames; the spec panel highlights the Light or Dark column for the selected theme (bolder header too, not colour alone); the "Jump to finding" list is plain underlined links, no longer styled like the variant tabs; the toggle is named "Mockup theme"; the before image's alt names the screen, theme and issue. `audit.md` and `prototype.md` tell variant authors to redraw the whole screen, not one element in an empty frame.
 - The prototype page tells screen readers which variant is showing: each variant carries its own tab row with `aria-current="true"` on its own tab, still with no script. Choosing a tab moves focus to the variant that appears, so screen readers announce it. The focus ring on the selected theme segment is now white on the dark fill (about 17:1, was 2.5:1); a test checks both ratios (NFX-81).
 
-## 1.2.0 (unreleased)
+## 1.2.0 (2026-11-13)
 
 ### Skills
 - Via runs `break-ui`, `emil-design-eng` and `review-animations` when their work comes up: `platforms.md` lists each in the Web and the Compose and Flutter Skills tables with a when-to-run rule, and a new `platform-skills` eval case checks the rows (NFX-124).
