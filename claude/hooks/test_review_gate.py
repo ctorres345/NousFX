@@ -974,5 +974,63 @@ class TreeOnce(Base):
             self.assertEqual(len(calls), 2)  # nothing is kept from one evaluation to the next
 
 
+class FakeProc:
+    """A Popen stand-in whose first wait() times out, like a check that never ends."""
+    pid = 4242
+
+    def __init__(self):
+        self.kill = mock.Mock()
+        self.calls = 0
+
+    def wait(self, timeout=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise subprocess.TimeoutExpired("check", timeout)
+        return 1
+
+
+class WindowsStop(unittest.TestCase):
+    """NFX-115: on Windows a timed-out check is stopped with its whole process tree, not just cmd.exe."""
+    CHECK = {"command": "gradlew test", "timeout": 1}
+
+    def run_timed_out(self, taskkill):
+        """run_check with os.name 'nt' and a check that times out; `taskkill` is the stub for subprocess.run."""
+        gate, proc = load_gate(), FakeProc()
+        fake_os = mock.Mock(wraps=os, name="nt")
+        fake_os.name = "nt"
+        fake_os.environ = {}
+        with mock.patch.object(gate, "os", fake_os), mock.patch.object(gate, "git", return_value="/repo"), \
+                mock.patch.object(gate.subprocess, "Popen", return_value=proc), \
+                mock.patch.object(gate.subprocess, "run", taskkill) as run:
+            ok, why = gate.run_check("/repo", self.CHECK)
+        return ok, why, proc, run
+
+    def test_a_timeout_runs_taskkill_on_the_tree(self):
+        ok, why, proc, run = self.run_timed_out(mock.Mock(return_value=subprocess.CompletedProcess([], 0)))
+        self.assertEqual(run.call_args.args[0], ["taskkill", "/T", "/F", "/PID", "4242"])
+        proc.kill.assert_not_called()
+        self.assertFalse(ok)  # a timeout never passes, so a child that outlives taskkill still refuses the mark
+        self.assertEqual(why, "did not finish within 1 seconds")
+
+    def test_a_missing_taskkill_falls_back_to_kill_and_says_so(self):
+        ok, why, proc, _ = self.run_timed_out(mock.Mock(side_effect=FileNotFoundError("taskkill")))
+        proc.kill.assert_called_once_with()
+        self.assertFalse(ok)
+        self.assertIn("did not finish within 1 seconds", why)
+        self.assertIn("taskkill", why)
+        self.assertIn("only the shell", why)
+
+    def test_a_failing_taskkill_falls_back_to_kill_and_says_so(self):
+        ok, why, proc, _ = self.run_timed_out(mock.Mock(return_value=subprocess.CompletedProcess([], 128)))
+        proc.kill.assert_called_once_with()
+        self.assertFalse(ok)
+        self.assertIn("only the shell", why)
+
+    def test_a_hung_taskkill_falls_back_to_kill(self):
+        _, why, proc, _ = self.run_timed_out(mock.Mock(side_effect=subprocess.TimeoutExpired("taskkill", 30)))
+        proc.kill.assert_called_once_with()
+        self.assertIn("only the shell", why)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
