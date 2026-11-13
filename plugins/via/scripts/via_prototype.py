@@ -396,9 +396,9 @@ h2{font-size:1.125rem;font-weight:600;margin:0 0 4px}
 .vp-root:has(#vp-dark:checked) .vp-shot-dark{display:block}
 @media (min-width:1101px){.vp-before{margin-top:64px}}
 @media (max-width:1100px){.vp-cols,.vp-pair{grid-template-columns:minmax(0,1fr)}}
-@media (max-width:700px){.vp-view{display:inline-flex}
+@media (max-width:700px){@supports selector(:has(a)){.vp-view{display:inline-flex}
 .vp-finding:has(.vp-view-before:checked) .vp-after-col{display:none}
-.vp-finding:has(.vp-view-after:checked) .vp-before-col{display:none}}
+.vp-finding:has(.vp-view-after:checked) .vp-before-col{display:none}}}
 @media (max-width:480px){.vp-root{padding:16px}}
 """
 
@@ -474,7 +474,7 @@ def render(run_name, blocks, tokens):
         switch = ('<div class="vp-seg vp-view" role="radiogroup" aria-label="Compare view for %s">'
                   '<input type="radio" name="vp-view-%s" id="%s-view-before" class="vp-view-before"><label for="%s-view-before">Before</label>'
                   '<input type="radio" name="vp-view-%s" id="%s-view-after" class="vp-view-after" checked><label for="%s-view-after">After</label></div>'
-                  % (esc(b["screen"]), a, a, a, a, a, a))
+                  % (esc(b["title"]), a, a, a, a, a, a))
         sections.append(
             '<section class="vp-finding" id="%s" aria-labelledby="%s-h"><h2 id="%s-h"><span class="vp-sev">%s</span>%s</h2>'
             '<p class="vp-id">%s</p><p class="vp-issue">%s</p>%s<div class="vp-cols"><figure class="vp-before-col" style="margin:0"><figcaption class="vp-cap">Before</figcaption>'

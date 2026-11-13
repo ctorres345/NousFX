@@ -145,7 +145,7 @@ class Build(Base):
         page = self.page()
         m = re.search(r'<div class="vp-seg vp-view" role="radiogroup" aria-label="([^"]+)">(.*?)</div>', page, re.S)
         self.assertIsNotNone(m)
-        self.assertIn("home", m.group(1))
+        self.assertIn("home · touch-target", m.group(1))  # named after the finding, not just the screen
         inputs = re.findall(r'<input type="radio" name="(vp-view-f1)" id="([^"]+)" class="(vp-view-(?:before|after))"( checked)?>', m.group(2))
         self.assertEqual([c for _, _, c, _ in inputs], ["vp-view-before", "vp-view-after"])
         self.assertEqual([c for _, _, c, chk in inputs if chk], ["vp-view-after"])  # open on the fix
@@ -154,10 +154,16 @@ class Build(Base):
         self.assertIn('class="vp-before-col"', page)
         self.assertIn('class="vp-after-col"', page)
         css = via_prototype.CSS
-        self.assertRegex(css, r"@media \(max-width:700px\)\{[^@]*\.vp-view\{display:inline-flex\}")
         self.assertRegex(css, r"\.vp-view\{display:none[;}]")  # desktop shows both columns, as before
-        self.assertIn(".vp-finding:has(.vp-view-before:checked) .vp-after-col{display:none}", css)
-        self.assertIn(".vp-finding:has(.vp-view-after:checked) .vp-before-col{display:none}", css)
+        wide, narrow = css.split("@media (max-width:700px){", 1)
+        # The switch and both hide rules live only inside the narrow media query, and only where :has() works,
+        # so a wide screen shows both columns and a browser without :has() never shows a dead switch.
+        self.assertTrue(narrow.startswith("@supports selector(:has(a)){.vp-view{display:inline-flex}"))
+        for rule in (".vp-finding:has(.vp-view-before:checked) .vp-after-col{display:none}",
+                     ".vp-finding:has(.vp-view-after:checked) .vp-before-col{display:none}"):
+            self.assertNotIn(rule, wide)
+            self.assertIn(rule, narrow.split("@media", 1)[0])
+        self.assertNotIn(".vp-view{display:inline-flex}", wide)
         self.assertNotIn("<script", page.lower())
 
     def test_switch_ids_and_names_are_per_finding(self):
