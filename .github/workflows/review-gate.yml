@@ -137,7 +137,7 @@ jobs:
               labeler=$(printf '%s\n' "$events" | tail -n 1)
               login=${labeler%%$(printf '\t')*}
               kind=${labeler#*$(printf '\t')}
-              if [ -z "$labeler" ] || [ "$kind" = "Bot" ]; then
+              if [ -z "$login" ] || [ "$kind" = "Bot" ]; then
                 echo "::error::Could not find a person who applied the review-skip label (events unreadable, none found, or a bot)."
                 exit 1
               fi

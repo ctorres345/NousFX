@@ -120,6 +120,11 @@ class SkipLabel(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("::error::", r.stdout)
 
+    def test_an_event_with_no_actor_fails(self):
+        self.stub_gh(["\t"], members=["cesar"])  # a null actor prints a lone tab; the org call must not be reached
+        self.assertEqual(self.run_block(self.SKIP).returncode, 1)
+        self.assertFalse("members" in open(self.calls).read() if self.called() else False)
+
     def test_a_bot_fails_even_when_it_is_the_owner_login(self):
         self.stub_gh([event("cesar", "Bot")], members=["cesar"])
         self.assertEqual(self.run_block(self.SKIP).returncode, 1)
