@@ -50,7 +50,7 @@ Exit 1 or 2: fix the record as the message says and run it again. Do not run `pa
 Skip this, and say so in the report, if the run has no visual finding or no kept screenshot for one. A visual finding changes how a screen looks (layout, color, type size or weight, radius, spacing). Copy-only and code-only findings (a missing label, a locale format) get no prototype.
 
 1. Pick at most 5 visual findings, highest severity first. Each needs a `kept` screenshot of its screen.
-2. Read `references/prototype.md`. For each pick write 2 or 3 variants into `<run_dir>/prototype.json`: HTML/CSS mockups that use `var(--token)` for every color, radius, spacing and type value.
+2. Read `references/prototype.md`. For each pick write 2 or 3 variants into `<run_dir>/prototype.json`: HTML/CSS mockups that use `var(--token)` for every color, radius, spacing and type value. Redraw the whole screen as the "before" shows it, with the fix applied, not only the changed element alone in an empty frame.
 3. Build the page:
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/via_prototype.py" build <run_dir>

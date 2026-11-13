@@ -23,6 +23,7 @@ For each visual finding worth showing, Via builds one page: the real "before" sc
 - 2 or 3 variants per finding. `label` up to 80 characters, `rationale` up to 400.
 - `states` is optional. Keys: `default`, `pressed`, `disabled`, `empty`. A state you leave out shows as "not specified" in the spec panel.
 - Draw the variant as it would look inside the app's 390x844 phone frame. It is a mockup, not a render.
+- Redraw the whole screen, not only the changed element. The before shows the full screen; an after with one button in an empty frame cannot be compared with it. Copy the surrounding layout from the before screenshot and change only what the finding fixes.
 
 ## Writing the variant HTML
 - Use `var(--token)` for every color, radius, spacing and type value. The spec panel lists the tokens a variant uses with their light and dark values, read from the project's CSS. A name the project does not define shows "no token". Literal values do not appear in the panel, and `build` warns about them.
@@ -35,9 +36,11 @@ For each visual finding worth showing, Via builds one page: the real "before" sc
 
 ## What the page does
 - The mockups are not interactive (`inert`): their buttons are not tab stops and are not read out. The rationale and the spec panel carry the same information as text.
-- Phone frame 390x844 with a 24 px radius. Before on the left, the chosen variant next to it, the spec panel beside that. On a narrow screen they stack.
-- The variant switcher is a row of links. Each variant has an anchor (`#f1-v2`), and so does each finding (`#f1`). The anchors go into the record and the ledger.
-- The Light/Dark toggle switches the token values and, when both exist, the before screenshot. If only one theme was captured, the page says so.
+- Phone frame 390x844 with a 24 px radius. Before on the left, the chosen variant next to it, the spec panel beside that. Up to 1100 px wide they stack.
+- At 700 px and narrower each finding gets a Before/After switch (After is selected) that shows one column at a time, so you compare without scrolling past two 844 px frames. Wider than that the switch is hidden and both columns show.
+- The variant switcher is a row of boxed tab links. Each variant has an anchor (`#f1-v2`), and so does each finding (`#f1`). The anchors go into the record and the ledger. The "Jump to finding" list at the top is plain underlined links, so it does not look like the tabs.
+- The "Mockup theme" Light/Dark toggle switches the token values (and the highlighted Light or Dark column in each spec panel) and, when both exist, the before screenshot. It changes only the mockups and the before shot, not the page. If only one theme was captured, the page says so.
+- The before image's alt text names the screen, the theme and the finding's issue (trimmed to 200 characters).
 - A page can have one `:target` at a time, so choosing a variant on one finding sends the other findings back to their first variant. Pick finding by finding.
 - No script runs. The switcher and toggle are CSS (`:has()` and `:target`), so they need a current browser.
 
