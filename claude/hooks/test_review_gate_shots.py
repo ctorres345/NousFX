@@ -103,6 +103,13 @@ class CheckShots(Base):
         sha = self.more({}, remove=["shots/DEM-1/a.png"])
         self.assertEqual(self.run_check(sha)[0], 0)
 
+    def test_a_replace_ref_does_not_hide_code(self):
+        code = self.commit({"shots/DEM-1/a.png": "x", "evil.py": "x"})
+        self.sh("git", "checkout", "-q", "-b", "other", "base")
+        media = self.more({"shots/DEM-1/b.png": "x"})
+        self.sh("git", "replace", "-f", code, media)  # git push would still send the original objects
+        self.assertEqual(self.run_check(code)[0], 1)
+
     def fresh(self):
         """A branch name no earlier call in this test used (the same name would make `checkout -b` fail)."""
         self.counter = getattr(self, "counter", 0) + 1

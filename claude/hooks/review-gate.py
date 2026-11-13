@@ -765,27 +765,27 @@ def check_shots(argv):
         return 1
     key = m.group(1)
     try:
-        commit = git(["rev-parse", "--verify", "--quiet", f"{head}^{{commit}}"], cwd)
+        commit = git(["--no-replace-objects", "rev-parse", "--verify", "--quiet", f"{head}^{{commit}}"], cwd)
         merge_base = None
         if base:
-            git(["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], cwd)  # a bad base fails closed
+            git(["--no-replace-objects", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], cwd)  # a bad base fails closed
             try:
-                merge_base = git(["merge-base", base, commit], cwd)
+                merge_base = git(["--no-replace-objects", "merge-base", base, commit], cwd)
             except RuntimeError:  # unrelated histories: judge the whole tree
                 merge_base = None
         # Every commit the push adds is judged on its own, so a code file added in one commit and dropped in a later
         # one still fails. A merge commit has no single diff to judge, so it fails too.
         rng = [f"{merge_base}..{commit}"] if merge_base else [commit]
-        if git(["rev-list", "--merges", *rng], cwd):
+        if git(["--no-replace-objects", "rev-list", "--merges", *rng], cwd):
             print(f"{branch} holds a merge commit; a screenshots branch must be a plain line of commits.", file=sys.stderr)
             return 1
-        commits = git(["rev-list", *rng], cwd).split()
+        commits = git(["--no-replace-objects", "rev-list", *rng], cwd).split()
         if len(commits) > SHOTS_MAX_COMMITS:
             print(f"{branch} adds {len(commits)} commits; a screenshots branch holds at most {SHOTS_MAX_COMMITS}.", file=sys.stderr)
             return 1
         records = []
         for c in commits:  # strip=False: a path may start with a space
-            parts = git(["diff-tree", "-r", "--root", "--no-commit-id", "--no-renames", "--ignore-submodules=none", "--raw", "-z", c], cwd, strip=False).split("\0")
+            parts = git(["--no-replace-objects", "diff-tree", "-r", "--root", "--no-commit-id", "--no-renames", "--ignore-submodules=none", "--raw", "-z", c], cwd, strip=False).split("\0")
             for meta, path in zip(parts[0::2], parts[1::2]):
                 records.append((path, meta.split(" ")[1], meta.split(" ")[-1]))  # path, new mode, status
     except (RuntimeError, GateTimeout, IndexError) as e:

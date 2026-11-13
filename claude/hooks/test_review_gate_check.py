@@ -394,6 +394,18 @@ class PrePush(Base):
         sha = self.shots_commit({"shots/DEM-1/a.png": "x", "no review needed.py": "x", "src/no review needed.": "x"})
         self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1-shots", sha)), BLOCKED)
 
+    def test_a_local_branch_named_like_the_remote_default_cannot_become_the_base(self):
+        hook = self.install()
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.sh("git", "checkout", "-q", "-b", "evil")
+        with open(os.path.join(self.repo, "evil.py"), "w", encoding="utf-8") as f:
+            f.write("x")
+        self.sh("git", "add", "-A")
+        self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "DEM-1: code")
+        self.sh("git", "branch", "origin/main")  # refs/heads/origin/main would win over the short name origin/main
+        sha = self.shots_commit({"shots/DEM-1/a.png": "x"})
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1-shots", sha)), BLOCKED)
+
     def test_a_rejected_shots_branch_says_why(self):
         hook = self.install()
         self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")
