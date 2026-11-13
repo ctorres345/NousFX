@@ -143,6 +143,7 @@ class Risk(unittest.TestCase):
 
     def test_risk_path_is_tier_3_and_named(self):
         for path in (".github/workflows/ci.yml", "claude/hooks/review-gate.py", "claude/hooks/pr_create_parser.py",
+                     "claude/hooks/git_refs.py",
                      ".githooks/pre-push", "claude/githooks/pre-push", ".husky/pre-commit",
                      "app/build.gradle.kts", "gradle/libs.versions.toml", "package.json", "package-lock.json",
                      "pubspec.yaml", "ios/Podfile", "Package.swift", "pyproject.toml", "requirements-dev.txt",
@@ -668,6 +669,116 @@ class FindGit(unittest.TestCase):
 
     def test_relative_entries_alone_find_nothing(self):
         self.assertIsNone(tier.find_git(path=os.pathsep.join([".", "relative/bin"])))
+
+
+CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))  # claude/
+GIT_REFS_SRC = os.path.join(CLAUDE_DIR, "hooks", "git_refs.py")
+
+
+class BaseRef(GitCase):
+    """--base-ref NAME: risk_paths and the merge base come from origin/NAME, never from origin/HEAD (NFX-108)."""
+    TOML = '[review]\nrisk_paths = ["%s"]\n'
+
+    def stack(self):
+        """main trusts a/*; origin/feature (one commit ahead) trusts core/*; HEAD is a commit on top of feature."""
+        self.write(".nousfx/project.toml", self.TOML % "a/*")
+        self.commit("toml")
+        self.set_origin("main")
+        self.git("checkout", "-qb", "feature")
+        self.write(".nousfx/project.toml", self.TOML % "core/*")
+        self.commit("feature toml")
+        self.set_origin("feature")
+        self.feature_sha = self.git_out("rev-parse", "HEAD")
+        self.git("checkout", "-qb", "cesar/X-1")
+        self.write("core/x.py", "x = 1\n")
+        self.commit("change")
+
+    def git_out(self, *args):
+        return subprocess.run(["git", *args], cwd=self.repo, capture_output=True, text=True).stdout.strip()
+
+    def test_risk_paths_come_from_the_named_branch(self):
+        self.stack()
+        out = self.result("--base-ref", "feature")
+        self.assertEqual(out["tier"], 3, out["reasons"])
+        self.assertTrue(any("core/x.py" in r for r in out["reasons"]), out["reasons"])
+
+    def test_without_it_origin_head_or_main_is_used(self):
+        self.stack()
+        out = self.result("--base", self.feature_sha)
+        self.assertLess(out["tier"], 3, out["reasons"])
+
+    def test_it_also_picks_the_merge_base(self):
+        self.stack()
+        out = self.result("--base-ref", "feature")
+        self.assertEqual(out["stats"]["base"], self.feature_sha)
+        self.assertEqual(out["stats"]["files"], 1)
+
+    def test_a_missing_branch_is_tier_2_naming_it_and_does_not_fall_back(self):
+        self.stack()
+        out = self.result("--base-ref", "nope", "--base", self.feature_sha)
+        self.assertEqual(out["tier"], 2, out["reasons"])
+        self.assertTrue(any("origin/nope" in r for r in out["reasons"]), out["reasons"])
+
+    def test_a_bad_name_is_tier_2(self):
+        self.stack()
+        out = self.result("--base-ref=-x", "--base", self.feature_sha)
+        self.assertEqual(out["tier"], 2, out["reasons"])
+
+    def test_a_missing_branch_without_base_is_tier_2_too(self):
+        self.stack()
+        out = self.result("--base-ref", "nope")
+        self.assertEqual(out["tier"], 2, out["reasons"])
+        self.assertTrue(any("origin/nope" in r for r in out["reasons"]), out["reasons"])
+
+
+class GitRefsLoader(GitCase):
+    """tier.py finds git_refs.py next to itself, else under ../../../hooks; missing is a Tier 2 reason."""
+
+    def run_copy(self, script):
+        self.set_origin("main")
+        self.git("checkout", "-qb", "cesar/X-1")
+        self.write("src/app.py", "x = 1\n")
+        self.commit("change")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        r = subprocess.run([sys.executable, "-B", script, "--cwd", self.repo], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def place(self, rel_dir):
+        d = os.path.join(self.tmp, *rel_dir.split("/"))
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def test_alone_it_is_tier_2_and_names_git_refs(self):
+        d = self.place("alone")
+        shutil.copy(TIER, d)
+        out = self.run_copy(os.path.join(d, "tier.py"))
+        self.assertEqual(out["tier"], 2)
+        self.assertTrue(any("git_refs" in r for r in out["reasons"]), out["reasons"])
+
+    def test_flat_folder_loads(self):
+        d = self.place("flat")
+        shutil.copy(TIER, d)
+        shutil.copy(GIT_REFS_SRC, d)
+        out = self.run_copy(os.path.join(d, "tier.py"))
+        self.assertFalse(any("git_refs" in r for r in out["reasons"]), out["reasons"])
+
+    def test_repo_layout_loads(self):
+        d = self.place("claude/skills/review-loop/scripts")
+        shutil.copy(TIER, d)
+        shutil.copy(GIT_REFS_SRC, self.place("claude/hooks"))
+        out = self.run_copy(os.path.join(d, "tier.py"))
+        self.assertFalse(any("git_refs" in r for r in out["reasons"]), out["reasons"])
+
+    @unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt", "needs symlinks")
+    def test_symlinked_skill_loads_through_the_real_path(self):
+        d = self.place("claude/skills/review-loop/scripts")
+        shutil.copy(TIER, d)
+        shutil.copy(GIT_REFS_SRC, self.place("claude/hooks"))
+        link = self.place("home/skills")
+        os.symlink(os.path.join(d, "tier.py"), os.path.join(link, "tier.py"))
+        out = self.run_copy(os.path.join(link, "tier.py"))
+        self.assertFalse(any("git_refs" in r for r in out["reasons"]), out["reasons"])
 
 
 if __name__ == "__main__":

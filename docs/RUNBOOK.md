@@ -165,7 +165,7 @@ Results (a dash means not run yet; each cell gets a date when it is):
 1. The gate files in a synced home match the repo:
 
    ```bash
-   for f in review-gate.py pr_create_parser.py; do cmp -s "claude/hooks/$f" "$HOME/.claude/hooks/$f" && echo "match $f" || echo "DIFFERS $f"; done
+   for f in review-gate.py pr_create_parser.py git_refs.py; do cmp -s "claude/hooks/$f" "$HOME/.claude/hooks/$f" && echo "match $f" || echo "DIFFERS $f"; done
    ```
 
 2. The suites pass (the check the CI job runs, about 2 minutes):

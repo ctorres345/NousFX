@@ -21,6 +21,7 @@ import nousfx_prefix
 PLUGIN_REL = os.path.join(".gemini", "config", "plugins", "nousfx")
 MAX_BYTES = 24000
 GATE_FILES = ("review-gate.py", "pr_create_parser.py")  # copied from claude/hooks next to the adapter
+MARK_FILES = ("git_refs.py",)  # also copied, not hashed: only --mark and run-check import it, lazily, never the hook or `check` (NFX-108)
 ADAPTER = "agy_gate.py"  # copied from harness/agy
 GATE_BUDGET = 55  # seconds the gate may take; it blocks when they run out (NFX-102)
 GATE_TIMEOUT = GATE_BUDGET + 5  # the hook's own limit: a hook that times out lets the call through
@@ -151,7 +152,7 @@ def plan_agy(repo, home, state, SyncError, python="python3", native=lambda p: p,
     wanted = {os.path.join(base, "plugin.json"): manifest_text(),
               os.path.join(base, "rules", "AGENTS.md"): build_rules(repo, state, SyncError, native(repo), home, prefix)}
     sources = [(os.path.join(repo, "harness", "agy", ADAPTER), ADAPTER)]
-    sources += [(os.path.join(repo, "claude", "hooks", name), name) for name in GATE_FILES]
+    sources += [(os.path.join(repo, "claude", "hooks", name), name) for name in (*GATE_FILES, *MARK_FILES)]
     texts = {}
     for src, name in sources:
         text = _read(src)

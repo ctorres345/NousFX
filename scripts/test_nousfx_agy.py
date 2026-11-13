@@ -31,7 +31,7 @@ class Base(unittest.TestCase):
         write(os.path.join(self.state, "local.toml"), '[branch]\nprefix = "ana"\n')  # no git user.name lookup
         for rel in ("AGENTS.md", os.path.join("overlays", "agy.overlay.md"), os.path.join("agy", "agy_gate.py")):
             write(os.path.join(self.repo, "harness", rel), read(os.path.join(ROOT, "harness", rel)))
-        for name in agy.GATE_FILES:
+        for name in (*agy.GATE_FILES, *agy.MARK_FILES):
             write(os.path.join(self.repo, "claude", "hooks", name), read(os.path.join(ROOT, "claude", "hooks", name)))
 
     def src(self, *rel):
@@ -48,7 +48,7 @@ class Rules(Base):
         base = os.path.join(self.home, ".gemini", "config", "plugins", "nousfx")
         self.assertEqual(sorted(out), sorted(os.path.join(base, *rel) for rel in (
             ("plugin.json",), ("rules", "AGENTS.md"), ("hooks.json",), ("hooks", "agy_gate.py"),
-            ("hooks", "review-gate.py"), ("hooks", "pr_create_parser.py"))))
+            ("hooks", "review-gate.py"), ("hooks", "pr_create_parser.py"), ("hooks", "git_refs.py"))))
         self.assertIn('"name": "nousfx"', out[os.path.join(base, "plugin.json")])
         self.assertTrue(out[os.path.join(base, "plugin.json")].endswith("\n"))
 

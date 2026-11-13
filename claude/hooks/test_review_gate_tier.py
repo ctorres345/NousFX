@@ -26,7 +26,7 @@ class TierCheck(Base):
         shutil.rmtree(lay, ignore_errors=True)
         hooks = os.path.join(lay, "hooks")
         os.makedirs(hooks)
-        for name in ("review-gate.py", "pr_create_parser.py"):
+        for name in ("review-gate.py", "pr_create_parser.py", "git_refs.py"):
             shutil.copy(os.path.join(HOOKS, name), hooks)
         if tier is not None or body is not None:
             scripts = os.path.join(lay, "skills", "review-loop", "scripts")

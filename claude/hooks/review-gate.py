@@ -6,7 +6,8 @@ Hook mode (default): PreToolUse hook. Reads the hook JSON on stdin and, only for
 marker matches the code being submitted. Every other call exits 0, and so does a create run
 outside a git repo. An error while checking a create blocks.
 
-Detection lives in pr_create_parser.py next to this file (its docstring has the known limits).
+Detection lives in pr_create_parser.py next to this file (its docstring has the known limits). The default-branch
+rule lives in git_refs.py next to it, shared with tier.py.
 If that module is missing, any command mentioning `gh` and `pr` blocks.
 
 Body check (NFX-85): once the review check passes, a create also needs a `Review-Gate: <HEAD tree>` line in
@@ -307,27 +308,6 @@ def head_tree(cwd):
         return None
 
 
-def default_ref(cwd):
-    """The remote-tracking branch whose check command is trusted: origin/HEAD (only when it points at another
-    refs/remotes/origin/ ref), else origin/main, else origin/master, else None. Local state, never fetched: CI is
-    the real check."""
-    candidates = []
-    try:
-        target = git(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], cwd)
-        if target.startswith("refs/remotes/origin/") and target != "refs/remotes/origin/HEAD":
-            candidates.append(target)
-    except RuntimeError:
-        pass
-    candidates += ["refs/remotes/origin/main", "refs/remotes/origin/master"]
-    for ref in candidates:
-        try:
-            git(["rev-parse", "--verify", "--quiet", ref + "^{commit}"], cwd)
-            return ref
-        except RuntimeError:
-            continue
-    return None
-
-
 def parse_check(text):
     """The `[check]` table of a project.toml text as {command, timeout}, or None when there is no command."""
     if tomllib is None:
@@ -412,7 +392,13 @@ def trusted_check(cwd):
     """(check, ref) for a local run: the default branch's CHECK_FILE whenever it exists, even without a usable
     [check] (then check is None). Only when that branch has no such file (the PR that adds it) or there is no
     default branch at all does the working-tree copy count. CI always reads the base branch."""
-    ref = default_ref(cwd)
+    try:
+        # Imported here, not at load: the hook and `check` (the agy adapter hashes only the gate and the parser) must
+        # never run a file nothing verified. Only --mark and run-check get here (NFX-108).
+        import git_refs
+    except Exception as e:
+        raise RuntimeError(f"cannot load git_refs.py next to {SCRIPT}: {e}. Re-run the NousFX sync (in a cloud session: merge the review-gate hook from project-setup's assets/settings.json again).")
+    ref = git_refs.default_ref(git, cwd)
     trusted = bool(ref) and exists_at(cwd, ref, CHECK_FILE)
     return load_check(cwd, ref if trusted else None), ref
 

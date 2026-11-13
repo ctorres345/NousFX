@@ -42,6 +42,7 @@ SKILLS_LINK_REL = os.path.join(".agents", "skills")
 COPIES = {
     os.path.join(".claude", "hooks", "review-gate.py"): os.path.join("claude", "hooks", "review-gate.py"),
     os.path.join(".claude", "hooks", "pr_create_parser.py"): os.path.join("claude", "hooks", "pr_create_parser.py"),
+    os.path.join(".claude", "hooks", "git_refs.py"): os.path.join("claude", "hooks", "git_refs.py"),
     os.path.join(".claude", "skills", "review-loop", "SKILL.md"):
         os.path.join("claude", "skills", "review-loop", "SKILL.md"),
     os.path.join(".claude", "skills", "review-loop", "scripts", "tier.py"):
@@ -56,6 +57,9 @@ COPIES = {
 # These follow the repo's SKILL.md copy: created when it exists, so a stub never points at a missing file (NFX-114).
 FOLLOW_SKILL = frozenset(os.path.join(".claude", "skills", "review-loop", "references", n) for n in ("fable.md", "gemini.md", "security.md"))
 SKILL_COPY = os.path.join(".claude", "skills", "review-loop", "SKILL.md")
+# git_refs.py follows the repo's gate copy: the NFX-108 gate and tier.py refuse without it, so a repo that has the gate
+# gets it too, and a missing one is drift.
+FOLLOW_GATE = {os.path.join(".claude", "hooks", "git_refs.py"): os.path.join(".claude", "hooks", "review-gate.py")}
 SKILLS_TARGET_REL = os.path.join(".claude", "skills")
 CHECK_REL = os.path.join(".nousfx", "project.toml")
 NO_CHECK_NOTE = ("note: no check command in {path}. The review gate refuses to record a review without one "
@@ -136,7 +140,8 @@ def _copies(plan, repo, project, SyncError):
 
     for rel, src in COPIES.items():
         add(os.path.join(project, rel), lambda src=src: _read(os.path.join(repo, src)),
-            os.path.join(project, SKILL_COPY) if rel in FOLLOW_SKILL else None)
+            os.path.join(project, SKILL_COPY) if rel in FOLLOW_SKILL
+            else os.path.join(project, FOLLOW_GATE[rel]) if rel in FOLLOW_GATE else None)
     claude = os.path.join(project, ".claude")
     if os.path.isdir(os.path.join(claude, "agents")):
         for path, text in nousfx_agents.plan_agents(repo, claude, SyncError).items():
@@ -178,6 +183,16 @@ NOT_ISOLATED_NOTE = ("note: {path} runs the repo's gate copy itself (a hook from
 def _unisolated_project_hook(project):
     """True when the hook runs the gate copy but not through nousfx-gate (NFX-107)."""
     return any("nousfx-gate" not in c for c in _hook_commands(project))
+
+
+NO_REFS_HOOK_NOTE = ("note: {path} runs main's gate but does not extract git_refs.py (a hook from before NFX-108), so "
+                      "a cloud session cannot record a review. Merge the review-gate hook from project-setup's "
+                      "assets/settings.json again.")
+
+
+def _hook_without_git_refs(project):
+    """True when the hook extracts main's gate (nousfx-gate) but never git_refs.py (NFX-108)."""
+    return any("nousfx-gate" in c and "git_refs.py" not in c for c in _hook_commands(project))
 
 
 def plan_project(repo, project, SyncError, yes_replace=()):
@@ -231,6 +246,8 @@ def _plan(repo, project, SyncError, yes_replace):
         p.notes.append(OLD_HOOK_NOTE.format(path=os.path.join(project, ".claude", "settings.json"), glob=GLOBAL_GATE))
     elif _unisolated_project_hook(project):
         p.notes.append(NOT_ISOLATED_NOTE.format(path=os.path.join(project, ".claude", "settings.json")))
+    elif _hook_without_git_refs(project):
+        p.notes.append(NO_REFS_HOOK_NOTE.format(path=os.path.join(project, ".claude", "settings.json")))
 
     link = os.path.join(project, SKILLS_LINK_REL)
     skills = os.path.join(project, SKILLS_TARGET_REL)

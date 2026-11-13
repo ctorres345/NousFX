@@ -81,7 +81,8 @@ class FirstRun(Base):
         golden = read(os.path.join(FIX, "expected_CLAUDE.md")).replace("{repo}", self.repo).replace("{state}", self.state)
         self.assertEqual(read(self.rules), golden)
         self.assertTrue(os.path.exists(self.hook))
-        self.assertTrue(os.path.exists(os.path.join(self.home, ".claude", "hooks", "pr_create_parser.py")))
+        for name in ("pr_create_parser.py", "git_refs.py"):  # git_refs.py: --mark needs it next to the gate (NFX-108)
+            self.assertTrue(os.path.exists(os.path.join(self.home, ".claude", "hooks", name)), name)
         cfg = json.loads(read(self.settings))
         entries = cfg["hooks"]["PreToolUse"]
         self.assertEqual(len(entries), 1)
