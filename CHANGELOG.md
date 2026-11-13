@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.0 (unreleased)
+
+### Via
+- The prototype page tells screen readers which variant is showing: each variant carries its own tab row with `aria-current="true"` on its own tab, still with no script. Choosing a tab moves focus to the variant that appears, so screen readers announce it. The focus ring on the selected theme segment is now white on the dark fill (about 17:1, was 2.5:1); a test checks both ratios (NFX-81).
+
 ## 1.2.0 (unreleased)
 
 ### Skills

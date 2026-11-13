@@ -339,6 +339,7 @@ h1{font-size:1.25rem;font-weight:600;margin:0}
 .vp-seg label{display:inline-flex;align-items:center;min-height:44px;padding:0 16px;cursor:pointer;font-size:.875rem;background:#fff}
 .vp-seg input:checked+label{background:#1d1d1b;color:#fff}
 .vp-seg input:focus-visible+label{outline:2px solid #3f51b5;outline-offset:-2px}
+.vp-seg input:checked:focus-visible+label{outline-color:#fff;outline-offset:-4px}
 .vp-nav{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 24px;padding:0;list-style:none}
 .vp-nav a,.vp-tab{display:inline-flex;align-items:center;min-height:44px;padding:0 16px;border:1px solid #8b8b84;border-radius:8px;background:#fff;color:#1d1d1b;text-decoration:none;font-size:.875rem}
 .vp-nav a:hover,.vp-tab:hover{border-color:#1d1d1b}
@@ -357,10 +358,13 @@ h2{font-size:1.125rem;font-weight:600;margin:0 0 4px}
 .vp-scope{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:var(--font-size-body,16px)}
 .vp-fragment{height:100%;overflow:auto}
 .vp-tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
-.vp-variant{display:none;grid-template-columns:minmax(0,390px) minmax(240px,1fr);gap:24px;align-items:start;scroll-margin-top:16px}
-.vp-variant:first-of-type{display:grid}
+.vp-variant{display:none;scroll-margin-top:16px}
+.vp-variant:first-of-type{display:block}
 .vp-finding:has(.vp-variant:target) .vp-variant:first-of-type:not(:target){display:none}
-.vp-variant:target{display:grid}
+.vp-variant:target{display:block}
+.vp-variant:focus{outline:none}
+.vp-pair{display:grid;grid-template-columns:minmax(0,390px) minmax(240px,1fr);gap:24px;align-items:start}
+.vp-tab[aria-current]{background:#1d1d1b;color:#fff;border-color:#1d1d1b}
 .vp-why{margin:8px 0 0;font-size:.875rem;max-width:44ch}
 .vp-spec{background:#fff;border:1px solid #d6d6cf;border-radius:8px;padding:16px;font-size:.875rem}
 .vp-spec h3{margin:0 0 8px;font-size:.875rem;font-weight:600}
@@ -377,7 +381,7 @@ h2{font-size:1.125rem;font-weight:600;margin:0 0 4px}
 .vp-root:has(#vp-dark:checked) .vp-shot-light{display:none}
 .vp-root:has(#vp-dark:checked) .vp-shot-dark{display:block}
 @media (min-width:1101px){.vp-before{margin-top:64px}}
-@media (max-width:1100px){.vp-cols,.vp-variant{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:1100px){.vp-cols,.vp-pair{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:480px){.vp-root{padding:16px}}
 """
 
@@ -423,18 +427,18 @@ def spec_panel(used, tokens, states, label):
 
 def render(run_name, blocks, tokens):
     nav = "".join('<li><a href="#%s">%s</a></li>' % (b["anchor"], esc(b["title"])) for b in blocks)
-    tab_css, sections = [], []
+    sections = []
     for b in blocks:
-        first = b["variants"][0]["anchor"]
-        tab_css.append('#%s:not(:has(.vp-variant:target)) a[href="#%s"]' % (b["anchor"], first))
-        tabs, variants = [], []
+        variants = []
         for v in b["variants"]:
-            tab_css.append('#%s:has(#%s:target) a[href="#%s"]' % (b["anchor"], v["anchor"], v["anchor"]))
-            tabs.append('<a class="vp-tab" href="#%s">%s</a>' % (v["anchor"], esc(v["label"])))
+            # Each variant carries its own tab row, so aria-current is static and no script is needed.
+            tabs = "".join('<a class="vp-tab" href="#%s"%s>%s</a>' % (
+                o["anchor"], ' aria-current="true"' if o is v else "", esc(o["label"])) for o in b["variants"])
             variants.append(
-                '<article class="vp-variant" id="%s" aria-label="%s"><div><div class="vp-frame vp-scope">'
-                '<div class="vp-fragment" inert>%s</div></div><p class="vp-why">%s</p></div>%s</article>'
-                % (v["anchor"], esc(v["label"]), v["html"], esc(v["rationale"]), v["spec"]))
+                '<article class="vp-variant" id="%s" tabindex="-1" aria-label="%s"><div class="vp-tabs">%s</div><div class="vp-pair">'
+                '<div><div class="vp-frame vp-scope"><div class="vp-fragment" inert>%s</div></div><p class="vp-why">%s</p></div>%s'
+                '</div></article>'
+                % (v["anchor"], esc(v["label"]), tabs, v["html"], esc(v["rationale"]), v["spec"]))
         img = b["images"]
         alt = "Screenshot of %s" % b["screen"]
         if img["light"] == img["dark"]:
@@ -449,12 +453,10 @@ def render(run_name, blocks, tokens):
             '<section class="vp-finding" id="%s" aria-labelledby="%s-h"><h2 id="%s-h"><span class="vp-sev">%s</span>%s</h2>'
             '<p class="vp-id">%s</p><p class="vp-issue">%s</p><div class="vp-cols"><figure style="margin:0"><figcaption class="vp-cap">Before</figcaption>'
             '<div class="vp-frame vp-before">%s</div>%s</figure><div><p class="vp-cap">After: pick a variant</p>'
-            '<div class="vp-tabs">%s</div>%s</div></div></section>'
+            '%s</div></div></section>'
             % (b["anchor"], b["anchor"], b["anchor"], esc(b["severity"]), esc(b["title"]), esc(b["id"]), esc(b["issue"]),
-               before, note, "".join(tabs), "".join(variants)))
-    active = "%s{background:#1d1d1b;color:#fff;border-color:#1d1d1b}" % ",".join(tab_css)
-    css = (CSS + ".vp-scope{%s}.vp-root:has(#vp-dark:checked) .vp-scope{%s}" % (scope_css(tokens, "light"), scope_css(tokens, "dark"))
-           + active)
+               before, note, "".join(variants)))
+    css = (CSS + ".vp-scope{%s}.vp-root:has(#vp-dark:checked) .vp-scope{%s}" % (scope_css(tokens, "light"), scope_css(tokens, "dark")))
     return (
         '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'

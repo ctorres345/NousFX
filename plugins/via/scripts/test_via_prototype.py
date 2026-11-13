@@ -122,6 +122,44 @@ class Build(Base):
         self.assertEqual(page.count('class="vp-fragment" inert'), 2)  # mock buttons must not become tab stops
         self.assertIn("default-src 'none'", page)
 
+    def test_each_variant_has_its_own_tab_row_marking_itself_current(self):
+        self.save_proto([{"id": "VIA-home-1a2b3c4d", "variants": [variant("A"), variant("B")]}])
+        self.assertEqual(self.build().returncode, 0)
+        page = self.page()
+        articles = re.findall(r'<article class="vp-variant" id="([^"]+)".*?</article>', page, re.S)
+        self.assertEqual(len(articles), 2)
+        for m in re.finditer(r'<article class="vp-variant" id="([^"]+)"(.*?)</article>', page, re.S):
+            own, body = m.group(1), m.group(2)
+            tabs = re.findall(r'<a class="vp-tab" href="#([^"]+)"( aria-current="true")?>', body)
+            self.assertEqual(len(tabs), 2)
+            self.assertEqual([h for h, cur in tabs if cur], [own])
+        # Activating a tab hides its own row, so the shown variant must take focus (and be announced) instead.
+        self.assertEqual(page.count('class="vp-variant" id='), 2)
+        self.assertEqual(len(re.findall(r'<article class="vp-variant" id="[^"]+" tabindex="-1" aria-label=', page)), 2)
+        self.assertIn(".vp-variant:focus{outline:none}", page)
+        self.assertNotIn('class="vp-tabs"', page.split("</style>")[1].split('<article')[0])
+        self.assertNotIn("<script", page.lower())
+
+    def test_theme_toggle_focus_ring_reaches_3_to_1(self):
+        def lum(h):
+            h = h.lstrip("#")
+            if len(h) == 3:
+                h = "".join(c * 2 for c in h)
+            ch = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+            ch = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in ch]
+            return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+
+        def ratio(a, b):
+            hi, lo = sorted((lum(a), lum(b)), reverse=True)
+            return (hi + 0.05) / (lo + 0.05)
+
+        css = via_prototype.CSS
+        fill = re.search(r"\.vp-seg input:checked\+label\{background:(#[0-9a-f]{3,6})", css).group(1)
+        ring = re.search(r"\.vp-seg input:checked:focus-visible\+label\{outline-color:(#[0-9a-f]{3,6});outline-offset:-4px\}", css).group(1)
+        base = re.search(r"\.vp-seg input:focus-visible\+label\{outline:2px solid (#[0-9a-f]{3,6})", css).group(1)
+        self.assertGreaterEqual(ratio(ring, fill), 3.0)
+        self.assertGreaterEqual(ratio(base, "#ffffff"), 3.0)
+
     def test_spec_values_come_from_the_projects_tokens(self):
         self.build()
         page = self.page()
