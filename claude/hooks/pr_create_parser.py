@@ -31,6 +31,7 @@ CD_COMMANDS = {"cd", "pushd", "popd", "chdir", "set-location", "sl", "pop-locati
 BRANCH_KEYWORDS = {"then", "elif", "else", "do"}
 ASSIGNMENT = re.compile(r"^\w+\+?=")
 SHELL_C_FLAG = re.compile(r"^(?:-[a-zA-Z]*c[a-zA-Z]*|-command)$", re.I)
+SHELL_VAR = re.compile(r"^\$\{?(?:SHELL|BASH)\b")  # `$SHELL`, `${SHELL}`, `${SHELL:-sh}`, `$BASH`; not `$BASH_VERSION`
 SHELL_S_FLAG = re.compile(r"^-[a-zA-Z]*s[a-zA-Z]*$")
 CD_MENTION = re.compile(r"\b(?:cd|pushd|popd|chdir|set-location|sl|pop-location)\b", re.I)
 HEREDOC_DELIM = re.compile(r"""'([^']*)'|"([^"]*)"|(\\?)([^\s;&|()<>]+)""")
@@ -581,7 +582,7 @@ def create_calls(command, cwd, ps=False):
         if SUBSTITUTION.search(program.text) or SUBSTITUTION.search(args[i].text):
             return True
         # `X="sh -c"; $X "$CMD" name`: the plain word may be $0. Split at `=` too, for `SH=bash` and `Y=-c`.
-        if any(command_name(t) in SHELLS or SHELL_C_FLAG.match(t) or t in ("$SHELL", "${SHELL}")
+        if any(command_name(t) in SHELLS or SHELL_C_FLAG.match(t) or SHELL_VAR.match(t)
                for t in re.findall(r"[^\s;&|()<>=]+", bare)):
             return True
         after_flag = False

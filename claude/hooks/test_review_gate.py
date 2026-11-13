@@ -98,6 +98,10 @@ RUNS_CREATE = [
     '$SHELL $FLAGS "$CMD" x',
     '${SHELL} $FLAGS "$CMD" x',
     '$X $D "$(cat c.txt)" name',
+    '${SHELL:-sh} $FLAGS "$CMD" x',
+    '$BASH $FLAGS "$CMD" x',
+    # A substitution as a flag's value blocks on purpose: $DEV may hold -c, and `sh -c -s "$(...)"` runs it.
+    '$ADB $DEV -s "$(cat serial)" shell input keyevent 4',
     '$X $D $E `cat c.txt` name',
     'X="sh -c"; CMD=$(cat f); $X "$CMD" name',  # a shell in the text: the plain word may be $0
     "$X $A {,}",  # words that may vanish (brace expansion, globs) prove nothing
