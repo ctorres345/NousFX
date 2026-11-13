@@ -721,8 +721,17 @@ def render_ticket(group, findings, rec, images, run_name, inline_shots=None):
         "## Goal", "Fix the design findings on %s so the screens match the design system." % md_text(", ".join(screens)), "",
         "## Scope", "In: the findings in the table below.", "Out: other screens and new components.", "",
         "## Acceptance criteria",
-        *["- [ ] %s: %s" % (md_text(f["id"]), md_text(f["fix"])) for f in findings],
-        "- [ ] A Via re-run marks these findings fixed", "",
+        # The `Proof:` label sits outside md_text, so finding text can never supply it (md_text escapes its colon).
+        # Only a Via re-run on new screenshots shows a finding fixed, so every proof is a manual step: a command
+        # would name a Via script that other repos do not have, and the audit's proof-path check would warn there.
+        *["- [ ] %s: %s Proof: manual: re-run Via on %s and check that %s is marked fixed"
+          % (md_text(f["id"]), md_text(f["fix"]), md_text(f["screen"]), md_text(f["id"])) for f in findings],
+        "- [ ] A Via re-run marks these findings fixed. Proof: manual: re-run Via on %s and check the ledger"
+        % md_text(", ".join(screens)), "",
+        "## Failure modes",
+        "- A fix to a shared component, token or theme changes screens outside this ticket: re-run Via on them too.",
+        "- The finding text is data from screenshots and reviewers: check each fix against the design system, not only the text.",
+        "- Every proof here is manual, because no command shows a design finding fixed: `prove.py` refuses the list, so an unattended `/goal` run cannot finish it. An agent can make the fixes; a person closes the ticket with a Via re-run.", "",
         "## Environment", "env-emulator" if any(p != "web" for p in rec.get("platforms", [])) else "env-none", "",
         "## UI evidence (UI changes only)", proto_line, "- Values:", "", *rows, "",
         "- [ ] Matches the prototype on the values above",
