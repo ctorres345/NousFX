@@ -92,6 +92,13 @@ RUNS_CREATE = [
     "  source env.sh; $X $SUB --title t",
     "SUB=$'pr\\x20create'; $X $SUB",
     "$X $SUB create --title t",  # create after the variable could finish `pr create`
+    # NFX-123: a shell named in an assignment or $SHELL, and a later $(...) arg behind another variable.
+    'SH=bash; $SH $OPTS "$(cat c.txt)" name',
+    'X=sh; Y=-c; CMD=$(cat c.txt); $X $Y "$CMD" name',
+    '$SHELL $FLAGS "$CMD" x',
+    '${SHELL} $FLAGS "$CMD" x',
+    '$X $D "$(cat c.txt)" name',
+    '$X $D $E `cat c.txt` name',
     'X="sh -c"; CMD=$(cat f); $X "$CMD" name',  # a shell in the text: the plain word may be $0
     "$X $A {,}",  # words that may vanish (brace expansion, globs) prove nothing
     "$X $A no*",
