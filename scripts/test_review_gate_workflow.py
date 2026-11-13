@@ -150,5 +150,19 @@ class SkipLabel(unittest.TestCase):
         self.assertLess(text.index("# end NFX-110"), text.index('review-gate.py" run-check'))
 
 
+class Pins(unittest.TestCase):
+    def test_every_action_is_pinned_to_a_full_commit_sha(self):  # NFX-109
+        import glob
+        import re
+        for path in glob.glob(os.path.join(ROOT, ".github", "workflows", "*.y*ml")):
+            with open(path, encoding="utf-8") as f:
+                uses = re.findall(r"^\s*-?\s*uses:\s*(\S+)", f.read(), re.M)
+            self.assertTrue(uses, path)
+            for ref in uses:
+                if ref.startswith(("./", "docker://")):
+                    continue
+                self.assertRegex(ref, r"@[0-9a-f]{40}$", f"{os.path.basename(path)}: {ref}")
+
+
 if __name__ == "__main__":
     unittest.main()
