@@ -3,6 +3,7 @@
 ## 1.3.0 (unreleased)
 
 ### Via
+- `/via check` has a pending-human state (NFX-111). In an unattended run, a medium finding that is routed and not an accessibility finding counts as `pending_human` instead of `findings_open`, so the check can pass while a person still decides. High, accessibility and unrouted findings stay open, and attended runs are unchanged. `pass` records `pending_human` and `pending_ids`; an attended pass prints the earlier ones as `earlier_pending`. The review gate still reads only `findings_open`.
 - The prototype page is easier to compare and to read (NFX-82). At 700 px and narrower each finding gets a CSS-only Before/After switch (After selected) so you no longer scroll past two 844 px frames; the spec panel highlights the Light or Dark column for the selected theme (bolder header too, not colour alone); the "Jump to finding" list is plain underlined links, no longer styled like the variant tabs; the toggle is named "Mockup theme"; the before image's alt names the screen, theme and issue. `audit.md` and `prototype.md` tell variant authors to redraw the whole screen, not one element in an empty frame.
 - The prototype page tells screen readers which variant is showing: each variant carries its own tab row with `aria-current="true"` on its own tab, still with no script. Choosing a tab moves focus to the variant that appears, so screen readers announce it. The focus ring on the selected theme segment is now white on the dark fill (about 17:1, was 2.5:1); a test checks both ratios (NFX-81).
 

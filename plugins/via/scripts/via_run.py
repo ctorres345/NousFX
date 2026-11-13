@@ -45,6 +45,9 @@ IGNORE_LINE = ".via/"
 LEDGER = os.path.join("docs", "design", "via.md")
 START, END = "<!-- via:ledger:start -->", "<!-- via:ledger:end -->"
 PASS_FILE = "via-check-ok"
+# A finding whose source, rule or issue says one of these is an accessibility finding: it is never pending (fail closed).
+A11Y_WORDS = ("accessib", "a11y", "contrast", "touch target", "touch-target", "screen reader", "screen-reader",
+              "talkback", "voiceover", "focus", "content description", "content-description", "alt text")
 TICKETS = os.path.join("docs", "design", "tickets")  # markdown tickets for ticket-routed findings, when Jira is not used
 
 JIRA_PROJECT_RE = re.compile(r"[A-Z][A-Z0-9_]{1,9}")
@@ -650,14 +653,37 @@ def cmd_pass(project, args):
     # Entries `merge` matched to a finding this run judged wrong, unless a later run has seen them since.
     wrong = {fid for fid, run in rec.get("held", {}).items() if ledger.get(fid, {}).get("run", "") == run}
     entries = {fid: e for fid, e in ledger.items() if covers(rec["scope"], e.get("screen", "")) and fid not in wrong}
-    entries.update((f["id"], ledger.get(f["id"], f)) for f in live)
-    open_count = sum(1 for e in entries.values()
-                     if e.get("severity") in ("high", "med") and is_open(e) and not e.get("ticket"))
+    # The ledger does not keep `route` or `source`: take them from the finding in this run's record.
+    entries.update((f["id"], {**ledger.get(f["id"], f), "route": f.get("route"), "source": f.get("source")}) for f in live)
+    counted = [e for e in entries.values()
+               if e.get("severity") in ("high", "med") and is_open(e) and not e.get("ticket")]
+    # An unattended run files and edits nothing: a routed, non-accessibility med waits for a person.
+    pending_ids = sorted(e["id"] for e in counted if unattended() and e["severity"] == "med"
+                         and e.get("route") and not is_accessibility(e))
+    open_count = len(counted) - len(pending_ids)
+    earlier = []
+    if not unattended():
+        try:
+            with open(marker_path(project)) as fh:
+                # Only IDs the ledger still has open and unticketed: the marker is shared by the whole repo.
+                earlier = [i for i in json.load(fh).get("pending_ids", [])
+                           if isinstance(i, str) and i in ledger and is_open(ledger[i]) and not ledger[i].get("ticket")]
+        except (OSError, ValueError, AttributeError):
+            earlier = []
     tree = worktree_tree(project)
-    marker = os.path.abspath(os.path.join(project, git(["rev-parse", "--git-path", PASS_FILE], project)))
+    marker = marker_path(project)
     write_atomic(marker, json.dumps({"tree": tree, "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                     "run": run_dir, "findings_open": open_count}))
-    emit({"tree": tree, "findings_open": open_count, "path": marker})
+                                     "run": run_dir, "findings_open": open_count,
+                                     "pending_human": len(pending_ids), "pending_ids": pending_ids}))
+    out = {"tree": tree, "findings_open": open_count, "pending_human": len(pending_ids),
+           "pending_ids": pending_ids, "path": marker}
+    if not unattended():
+        out["earlier_pending"] = earlier
+    emit(out)
+
+
+def marker_path(project):
+    return os.path.abspath(os.path.join(project, git(["rev-parse", "--git-path", PASS_FILE], project)))
 
 
 def tickets_dir(project):
@@ -749,6 +775,12 @@ def render_ticket(group, findings, rec, images, run_name, inline_shots=None):
 
 def is_open(entry):
     return entry["status"] in ("new", "open")
+
+
+def is_accessibility(entry):
+    """An accessibility finding always stays open, even in an unattended run."""
+    text = " ".join(str(entry.get(k) or "") for k in ("source", "rule", "issue")).casefold()
+    return any(word in text for word in A11Y_WORDS)
 
 
 def pending_rejects(ledger, live):
