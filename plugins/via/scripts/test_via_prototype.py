@@ -140,6 +140,101 @@ class Build(Base):
         self.assertNotIn('class="vp-tabs"', page.split("</style>")[1].split('<article')[0])
         self.assertNotIn("<script", page.lower())
 
+    def test_each_finding_has_a_before_after_switch_for_narrow_screens(self):
+        self.assertEqual(self.build().returncode, 0)
+        page = self.page()
+        m = re.search(r'<div class="vp-seg vp-view" role="radiogroup" aria-label="([^"]+)">(.*?)</div>', page, re.S)
+        self.assertIsNotNone(m)
+        self.assertIn("home · touch-target", m.group(1))  # named after the finding, not just the screen
+        inputs = re.findall(r'<input type="radio" name="(vp-view-f1)" id="([^"]+)" class="(vp-view-(?:before|after))"( checked)?>', m.group(2))
+        self.assertEqual([c for _, _, c, _ in inputs], ["vp-view-before", "vp-view-after"])
+        self.assertEqual([c for _, _, c, chk in inputs if chk], ["vp-view-after"])  # open on the fix
+        for _, input_id, _, _ in inputs:
+            self.assertIn('<label for="%s">' % input_id, m.group(2))
+        self.assertIn('class="vp-before-col"', page)
+        self.assertIn('class="vp-after-col"', page)
+        css = via_prototype.CSS
+        self.assertRegex(css, r"\.vp-view\{display:none[;}]")  # desktop shows both columns, as before
+        wide, narrow = css.split("@media (max-width:700px){", 1)
+        # The switch and both hide rules live only inside the narrow media query, and only where :has() works,
+        # so a wide screen shows both columns and a browser without :has() never shows a dead switch.
+        self.assertTrue(narrow.startswith("@supports selector(:has(a)){.vp-view{display:inline-flex}"))
+        for rule in (".vp-finding:has(.vp-view-before:checked) .vp-after-col{display:none}",
+                     ".vp-finding:has(.vp-view-after:checked) .vp-before-col{display:none}"):
+            self.assertNotIn(rule, wide)
+            self.assertIn(rule, narrow.split("@media", 1)[0])
+        self.assertNotIn(".vp-view{display:inline-flex}", wide)
+        self.assertNotIn("<script", page.lower())
+
+    def test_switch_ids_and_names_are_per_finding(self):
+        self.record["findings"].append(finding("VIA-home-ffffffff"))
+        self.save_record()
+        self.save_proto([{"id": "VIA-home-1a2b3c4d", "variants": [variant("A"), variant("B")]},
+                         {"id": "VIA-home-ffffffff", "variants": [variant("C"), variant("D")]}])
+        self.assertEqual(self.build().returncode, 0)
+        page = self.page()
+        ids = re.findall(r'<input type="radio" name="vp-view-f\d" id="([^"]+)"', page)
+        self.assertEqual(len(ids), 4)
+        self.assertEqual(len(set(ids)), 4)
+        self.assertEqual(sorted(set(re.findall(r'name="(vp-view-f\d)"', page))), ["vp-view-f1", "vp-view-f2"])
+
+    def test_the_spec_column_of_the_selected_theme_is_highlighted(self):
+        self.assertEqual(self.build().returncode, 0)
+        page = self.page()
+        self.assertIn('<th scope="col" class="vp-col-light">Light</th><th scope="col" class="vp-col-dark">Dark</th>', page)
+        self.assertRegex(page, r'<td class="vp-col-light">.*?</td><td class="vp-col-dark">')
+        css = via_prototype.CSS
+        self.assertIn(".vp-spec .vp-col-light{", css)
+        self.assertIn(".vp-root:has(#vp-dark:checked) .vp-spec .vp-col-dark{", css)
+        self.assertIn(".vp-root:has(#vp-dark:checked) .vp-spec .vp-col-light{", css)  # the light column lets go in dark
+        # Not colour alone: the selected header is also bolder.
+        self.assertRegex(css, r"\.vp-spec th\.vp-col-light\{[^}]*font-weight:600")
+        self.assertRegex(css, r"\.vp-root:has\(#vp-dark:checked\) \.vp-spec th\.vp-col-dark\{[^}]*font-weight:600")
+
+    def test_finding_chips_look_different_from_variant_tabs(self):
+        self.assertEqual(self.build().returncode, 0)
+        page = self.page()
+        self.assertIn('<li><a class="vp-chip" href="#f1">', page)
+        self.assertNotIn('class="vp-tab" href="#f1"', page)
+        self.assertIn("Jump to finding", page)
+        css = via_prototype.CSS
+        self.assertNotIn(".vp-nav a", css)  # no rule shared with the tabs
+        chip = re.search(r"\.vp-chip\{([^}]*)\}", css).group(1)
+        tab = re.search(r"\.vp-tab\{([^}]*)\}", css).group(1)
+        self.assertNotIn("border:1px solid", chip)  # tabs are boxed buttons; chips are plain links
+        self.assertIn("underline", chip)
+        self.assertIn("border:1px solid", tab)
+        self.assertIn("min-height:44px", chip)
+
+    def test_the_theme_toggle_says_it_changes_only_the_mockups(self):
+        self.assertEqual(self.build().returncode, 0)
+        page = self.page()
+        self.assertIn('role="radiogroup" aria-label="Mockup theme"', page)
+        self.assertNotIn('aria-label="Theme"', page)
+        self.assertIn('class="vp-seg-name">Mockup theme</span>', page)
+        self.assertRegex(page, r"Mockup theme[^<]*</span>.*?id=\"vp-light\"")
+
+    def test_before_alt_text_names_the_screen_theme_and_issue(self):
+        self.assertEqual(self.build().returncode, 0)
+        page = self.page()
+        self.assertIn('alt="Before: home screen as captured in the light theme. The Start button is 28 pt tall."', page)
+        self.assertNotIn("Screenshot of", page)
+
+    def test_before_alt_text_for_both_themes_and_a_long_issue(self):
+        write(os.path.join(self.run_dir, "home-dark.png"), PNG + b"DARK", "wb")
+        self.record["screenshots"].append({"path": "home-dark.png", "screen": "home", "theme": "dark", "size": "390x844",
+                                           "redacted": True, "review": "kept"})
+        self.record["findings"][0]["issue"] = "Tall " * 80 + '"quoted" <b>'
+        self.save_record()
+        self.assertEqual(self.build().returncode, 0)
+        alts = re.findall(r'<img class="vp-shot-(light|dark)" src="[^"]+" alt="([^"]*)"', self.page())
+        self.assertEqual([t for t, _ in alts], ["light", "dark"])
+        for theme, alt in alts:
+            self.assertTrue(alt.startswith("Before: home screen, %s theme. Tall Tall" % theme), alt)
+            self.assertTrue(alt.endswith("…"), alt)
+            self.assertLessEqual(len(alt), 260)
+            self.assertNotIn("<b>", alt)
+
     def test_theme_toggle_focus_ring_reaches_3_to_1(self):
         def lum(h):
             h = h.lstrip("#")

@@ -51,6 +51,7 @@ MAX_JSON = 1_000_000
 MAX_SHOT = 4_000_000
 MAX_PAGE_SHOTS = 12_000_000
 MAX_FRAGMENT = 20_000
+ALT_ISSUE_MAX = 200  # characters of the finding text kept in the before image's alt
 STATES = ("default", "pressed", "disabled", "empty")
 
 TAGS = {"div", "span", "p", "h3", "h4", "h5", "h6", "button", "ul", "ol", "li", "strong", "em", "small",
@@ -340,9 +341,14 @@ h1{font-size:1.25rem;font-weight:600;margin:0}
 .vp-seg input:checked+label{background:#1d1d1b;color:#fff}
 .vp-seg input:focus-visible+label{outline:2px solid #3f51b5;outline-offset:-2px}
 .vp-seg input:checked:focus-visible+label{outline-color:#fff;outline-offset:-4px}
-.vp-nav{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 24px;padding:0;list-style:none}
-.vp-nav a,.vp-tab{display:inline-flex;align-items:center;min-height:44px;padding:0 16px;border:1px solid #8b8b84;border-radius:8px;background:#fff;color:#1d1d1b;text-decoration:none;font-size:.875rem}
-.vp-nav a:hover,.vp-tab:hover{border-color:#1d1d1b}
+.vp-toggle{display:flex;align-items:center;gap:8px}
+.vp-seg-name{font-size:.875rem;font-weight:600}
+.vp-nav-label{margin:0;font-size:.8125rem;font-weight:600;color:#55554f}
+.vp-nav{display:flex;flex-wrap:wrap;gap:0 16px;margin:0 0 24px;padding:0;list-style:none}
+.vp-chip{display:inline-flex;align-items:center;min-height:44px;padding:0 4px;color:#1d1d1b;text-decoration:underline;text-underline-offset:3px;font-size:.875rem}
+.vp-chip:hover{text-decoration-thickness:2px}
+.vp-tab{display:inline-flex;align-items:center;min-height:44px;padding:0 16px;border:1px solid #8b8b84;border-radius:8px;background:#fff;color:#1d1d1b;text-decoration:none;font-size:.875rem}
+.vp-tab:hover{border-color:#1d1d1b}
 a:focus-visible{outline:2px solid #3f51b5;outline-offset:2px}
 .vp-finding{padding:24px 0;border-top:1px solid #d6d6cf;scroll-margin-top:16px}
 h2{font-size:1.125rem;font-weight:600;margin:0 0 4px}
@@ -377,11 +383,22 @@ h2{font-size:1.125rem;font-weight:600;margin:0 0 4px}
 .vp-spec dl{margin:0}
 .vp-spec dt{font-weight:600}
 .vp-spec dd{margin:0 0 8px;color:#33332f}
+.vp-spec .vp-col-light,.vp-spec .vp-col-dark{padding-left:8px}
+.vp-spec .vp-col-light{background:#e8ebf7}
+.vp-spec th.vp-col-light{font-weight:600;color:#1d1d1b}
+.vp-root:has(#vp-dark:checked) .vp-spec .vp-col-light{background:none}
+.vp-root:has(#vp-dark:checked) .vp-spec th.vp-col-light{font-weight:400;color:#55554f}
+.vp-root:has(#vp-dark:checked) .vp-spec .vp-col-dark{background:#e8ebf7}
+.vp-root:has(#vp-dark:checked) .vp-spec th.vp-col-dark{font-weight:600;color:#1d1d1b}
+.vp-view{display:none;margin:0 0 16px}
 .vp-shot-dark{display:none}
 .vp-root:has(#vp-dark:checked) .vp-shot-light{display:none}
 .vp-root:has(#vp-dark:checked) .vp-shot-dark{display:block}
 @media (min-width:1101px){.vp-before{margin-top:64px}}
 @media (max-width:1100px){.vp-cols,.vp-pair{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:700px){@supports selector(:has(a)){.vp-view{display:inline-flex}
+.vp-finding:has(.vp-view-before:checked) .vp-after-col{display:none}
+.vp-finding:has(.vp-view-after:checked) .vp-before-col{display:none}}}
 @media (max-width:480px){.vp-root{padding:16px}}
 """
 
@@ -404,13 +421,13 @@ def spec_panel(used, tokens, states, label):
     for g, title in GROUP_TITLES:
         if not by_group[g]:
             continue
-        out.append('<table><caption>%s</caption><tr><th scope="col">Token</th><th scope="col">Light</th><th scope="col">Dark</th></tr>' % title)
+        out.append('<table><caption>%s</caption><tr><th scope="col">Token</th><th scope="col" class="vp-col-light">Light</th><th scope="col" class="vp-col-dark">Dark</th></tr>' % title)
         for name in by_group[g]:
             cells = []
             for theme in ("light", "dark"):
                 v = tokens[g][name][theme]
                 swatch = '<span class="vp-sw" style="background:%s"></span>' % esc(v) if g == "colors" and v else ""
-                cells.append("<td>%s%s</td>" % (swatch, esc(v) if v is not None else '<span class="vp-none">no token</span>'))
+                cells.append('<td class="vp-col-%s">%s%s</td>' % (theme, swatch, esc(v) if v is not None else '<span class="vp-none">no token</span>'))
             out.append("<tr><th scope=\"row\">%s</th>%s</tr>" % (esc(name), "".join(cells)))
         out.append("</table>")
     if unknown:
@@ -426,7 +443,7 @@ def spec_panel(used, tokens, states, label):
 
 
 def render(run_name, blocks, tokens):
-    nav = "".join('<li><a href="#%s">%s</a></li>' % (b["anchor"], esc(b["title"])) for b in blocks)
+    nav = "".join('<li><a class="vp-chip" href="#%s">%s</a></li>' % (b["anchor"], esc(b["title"])) for b in blocks)
     sections = []
     for b in blocks:
         variants = []
@@ -440,22 +457,31 @@ def render(run_name, blocks, tokens):
                 '</div></article>'
                 % (v["anchor"], esc(v["label"]), tabs, v["html"], esc(v["rationale"]), v["spec"]))
         img = b["images"]
-        alt = "Screenshot of %s" % b["screen"]
+        issue = " ".join(b["issue"].split())
+        if len(issue) > ALT_ISSUE_MAX:
+            issue = issue[:ALT_ISSUE_MAX - 1].rstrip() + "…"
         if img["light"] == img["dark"]:
+            alt = "Before: %s screen as captured in the %s theme. %s" % (b["screen"], img["themes"][0], issue)
             before = '<img src="%s" alt="%s">' % (img["light"], esc(alt))
             note = '<p class="vp-note">Captured in the %s theme only.</p>' % esc(img["themes"][0])
         else:
-            before = ('<img class="vp-shot-light" src="%s" alt="%s, light theme">'
-                      '<img class="vp-shot-dark" src="%s" alt="%s, dark theme">'
-                      % (img["light"], esc(alt), img["dark"], esc(alt)))
+            alts = {t: esc("Before: %s screen, %s theme. %s" % (b["screen"], t, issue)) for t in ("light", "dark")}
+            before = ('<img class="vp-shot-light" src="%s" alt="%s"><img class="vp-shot-dark" src="%s" alt="%s">'
+                      % (img["light"], alts["light"], img["dark"], alts["dark"]))
             note = ""
+        a = b["anchor"]
+        # Narrow screens show one column at a time. The switch is CSS only and hidden on wide screens, so it is not a tab stop there.
+        switch = ('<div class="vp-seg vp-view" role="radiogroup" aria-label="Compare view for %s">'
+                  '<input type="radio" name="vp-view-%s" id="%s-view-before" class="vp-view-before"><label for="%s-view-before">Before</label>'
+                  '<input type="radio" name="vp-view-%s" id="%s-view-after" class="vp-view-after" checked><label for="%s-view-after">After</label></div>'
+                  % (esc(b["title"]), a, a, a, a, a, a))
         sections.append(
             '<section class="vp-finding" id="%s" aria-labelledby="%s-h"><h2 id="%s-h"><span class="vp-sev">%s</span>%s</h2>'
-            '<p class="vp-id">%s</p><p class="vp-issue">%s</p><div class="vp-cols"><figure style="margin:0"><figcaption class="vp-cap">Before</figcaption>'
-            '<div class="vp-frame vp-before">%s</div>%s</figure><div><p class="vp-cap">After: pick a variant</p>'
+            '<p class="vp-id">%s</p><p class="vp-issue">%s</p>%s<div class="vp-cols"><figure class="vp-before-col" style="margin:0"><figcaption class="vp-cap">Before</figcaption>'
+            '<div class="vp-frame vp-before">%s</div>%s</figure><div class="vp-after-col"><p class="vp-cap">After: pick a variant</p>'
             '%s</div></div></section>'
-            % (b["anchor"], b["anchor"], b["anchor"], esc(b["severity"]), esc(b["title"]), esc(b["id"]), esc(b["issue"]),
-               before, note, "".join(variants)))
+            % (a, a, a, esc(b["severity"]), esc(b["title"]), esc(b["id"]), esc(b["issue"]),
+               switch, before, note, "".join(variants)))
     css = (CSS + ".vp-scope{%s}.vp-root:has(#vp-dark:checked) .vp-scope{%s}" % (scope_css(tokens, "light"), scope_css(tokens, "dark")))
     return (
         '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">'
@@ -464,9 +490,11 @@ def render(run_name, blocks, tokens):
         '<title>Via prototypes: %s</title><style>%s</style></head><body><div class="vp-root">'
         '<header class="vp-top"><div><h1>Via prototypes</h1><p class="vp-meta">Run %s. %d finding%s. '
         'The variants are mockups drawn from the project\'s theme tokens, not real renders.</p></div>'
-        '<div class="vp-seg" role="radiogroup" aria-label="Theme"><input type="radio" name="vp-theme" id="vp-light" checked>'
-        '<label for="vp-light">Light</label><input type="radio" name="vp-theme" id="vp-dark"><label for="vp-dark">Dark</label></div>'
-        '</header><ul class="vp-nav" aria-label="Findings">%s</ul><main>%s</main></div></body></html>\n'
+        '<div class="vp-toggle"><span class="vp-seg-name">Mockup theme</span>'
+        '<div class="vp-seg" role="radiogroup" aria-label="Mockup theme"><input type="radio" name="vp-theme" id="vp-light" checked>'
+        '<label for="vp-light">Light</label><input type="radio" name="vp-theme" id="vp-dark"><label for="vp-dark">Dark</label></div></div>'
+        '</header><p class="vp-nav-label" id="vp-nav-label">Jump to finding</p>'
+        '<ul class="vp-nav" aria-labelledby="vp-nav-label">%s</ul><main>%s</main></div></body></html>\n'
         % (esc(run_name), css, esc(run_name), len(blocks), "" if len(blocks) == 1 else "s", nav, "".join(sections)))
 
 
