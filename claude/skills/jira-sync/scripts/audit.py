@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 from collections import defaultdict
 
@@ -125,7 +126,8 @@ def repo_evidence(project, repo):
     pattern = re.compile(rf"\b{project}-\d+\b")
     # <prefix>/<KEY> for any prefix (NFX-119); a <prefix>/<KEY>-shots branch holds screenshots, not work.
     head = re.compile(rf"^[a-z0-9-]+/({project}-\d+)$")
-    evidence = {"commits": defaultdict(list), "branches": {}, "prs": defaultdict(list), "gaps": [], "mentioned": defaultdict(list)}
+    evidence = {"commits": defaultdict(list), "branches": {}, "prs": defaultdict(list), "gaps": [], "mentioned": defaultdict(list),
+                "repo": repo}
     try:
         try:
             base = run(["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], repo).strip()
@@ -158,6 +160,28 @@ def repo_evidence(project, repo):
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         evidence["gaps"].append(f"GitHub PRs unavailable, so PR checks did not run: {type(e).__name__}")
     return evidence
+
+
+def missing_proof_paths(criteria, repo):
+    """Repo-relative file paths named in `command` proofs that do not exist. Flags, globs, URLs and absolute paths are skipped."""
+    missing = []
+    for item in criteria:
+        _, _, rest = item.partition("Proof:")
+        if rest.strip().lower().startswith("manual:"):
+            continue
+        for command in re.findall(r"`([^`]*)`", rest):
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                tokens = command.split()
+            for token in tokens[1:]:
+                path = token.split("::", 1)[0]
+                if (not path or path[0] in "-/~$" or "://" in path or any(c in path for c in "*?[=")
+                        or not ("/" in path or re.search(r"\.\w+$", path))):
+                    continue
+                if not os.path.exists(os.path.join(repo, path)) and path not in missing:
+                    missing.append(path)
+    return missing
 
 
 def audit(project, issues, evidence):
@@ -219,13 +243,17 @@ def audit(project, issues, evidence):
                     "Decide whether this ticket still makes sense")
 
         parts = sections(text)
+        criteria = [ln.strip() for ln in parts.get("acceptance criteria", "").splitlines() if CHECKBOX.match(ln)]
+        if evidence.get("repo"):
+            gone = missing_proof_paths(criteria, evidence["repo"])
+            if gone:
+                add("proof-path", key, "medium", "A Proof names a path that does not exist", ", ".join(gone),
+                    "Point the Proof at the file that holds the test")
         if "ready-for-agent" in labels:
             problems = []
             for name in REQUIRED_SECTIONS:
                 if not parts.get(name, "").strip():
                     problems.append(f"section '{name}' missing or empty")
-            criteria = [ln.strip() for ln in parts.get("acceptance criteria", "").splitlines()
-                        if CHECKBOX.match(ln)]
             if not criteria:
                 problems.append("acceptance criteria has no checkbox items")
             for item in criteria:

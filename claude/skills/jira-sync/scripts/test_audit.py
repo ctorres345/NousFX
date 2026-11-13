@@ -137,6 +137,57 @@ class CommitKeys(unittest.TestCase):
         self.assertEqual(commit_keys("DEM", "Follow up on DEM-1 notes"), set())
 
 
+class ProofPaths(unittest.TestCase):
+    def setUp(self):
+        self.repo = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.repo, True)
+        os.makedirs(os.path.join(self.repo, "claude", "hooks"))
+        open(os.path.join(self.repo, "claude", "hooks", "test_real.py"), "w").close()
+
+    def found(self, proof, labels=("env-none", "ready-for-agent")):
+        text = READY.replace("Proof: `true`", "Proof: " + proof)
+        findings = audit("DEM", dict([issue("DEM-1", labels=labels, text=text)]), evidence(repo=self.repo))
+        return [f for f in findings if f["id"] == "proof-path:DEM-1"], findings
+
+    def test_missing_path_is_flagged(self):
+        flagged, _ = self.found("`python3 -I claude/hooks/test_gone.py`")
+        self.assertEqual(len(flagged), 1)
+        self.assertIn("claude/hooks/test_gone.py", flagged[0]["evidence"])
+
+    def test_missing_path_with_pytest_suffix_is_flagged(self):
+        flagged, _ = self.found("`pytest claude/hooks/test_gone.py::TestX`")
+        self.assertEqual(len(flagged), 1)
+
+    def test_existing_path_passes(self):
+        self.assertEqual(self.found("`python3 -I claude/hooks/test_real.py`")[0], [])
+        self.assertEqual(self.found("`pytest claude/hooks/test_real.py::TestX`")[0], [])
+        self.assertEqual(self.found("`ls claude/hooks`")[0], [])
+
+    def test_manual_and_pathless_commands_pass(self):
+        for proof in ("manual: open claude/hooks/test_gone.py", "`true`", "`python3 -B scripts`".replace("scripts", "-m unittest")):
+            self.assertEqual(self.found(proof)[0], [], proof)
+
+    def test_flags_globs_urls_and_absolute_paths_pass(self):
+        for proof in ("`x --out=claude/gone/a.txt`", "`x -f`", "`python3 plugins/*/test_*.py`",
+                      "`curl http://host/a/b.json`", "`cat /etc/hosts`", "`cat ~/a/b.txt`", "`cat $HOME/a/b.txt`"):
+            self.assertEqual(self.found(proof)[0], [], proof)
+
+    def test_warning_never_blocks_the_ticket(self):
+        flagged, findings = self.found("`python3 claude/hooks/test_gone.py`")
+        self.assertEqual(len(flagged), 1)
+        self.assertNotIn("ready-check:DEM-1", {f["id"] for f in findings})
+
+    def test_warns_before_ready_for_agent_but_not_on_done_tickets(self):
+        self.assertEqual(len(self.found("`python3 claude/hooks/test_gone.py`", labels=("env-none",))[0]), 1)
+        text = READY.replace("Proof: `true`", "Proof: `python3 claude/hooks/test_gone.py`")
+        done = audit("DEM", dict([issue("DEM-1", cat="done", text=text)]), evidence(repo=self.repo))
+        self.assertNotIn("proof-path:DEM-1", {f["id"] for f in done})
+
+    def test_no_repo_skips_the_check(self):
+        text = READY.replace("Proof: `true`", "Proof: `python3 claude/hooks/test_gone.py`")
+        self.assertNotIn("proof-path:DEM-1", ids([issue("DEM-1", text=text)]))
+
+
 class NextUp(unittest.TestCase):
     def test_grouping(self):
         issues = dict([
