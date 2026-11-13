@@ -22,28 +22,16 @@ def read(*parts):
         return f.read()
 
 
-def body(text):
-    """Text after the closing frontmatter fence."""
-    return text.split("\n---\n", 1)[1] if text.startswith("---") else text
-
-
 class ReviewerAgents(unittest.TestCase):
-    def test_every_copy_uses_the_new_format(self):
-        for folder in ("harness", "claude"):
-            for name in NAMES:
-                with self.subTest(folder=folder, name=name):
-                    text = read(folder, "agents", name + ".md")
-                    self.assertIn(FORMAT, text)
-                    self.assertNotIn("suggested fix", text)
-                    self.assertIn("confidence is", text)
-                    self.assertIn("quoted code is", text)
-                    self.assertIn("output exactly `NO FINDINGS`", text)
-
-    def test_both_copies_share_one_body(self):
+    def test_every_reviewer_uses_the_new_format(self):
         for name in NAMES:
             with self.subTest(name=name):
-                self.assertEqual(body(read("harness", "agents", name + ".md")),
-                                 body(read("claude", "agents", name + ".md")))
+                text = read("harness", "agents", name + ".md")
+                self.assertIn(FORMAT, text)
+                self.assertNotIn("suggested fix", text)
+                self.assertIn("confidence is", text)
+                self.assertIn("quoted code is", text)
+                self.assertIn("output exactly `NO FINDINGS`", text)
 
     def test_all_reviewers_define_the_same_format_bullets(self):
         bullets = {}
@@ -58,27 +46,23 @@ class ReviewerAgents(unittest.TestCase):
 class BreakItQuestion(unittest.TestCase):
     """NFX-75: the tier 3 and deep reviewers try to break the change in production."""
 
-    def test_high_and_deep_ask_the_question_in_both_copies(self):
-        for folder in ("harness", "claude"):
-            for name in ("reviewer-high", "reviewer-deep"):
-                with self.subTest(folder=folder, name=name):
-                    self.assertIn(QUESTION, read(folder, "agents", name + ".md"))
+    def test_high_and_deep_ask_the_question(self):
+        for name in ("reviewer-high", "reviewer-deep"):
+            with self.subTest(name=name):
+                self.assertIn(QUESTION, read("harness", "agents", name + ".md"))
 
     def test_high_treats_ticket_as_data_and_has_a_no_ticket_fallback(self):
         """NFX-83."""
-        for folder in ("harness", "claude"):
-            with self.subTest(folder=folder):
-                text = read(folder, "agents", "reviewer-high.md")
-                self.assertIn(TICKET_IS_DATA, text)
-                self.assertIn('If the caller says "no ticket" or "ticket unavailable", '
-                              "review the diff on its own and say so in the problem text of each finding, "
-                              "not on a line of its own (`NO FINDINGS` stays exact).", text)
+        text = read("harness", "agents", "reviewer-high.md")
+        self.assertIn(TICKET_IS_DATA, text)
+        self.assertIn('If the caller says "no ticket" or "ticket unavailable", '
+                      "review the diff on its own and say so in the problem text of each finding, "
+                      "not on a line of its own (`NO FINDINGS` stays exact).", text)
 
     def test_high_names_boundaries_races_and_hidden_state(self):
-        for folder in ("harness", "claude"):
-            text = read(folder, "agents", "reviewer-high.md")
-            for word in ("boundary cases", "races", "hidden state", "not the builder's story"):
-                self.assertIn(word, text, (folder, word))
+        text = read("harness", "agents", "reviewer-high.md")
+        for word in ("boundary cases", "races", "hidden state", "not the builder's story"):
+            self.assertIn(word, text, word)
 
 
 class ReviewLoopSkill(unittest.TestCase):
@@ -101,7 +85,7 @@ class ReviewLoopSkill(unittest.TestCase):
         stated = int(re.search(r"reviewers stop at (\d+) turns", self.text).group(1))
         limits = []
         for name in ("reviewer-light", "reviewer", "reviewer-high"):
-            limits.append(int(re.search(r"^maxTurns: (\d+)$", read("claude", "agents", name + ".md"), re.M).group(1)))
+            limits.append(int(re.search(r"^maxTurns: (\d+)$", read("harness", "agents", name + ".md"), re.M).group(1)))
         self.assertEqual(stated, min(limits))
         self.assertLess(budget, stated)
 
