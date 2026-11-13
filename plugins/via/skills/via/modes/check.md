@@ -58,16 +58,18 @@ Only when the code is final (no edits since the last capture and merge), on the 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/via_run.py" pass <run_dir>
 ```
-It records the current code state with `findings_open`, the high and medium findings still open (findings with a filed ticket and rejected ones do not count; in an unattended run nothing is filed, so pending ones still count). The check passes when `findings_open` is 0. Any later code edit makes the record stale: check again. Unattended runs record it too; it writes only in the git folder.
+It records the current code state with `findings_open`, the high and medium findings still open (findings with a filed ticket and rejected ones do not count; in an unattended run nothing is filed, so a routed medium finding that is not accessibility counts as `pending_human` instead, and a high, an accessibility or an unrouted one stays open; only findings in this run's record can be pending, older ledger entries stay open). The check passes when `findings_open` is 0. Any later code edit makes the record stale: check again. Unattended runs record it too; it writes only in the git folder.
 
 ## 10. Report
 Print, in this order:
+0. In an attended run, `Earlier pending:` the `earlier_pending` IDs, if any, before anything else.
 1. `Spec:` the spec run used, or why there was none.
 2. A table of findings: ID, severity, screen, location, issue, source, status. Spec deviations first.
 3. `Literal rows checked by eye:` how many, and any that did not match.
 4. `Coverage:` on Compose and Flutter, as in `/via audit`.
 5. Routes: rejected IDs, ticket paths, fix-now results. Unattended: `Pending decisions:` the `pending` lists, for Cesar.
-6. `Pass:` the tree and `findings_open`, and whether the check passed. If it did not, what must change.
+   `Pending human:` the `pending_ids`, for the PR body.
+6. `Pass:` the tree, `findings_open` and `pending_human`, and whether the check passed. If it did not, what must change.
 7. The run folder path.
 
 ## Do not

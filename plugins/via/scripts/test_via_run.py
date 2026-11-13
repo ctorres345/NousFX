@@ -289,6 +289,64 @@ class ViaRunTest(unittest.TestCase):
         self.ok("pass", run_dir)
         self.assertEqual(self.pass_record()["findings_open"], 3)  # routed to a ticket, but no ticket was filed yet
 
+    def pending_med(self, **extra):
+        extra.setdefault("rule", "spacing")
+        extra.setdefault("issue", "The card gap is 12dp, the target says 16dp.")
+        return finding(source="design-critique", route="fix-now", route_reason="One file", **extra)
+
+    def test_unattended_pass_counts_routed_med_as_pending_human_not_open(self):
+        run_dir, _, merged = self.merge(record([self.pending_med(), finding(rule="a", severity="low", source="spec")]))
+        out = self.run_cli("pass", run_dir, env={"VIA_UNATTENDED": "1"})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        data = json.loads(out.stdout)
+        self.assertEqual((data["findings_open"], data["pending_human"]), (0, 1))
+        self.assertEqual(data["pending_ids"], [merged["findings"][0]["id"]])
+        self.assertEqual(self.pass_record()["pending_human"], 1)
+
+    def test_unattended_pass_keeps_a_high_finding_open(self):
+        run_dir, _, _ = self.merge(record([self.pending_med(severity="high")]))
+        out = json.loads(self.run_cli("pass", run_dir, env={"VIA_UNATTENDED": "1"}).stdout)
+        self.assertEqual((out["findings_open"], out["pending_human"]), (1, 0))
+
+    def test_unattended_pass_keeps_an_accessibility_med_open(self):
+        run_dir, _, _ = self.merge(record([finding(route="fix-now", route_reason="One file")]))
+        out = json.loads(self.run_cli("pass", run_dir, env={"VIA_UNATTENDED": "1"}).stdout)
+        self.assertEqual((out["findings_open"], out["pending_human"]), (1, 0))
+
+    def test_unattended_pass_keeps_any_accessibility_source_open(self):
+        run_dir, _, _ = self.merge(record([finding(source="custom a11y rule", route="fix-now", route_reason="One file")]))
+        out = json.loads(self.run_cli("pass", run_dir, env={"VIA_UNATTENDED": "1"}).stdout)
+        self.assertEqual((out["findings_open"], out["pending_human"]), (1, 0))
+
+    def test_unattended_pass_keeps_an_unrouted_med_open(self):
+        run_dir, _, _ = self.merge(record([finding(source="design-critique", rule="spacing", issue="The gap is 12dp.")]))
+        out = json.loads(self.run_cli("pass", run_dir, env={"VIA_UNATTENDED": "1"}).stdout)
+        self.assertEqual((out["findings_open"], out["pending_human"]), (1, 0))
+
+    def test_unattended_pass_keeps_a_contrast_finding_open_whatever_its_source(self):
+        run_dir, _, _ = self.merge(record([finding(source="design-critique", route="fix-now", route_reason="One file")]))
+        out = json.loads(self.run_cli("pass", run_dir, env={"VIA_UNATTENDED": "1"}).stdout)  # rule "contrast"
+        self.assertEqual((out["findings_open"], out["pending_human"]), (1, 0))
+
+    def test_earlier_pending_leaves_out_ids_the_ledger_no_longer_has_open(self):
+        run_dir, _, merged = self.merge(record([self.pending_med()]))
+        self.run_cli("pass", run_dir, env={"VIA_UNATTENDED": "1"})
+        self.ok("reject", merged["findings"][0]["id"], "--reason", "Intended.")
+        out = self.ok("pass", run_dir)
+        self.assertEqual(out["earlier_pending"], [])
+
+    def test_attended_pass_keeps_the_same_med_open(self):
+        run_dir, _, _ = self.merge(record([self.pending_med()]))
+        out = self.ok("pass", run_dir)
+        self.assertEqual((out["findings_open"], out["pending_human"]), (1, 0))
+
+    def test_attended_pass_after_an_unattended_one_lists_earlier_pending(self):
+        run_dir, _, merged = self.merge(record([self.pending_med()]))
+        self.run_cli("pass", run_dir, env={"VIA_UNATTENDED": "1"})
+        out = self.ok("pass", run_dir)
+        self.assertEqual(out["earlier_pending"], [merged["findings"][0]["id"]])
+        self.assertNotIn("earlier_pending", self.pass_record())
+
     def test_pass_counts_what_a_later_recapture_found_on_the_screens_in_its_scope(self):
         self.merge(record([finding(screen="profile", severity="high")], scope=["profile"]))
         run_dir, _, _ = self.merge(record([finding()], scope=["home", "settings"]))
