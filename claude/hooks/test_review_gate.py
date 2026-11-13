@@ -546,6 +546,35 @@ class CheckCommand(Base):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("exited with 1", r.stderr)
 
+    def test_a_gate_without_git_refs_refuses_the_mark(self):
+        """NFX-108: the default-branch rule lives in git_refs.py; a copy without it must not wave the mark through."""
+        lone = os.path.join(self.tmp, "lone-refs")
+        os.makedirs(lone)
+        for name in ("review-gate.py", "pr_create_parser.py"):
+            shutil.copy(os.path.join(os.path.dirname(GATE), name), lone)
+        r = subprocess.run([sys.executable, os.path.join(lone, "review-gate.py"), "--mark", "--findings", "0"],
+                           cwd=self.repo, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("git_refs", r.stderr + r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "claude-review-ok")))
+
+    def test_the_hook_never_runs_git_refs(self):
+        """NFX-108: the agy adapter hashes only the gate and the parser, so git_refs.py (unhashed) must not run in the
+        hook or in `check`; only --mark and run-check import it."""
+        lone = os.path.join(self.tmp, "lone-hook")
+        os.makedirs(lone)
+        for name in ("review-gate.py", "pr_create_parser.py"):
+            shutil.copy(os.path.join(os.path.dirname(GATE), name), lone)
+        sentinel = os.path.join(self.tmp, "git-refs-ran")
+        with open(os.path.join(lone, "git_refs.py"), "w", encoding="utf-8") as f:
+            f.write("open(%r, 'w').close()\n" % sentinel)
+        for command in ("ls", "gh pr create"):
+            self.run_gate(command, gate=os.path.join(lone, "review-gate.py"))
+        self.assertFalse(os.path.exists(sentinel))
+        subprocess.run([sys.executable, os.path.join(lone, "review-gate.py"), "--mark", "--findings", "0"],
+                       cwd=self.repo, capture_output=True, text=True)
+        self.assertTrue(os.path.exists(sentinel))  # the mark does load it
+
     def test_a_check_that_forges_a_mark_and_fails_leaves_none(self):
         py = sys.executable.replace("\\", "/")
         forge = ("import json,subprocess,sys; t=subprocess.check_output(['git','write-tree']).decode().strip(); "

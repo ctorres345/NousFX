@@ -681,7 +681,7 @@ class Project(Fixture):
         shutil.copytree(os.path.join(ROOT, "harness", "agents"), os.path.join(self.repo, "harness", "agents"))
 
     COPIES = ((".claude", "hooks", "review-gate.py"), (".claude", "hooks", "pr_create_parser.py"),
-              (".claude", "agents", "reviewer.md"), (".claude", "skills", "review-loop", "SKILL.md"),
+              (".claude", "hooks", "git_refs.py"), (".claude", "agents", "reviewer.md"), (".claude", "skills", "review-loop", "SKILL.md"),
               (".claude", "skills", "review-loop", "scripts", "tier.py"),
               (".claude", "skills", "review-loop", "references", "fable.md"),
               (".claude", "skills", "review-loop", "references", "gemini.md"))
@@ -716,6 +716,18 @@ class Project(Fixture):
         self.ok("--project", self.proj, "--tools", "claude")
         for rel in self.COPIES:
             self.assertFalse(os.path.lexists(self.files(*rel)), rel)
+        self.assertEqual(self.sync("--project", self.proj, "--tools", "claude", "--check").returncode, 0)
+
+    def test_the_gate_copy_brings_git_refs(self):
+        """NFX-108: a repo that keeps the gate copy gets git_refs.py too (a missing one is drift), or --mark would refuse."""
+        self.add_copy_sources()
+        write(self.files(".claude", "hooks", "review-gate.py"), "stale\n")
+        r = self.sync("--project", self.proj, "--tools", "claude", "--check")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("drift: " + self.files(".claude", "hooks", "git_refs.py"), r.stdout)
+        self.ok("--project", self.proj, "--tools", "claude")
+        self.assertEqual(read(self.files(".claude", "hooks", "git_refs.py")),
+                         read(os.path.join(ROOT, "claude", "hooks", "git_refs.py")))
         self.assertEqual(self.sync("--project", self.proj, "--tools", "claude", "--check").returncode, 0)
 
     def test_the_skill_copy_brings_its_references(self):
@@ -762,6 +774,17 @@ class Project(Fixture):
         shutil.copy(os.path.join(ROOT, "claude", "skills", "project-setup", "assets", "settings.json"), settings)
         self.assertNotIn("a hook from before NFX-107", self.ok("--project", self.proj, "--tools", "claude").stdout)
 
+    def test_a_hook_that_never_extracts_git_refs_gets_the_nfx_108_note(self):
+        settings = self.files(".claude", "settings.json")
+        new = open(os.path.join(ROOT, "claude", "skills", "project-setup", "assets", "settings.json")).read()
+        before = json.loads(new)
+        hook = before["hooks"]["PreToolUse"][0]["hooks"][0]
+        hook["command"] = hook["command"].replace("git_refs.py", "other.py")
+        write(settings, json.dumps(before))
+        self.assertIn("a hook from before NFX-108", self.ok("--project", self.proj, "--tools", "claude").stdout)
+        shutil.copy(os.path.join(ROOT, "claude", "skills", "project-setup", "assets", "settings.json"), settings)
+        self.assertNotIn("a hook from before NFX-108", self.ok("--project", self.proj, "--tools", "claude").stdout)
+
     def test_project_without_a_list_gets_no_agy_files(self):
         os.remove(os.path.join(self.proj, ".nousfx", "mcp.toml"))
         r = self.sync("--project", self.proj, "--tools", "agy")
@@ -792,7 +815,8 @@ class ProjectSetupSkill(Base):
     def cloud_repo(self, origin_head=None, fetched=True):
         """A repo whose committed gate copy is NousFX's; origin/main (and origin/HEAD) point at that commit."""
         proj, home = os.path.join(self.tmp, "proj"), os.path.join(self.tmp, "h")
-        for rel in ("hooks/review-gate.py", "hooks/pr_create_parser.py", "skills/review-loop/scripts/tier.py"):
+        for rel in ("hooks/review-gate.py", "hooks/pr_create_parser.py", "hooks/git_refs.py",
+                    "skills/review-loop/scripts/tier.py"):
             write(os.path.join(proj, ".claude", *rel.split("/")), read(os.path.join(ROOT, "claude", *rel.split("/"))))
         git = self.git_in(proj)
         git("init", "-q", "-b", "work")
@@ -820,6 +844,23 @@ class ProjectSetupSkill(Base):
         write(os.path.join(home, ".claude", "hooks", "review-gate.py"), "print('global')\n")
         r = self.run_hook(proj, home, "gh pr create")
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))  # local: the global hook judges
+
+    def test_the_extracted_gate_has_git_refs_so_a_cloud_mark_works(self):
+        """NFX-108: review-loop marks with the extracted gate in a cloud session, and that gate refuses without
+        git_refs.py. It is copied from the default branch beside the parser, and left out (no empty file) when absent."""
+        proj, home = self.cloud_repo()
+        self.assertEqual(self.run_hook(proj, home, "ls").returncode, 0)
+        extracted = os.path.join(proj, ".git", "nousfx-gate", "current", "hooks", "git_refs.py")
+        self.assertEqual(read(extracted), read(os.path.join(ROOT, "claude", "hooks", "git_refs.py")))
+
+    def test_a_default_branch_without_git_refs_leaves_no_empty_file(self):
+        proj, home = self.cloud_repo()
+        git = self.git_in(proj)
+        git("rm", "-q", ".claude/hooks/git_refs.py")
+        git("commit", "-q", "-m", "no refs")
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.assertEqual(self.run_hook(proj, home, "ls").returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(proj, ".git", "nousfx-gate", "current", "hooks", "git_refs.py")))
 
     def test_edited_gate_copy_blocks_a_pr_and_never_runs(self):
         """NFX-107 AC1: cloud sessions judge with main's gate, which blocks a PR when the repo copy differs."""

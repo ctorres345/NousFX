@@ -13,6 +13,7 @@ Writes under <home>/.claude (tool "claude", the default):
                              nousfx_prefix.py); other settings kept
   hooks/review-gate.py       the gate hook and its parser, copied from the repo
   hooks/pr_create_parser.py
+  hooks/git_refs.py          the default-branch rule --mark shares with tier.py (NFX-108)
   agents/*.md                from harness/agents (roles) and harness/models.toml (role -> model)
 Writes under <home>/.gemini/config/plugins/nousfx (tool "agy", only when named):
   plugin.json, rules/AGENTS.md, hooks.json and hooks/ (the review gate), skills/<name> links, mcp_config.json
@@ -63,7 +64,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 GATE_BUDGET, GATE_TIMEOUT = nousfx_agy.GATE_BUDGET, nousfx_agy.GATE_TIMEOUT  # one budget for every gate hook
 HOOK_FILES = nousfx_agy.GATE_FILES  # the gate and its parser: the same pair goes to Claude and to agy
 DRIFT_HOOK = "nousfx-drift.py"  # Claude only: agy has no session-start event, so its rules carry a line instead
-CLAUDE_HOOK_FILES = HOOK_FILES + (DRIFT_HOOK,)
+CLAUDE_HOOK_FILES = HOOK_FILES + nousfx_agy.MARK_FILES + (DRIFT_HOOK,)  # git_refs.py: --mark needs it (NFX-108)
 DRIFT_TIMEOUT = 5  # seconds; the hook keeps its own 2 s budget and skips quietly past it
 MATCHER = "Bash|PowerShell|mcp__.*create_pull_request"
 TOOLS = nousfx_mcp.TOOLS

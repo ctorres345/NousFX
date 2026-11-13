@@ -206,6 +206,17 @@ class Workflow(unittest.TestCase):
     def test_merge_base_is_the_diff_base(self):
         self.assertIn('git merge-base "origin/$BASE_REF" HEAD', self.step)
 
+    def test_pr_base_is_passed_when_the_base_tier_py_supports_it(self):
+        """NFX-108: --base-ref only behind a grep guard, so the PR that introduces it still runs on the old tier.py."""
+        self.assertIn("grep -q -- '\"--base-ref\"' \"$gate_dir/tier.py\"", self.step)
+        self.assertIn('set -- --base-ref "$BASE_REF"', self.step)
+        self.assertIn('"$gate_dir/tier.py" --base "$base" "$@"', self.step)
+        self.assertIn("predates NFX-108", self.step)
+
+    def test_git_refs_comes_from_the_base_and_is_optional(self):
+        self.assertIn('git show "origin/$BASE_REF:claude/hooks/git_refs.py" > "$gate_dir/git_refs.py"', self.step)
+        self.assertIn('|| rm -f "$gate_dir/git_refs.py"', self.step)
+
 
 if __name__ == "__main__":
     unittest.main()

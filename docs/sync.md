@@ -14,7 +14,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
         v   python3 -B scripts/nousfx_sync.py [--tools claude,agy]
 ~/.claude/CLAUDE.md                generated, header holds a hash of the sources and names them by path
 ~/.claude/settings.json            review gate, drift warning, deny list and auto-mode allow rules (other settings kept)
-~/.claude/hooks/                   review-gate.py, pr_create_parser.py and nousfx-drift.py
+~/.claude/hooks/                   review-gate.py, pr_create_parser.py, git_refs.py and nousfx-drift.py
 ~/.gemini/config/plugins/nousfx/   (agy) hooks.json, and hooks/ with agy_gate.py and its own copy of the gate
 ```
 
@@ -271,7 +271,7 @@ harness/AGENTS.md + agy.overlay.md + local.md + local.agy.md
 ~/.gemini/config/plugins/nousfx/skills/<name>       link to ~/.agents/skills/<name>
 ~/.gemini/config/plugins/nousfx/mcp_config.json     from the MCP list (below)
 ~/.gemini/config/plugins/nousfx/hooks.json          the review gate on run_command
-~/.gemini/config/plugins/nousfx/hooks/              agy_gate.py, review-gate.py, pr_create_parser.py (copies)
+~/.gemini/config/plugins/nousfx/hooks/              agy_gate.py, review-gate.py, pr_create_parser.py (copies), git_refs.py (copy, not in the hashes: only `--mark` loads it)
 ```
 
 - My own `~/.gemini/config/rules/AGENTS.md` and the global `mcp_config.json` are never read or written. To turn the plugin off I run `agy plugin disable nousfx`.
@@ -292,7 +292,7 @@ harness/AGENTS.md + agy.overlay.md + local.md + local.agy.md
 | `.githooks/pre-push` | The advisory pre-push gate (`claude/githooks/pre-push`) with a generator line. Hand edits are drift. |
 | `.agents/skills` | A link to `../.claude/skills`, only when the repo has that folder and nothing at the link path. |
 | `.mcp.json`, `.nousfx/mcp-owned.json`, `.agents/plugins/nousfx/` | MCP files from `.nousfx/mcp.toml`, and the record of which `.mcp.json` servers sync added; commit them together (see MCP). |
-| `.claude/hooks/review-gate.py`, `pr_create_parser.py`, `.claude/agents/<name>.md`, `.claude/skills/review-loop/` (`SKILL.md`, `scripts/tier.py`, `references/*.md`) | Copies `project-setup` installed for cloud sessions. Refreshed from their NousFX sources (agents rendered as for `~/.claude/agents`) only when the repo already has them; never created, except `references/*.md`, which are created beside an existing `SKILL.md` copy (a missing one is drift). A stale copy is drift, and a real run replaces it (backed up) even when edited by hand. An agent NousFX does not ship is left alone. |
+| `.claude/hooks/review-gate.py`, `pr_create_parser.py`, `git_refs.py`, `.claude/agents/<name>.md`, `.claude/skills/review-loop/` (`SKILL.md`, `scripts/tier.py`, `references/*.md`) | Copies `project-setup` installed for cloud sessions. Refreshed from their NousFX sources (agents rendered as for `~/.claude/agents`) only when the repo already has them; never created, except `references/*.md`, which are created beside an existing `SKILL.md` copy, and `git_refs.py`, which is created beside an existing `review-gate.py` copy (a missing one is drift). A stale copy is drift, and a real run replaces it (backed up) even when edited by hand. An agent NousFX does not ship is left alone. |
 | `.claude/settings.json` | Never written (merged by hand from project-setup's `assets/settings.json`). Sync prints a note when its review-gate hook runs the repo copy without checking for `$HOME/.claude/hooks/review-gate.py`. |
 | `.nousfx/project.toml` | Never written. Sync prints a note when it has no `[check] command`, because the review gate cannot record a review without one (see `docs/review-gate.md`). |
 
