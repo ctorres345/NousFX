@@ -365,6 +365,72 @@ class PrePush(Base):
         self.mark("--findings", "0")
         self.assertEqual(self.run_hook(hook, self.line("claude/x", self.head())), BLOCKED)
 
+    def shots_commit(self, files, branch="cesar/DEM-1-shots"):
+        self.sh("git", "checkout", "-q", "-b", branch)
+        for path, text in files.items():
+            os.makedirs(os.path.dirname(os.path.join(self.repo, path)), exist_ok=True)
+            with open(os.path.join(self.repo, path), "w", encoding="utf-8") as f:
+                f.write(text)
+        self.sh("git", "add", "-A")
+        self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "DEM-1: shots")
+        return self.head()
+
+    def test_a_media_only_shots_branch_passes_without_a_review(self):
+        hook = self.install()
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.sh("git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        sha = self.shots_commit({"shots/DEM-1/a.png": "x"})
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1-shots", sha)), ALLOWED)
+
+    def test_a_shots_branch_passes_in_a_repo_with_no_origin_head(self):
+        hook = self.install()
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")  # a remote added by hand: origin/main, no origin/HEAD
+        sha = self.shots_commit({"shots/DEM-1/a.png": "x"})
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1-shots", sha)), ALLOWED)
+
+    def test_a_code_file_named_like_the_success_line_does_not_open_the_push(self):
+        hook = self.install()
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        sha = self.shots_commit({"shots/DEM-1/a.png": "x", "no review needed.py": "x", "src/no review needed.": "x"})
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1-shots", sha)), BLOCKED)
+
+    def test_a_local_branch_named_like_the_remote_default_cannot_become_the_base(self):
+        hook = self.install()
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.sh("git", "checkout", "-q", "-b", "evil")
+        with open(os.path.join(self.repo, "evil.py"), "w", encoding="utf-8") as f:
+            f.write("x")
+        self.sh("git", "add", "-A")
+        self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "DEM-1: code")
+        self.sh("git", "branch", "origin/main")  # refs/heads/origin/main would win over the short name origin/main
+        sha = self.shots_commit({"shots/DEM-1/a.png": "x"})
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1-shots", sha)), BLOCKED)
+
+    def test_a_rejected_shots_branch_says_why(self):
+        hook = self.install()
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        sha = self.shots_commit({"shots/DEM-1/a.png": "x", "evil.py": "x"})
+        r = subprocess.run(["/bin/sh", hook, "origin", "x"], cwd=self.repo, input=self.line("cesar/DEM-1-shots", sha),
+                           env={**os.environ, "GIT_DIR": os.path.join(self.repo, ".git"), "REVIEW_GATE_DIR": self.gate_dir},
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, BLOCKED)
+        self.assertIn("evil.py", r.stderr)
+
+    def test_a_shots_branch_that_carries_code_is_still_blocked(self):
+        hook = self.install()
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.sh("git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        sha = self.shots_commit({"shots/DEM-1/a.png": "x", "evil.py": "x"})
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1-shots", sha)), BLOCKED)
+
+    def test_a_shots_branch_is_blocked_by_a_gate_that_does_not_know_check_shots(self):
+        hook = self.install()
+        with open(os.path.join(self.gate_dir, "review-gate.py"), "w", encoding="utf-8") as f:
+            # An old gate: it exits 0 and prints nothing for a command it does not know, and blocks a plain check.
+            f.write("import sys\nsys.exit(2 if sys.argv[1:2] == ['check'] else 0)\n")
+        sha = self.shots_commit({"shots/DEM-1/a.png": "x"})
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1-shots", sha)), BLOCKED)
+
     def test_refuses_a_gate_dir_inside_a_work_tree(self):
         hook = self.install()
         self.mark("--findings", "0")

@@ -246,8 +246,9 @@ Blocked: branch "{branch}" is not named {prefix}/<JIRA-KEY> (for example {prefix
 """
 
 
-def git(args, cwd, env=None):
-    """git's stdout. RuntimeError when git fails, GateTimeout when it does not answer in time."""
+def git(args, cwd, env=None, strip=True):
+    """git's stdout (stripped unless strip=False, for `-z` output whose first path may start with a space).
+    RuntimeError when git fails, GateTimeout when it does not answer in time."""
     timeout = 30
     if DEADLINE is not None:
         timeout = min(30, DEADLINE - time.monotonic())
@@ -260,7 +261,7 @@ def git(args, cwd, env=None):
         raise GateTimeout(TIMED_OUT) from None
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip())
-    return r.stdout.strip()
+    return r.stdout.strip() if strip else r.stdout
 
 
 def git_path(name, cwd):
@@ -730,6 +731,75 @@ def check_commits(argv):
               "or ask the repo owner for the `branch-exception` label.", file=sys.stderr)
         return 1
     print("Commit keys checked.")
+    return 0
+
+
+SHOTS_MEDIA = {"png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"}
+SHOTS_MAX_COMMITS = 100
+
+
+def shots_path_ok(path, key):
+    """True for shots/<KEY>/<name>.<media extension>, at any depth under the key, with no empty, `.` or `..` part."""
+    parts = path.split("/")
+    if len(parts) < 3 or parts[0] != "shots" or parts[1] != key or any(p in ("", ".", "..") for p in parts):
+        return False
+    stem, _, ext = parts[-1].rpartition(".")
+    return bool(stem) and ext.lower() in SHOTS_MEDIA
+
+
+def check_shots(argv):
+    """`check-shots BRANCH --head SHA [--base REF] [--cwd DIR]` (pre-push, NFX-143): 0 when BRANCH is
+    `<prefix>/<KEY>-shots` and every commit after the merge base with REF (with no REF or no merge base, its whole
+    history) adds, changes or deletes only media files under shots/<KEY>/, each left a regular file (mode 100644, so no
+    symlink or submodule), with no merge commit. Anything else, and any git error, is 1: the caller then runs the
+    normal check, which blocks. A screenshots branch never merges, so it carries no review; this keeps code off it."""
+    cwd = option(argv, "--cwd") or os.getcwd()
+    base, head = option(argv, "--base"), option(argv, "--head")
+    if len(argv) < 3 or argv[2].startswith("--") or not head:
+        print("usage: review-gate.py check-shots BRANCH --head SHA [--base REF] [--cwd DIR]", file=sys.stderr)
+        return 1
+    branch, prefix = argv[2], branch_prefix()
+    m = re.fullmatch(rf"{re.escape(prefix) if prefix else '[a-z0-9-]+'}/({BRANCH_KEY})-shots", branch)
+    if m is None:
+        print(f'Branch "{branch}" is not named {prefix or "<prefix>"}/<JIRA-KEY>-shots.', file=sys.stderr)
+        return 1
+    key = m.group(1)
+    try:
+        commit = git(["--no-replace-objects", "rev-parse", "--verify", "--quiet", f"{head}^{{commit}}"], cwd)
+        merge_base = None
+        if base:
+            git(["--no-replace-objects", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], cwd)  # a bad base fails closed
+            try:
+                merge_base = git(["--no-replace-objects", "merge-base", base, commit], cwd)
+            except RuntimeError:  # unrelated histories: judge the whole tree
+                merge_base = None
+        # Every commit the push adds is judged on its own, so a code file added in one commit and dropped in a later
+        # one still fails. A merge commit has no single diff to judge, so it fails too.
+        rng = [f"{merge_base}..{commit}"] if merge_base else [commit]
+        if git(["--no-replace-objects", "rev-list", "--merges", *rng], cwd):
+            print(f"{branch} holds a merge commit; a screenshots branch must be a plain line of commits.", file=sys.stderr)
+            return 1
+        commits = git(["--no-replace-objects", "rev-list", *rng], cwd).split()
+        if len(commits) > SHOTS_MAX_COMMITS:
+            print(f"{branch} adds {len(commits)} commits; a screenshots branch holds at most {SHOTS_MAX_COMMITS}.", file=sys.stderr)
+            return 1
+        records = []
+        for c in commits:  # strip=False: a path may start with a space
+            parts = git(["--no-replace-objects", "diff-tree", "-r", "--root", "--no-commit-id", "--no-renames", "--ignore-submodules=none", "--raw", "-z", c], cwd, strip=False).split("\0")
+            for meta, path in zip(parts[0::2], parts[1::2]):
+                records.append((path, meta.split(" ")[1], meta.split(" ")[-1]))  # path, new mode, status
+    except (RuntimeError, GateTimeout, IndexError) as e:
+        print(f"Cannot read {head}: {e}", file=sys.stderr)
+        return 1
+    paths = sorted({p for p, _, _ in records})
+    # A deletion has no new mode (000000); every other change must leave a regular file (100644), never a default.
+    bad = [p for p, mode, status in records if not shots_path_ok(p, key) or (status != "D" and mode != "100644")]
+    if not paths or bad:
+        print(f"{branch} is not a screenshots-only branch: "
+              + (", ".join(bad[:5]) + (" ..." if len(bad) > 5 else "") if bad else "it changes nothing")
+              + f". Allowed: media files (png, jpg, gif, webp, mp4, mov, webm) under shots/{key}/.", file=sys.stderr)
+        return 1
+    print(f"{branch}: {len(paths)} media file(s) under shots/{key}/, no review needed.")
     return 0
 
 
@@ -1462,6 +1532,8 @@ if __name__ == "__main__":
         sys.exit(check_branch(sys.argv))
     if sys.argv[1:2] == ["check-commits"]:
         sys.exit(check_commits(sys.argv))
+    if sys.argv[1:2] == ["check-shots"]:
+        sys.exit(check_shots(sys.argv))
     if "--allow-branch" in sys.argv:
         sys.exit(allow_branch(sys.argv))
     sys.exit(mark(sys.argv) if "--mark" in sys.argv else gate(sys.argv))
