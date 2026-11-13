@@ -61,9 +61,20 @@ while read -r lref lsha rref rsha; do
       # A screenshots branch never merges: it may skip the review when it holds only media under shots/<KEY>/ (NFX-143).
       # Pass only on the gate's own success line, so a gate that does not know check-shots cannot let a push through.
       base=""
-      [ -n "$default" ] && base="origin/$default"
-      out=$(python3 -I -B "$script" check-shots "$branch" --head "$lsha" ${base:+--base "$base"} --cwd "$root" </dev/null 2>/dev/null) || out=""
-      case "$out" in *"no review needed."*) continue ;; esac ;;
+      if [ -n "$default" ]; then base="origin/$default"
+      else # a repo set up with `git remote add` has no origin/HEAD
+        for guess in origin/main origin/master; do
+          git rev-parse --verify --quiet "$guess^{commit}" >/dev/null 2>&1 && { base=$guess; break; }
+        done
+      fi
+      # Exit 0 AND the success line on stdout. The reason for a rejection goes to stderr and names the offending paths,
+      # which anyone can name "no review needed.", so stderr is never part of the test.
+      errf=$(mktemp) || fail "cannot create a temp file"
+      if out=$(python3 -I -B "$script" check-shots "$branch" --head "$lsha" ${base:+--base "$base"} --cwd "$root" </dev/null 2>"$errf"); then
+        case "$out" in *"no review needed.") rm -f "$errf"; continue ;; esac
+      fi
+      [ -s "$errf" ] && { printf 'pre-push: ' >&2; cat "$errf" >&2; }
+      rm -f "$errf" ;;
   esac
   tree=$(git rev-parse --verify --quiet "$lsha^{tree}" 2>/dev/null) || fail "cannot read the commit $lsha pushed to $branch"
   python3 -I -B "$script" check --cwd "$root" --command "gh pr create" --tree "$tree" --branch "$branch" </dev/null || exit 2

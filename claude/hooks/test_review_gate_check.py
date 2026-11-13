@@ -382,6 +382,28 @@ class PrePush(Base):
         sha = self.shots_commit({"shots/DEM-1/a.png": "x"})
         self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1-shots", sha)), ALLOWED)
 
+    def test_a_shots_branch_passes_in_a_repo_with_no_origin_head(self):
+        hook = self.install()
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")  # a remote added by hand: origin/main, no origin/HEAD
+        sha = self.shots_commit({"shots/DEM-1/a.png": "x"})
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1-shots", sha)), ALLOWED)
+
+    def test_a_code_file_named_like_the_success_line_does_not_open_the_push(self):
+        hook = self.install()
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        sha = self.shots_commit({"shots/DEM-1/a.png": "x", "no review needed.py": "x", "src/no review needed.": "x"})
+        self.assertEqual(self.run_hook(hook, self.line("cesar/DEM-1-shots", sha)), BLOCKED)
+
+    def test_a_rejected_shots_branch_says_why(self):
+        hook = self.install()
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        sha = self.shots_commit({"shots/DEM-1/a.png": "x", "evil.py": "x"})
+        r = subprocess.run(["/bin/sh", hook, "origin", "x"], cwd=self.repo, input=self.line("cesar/DEM-1-shots", sha),
+                           env={**os.environ, "GIT_DIR": os.path.join(self.repo, ".git"), "REVIEW_GATE_DIR": self.gate_dir},
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, BLOCKED)
+        self.assertIn("evil.py", r.stderr)
+
     def test_a_shots_branch_that_carries_code_is_still_blocked(self):
         hook = self.install()
         self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")
