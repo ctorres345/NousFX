@@ -1,30 +1,29 @@
 # NousFX roadmap
 
-- Date: 2026-11-13 (NFX-137, 109 and 115 merged; NFX-113 in progress)
-- HEAD: `c21f86b` on `main` (NFX-113 is on branch `cesar/NFX-113`, 0 other open PRs)
+- Date: 2026-11-13 (v1.2.0 release PR NFX-144)
+- HEAD: `e9b41b1` on `main` (NFX-144 is on branch `cesar/NFX-144`)
 - Source: Jira NFX, `statusCategory != Done` (25 tickets) and Done in the last 14 days (117 tickets); `.claude/handoff.md`; `CHANGELOG.md`
-- Since last run (2026-11-06): the open count went from 32 to 25. v1.1 shipped (2026-11-09). v1.2 is down to NFX-113 and NFX-125. Unattended mode moved to v1.4 on 2026-11-09.
+- Since last run (2026-11-06): the open count went from 32 to 25. v1.1 shipped (2026-11-09). v1.2 is code-complete and ships as `v1.2.0` (NFX-125 moved to v1.3). Unattended mode moved to v1.4 on 2026-11-09.
 
 ## Answer
 
-- v1.2 "Hardened harness": 2 tickets left. NFX-113 (drift cleanup, in progress, this PR) and NFX-125 (live checks on your devices).
-- After the NFX-113 PR merges, only NFX-125 and your manual checks stand between you and the `v1.2.0` tag.
-- Next release is v1.3 "Via 2": 4 tickets. NFX-20 blocks NFX-25. Start with NFX-20 (it needs a Fable plan: `fable-review`).
+- v1.2 "Hardened harness": done. The NFX-144 PR dates the CHANGELOG; the tag follows its merge. NFX-125 (Windows live checks, device) moved to v1.3.
+- Next release is v1.3 "Via 2": 5 tickets, NFX-125 among them. NFX-20 blocks NFX-25. Start with NFX-20 (it needs a Fable plan: `fable-review`).
 
 ## Snapshot
 
 | Group | Open | Top priority | Status |
 | --- | --- | --- | --- |
-| v1.2 Hardened harness | 2 | Medium | NFX-113 in progress, NFX-125 `ready-for-human` |
-| v1.3 Via 2 | 4 | Medium | NFX-20, 25, 111, 141 |
+| v1.2 Hardened harness | 0 | n/a | shipped (NFX-144 dates the heading) |
+| v1.3 Via 2 | 5 | Medium | NFX-20, 25, 111, 125, 141 |
 | v1.4 Unattended mode and PR evidence | 6 | High (NFX-87) | NFX-76, 77, 87, 90, 91, 112 |
 | Later | 8 | Medium | NFX-15, 21, 22, 43, 45, 50, 60, 67 |
 | Epics (milestones) | 5 | Medium | NFX-2, 3, 4, 34, 84 |
-| **Total** | **25** | | 5 epics + 20 tickets |
+| **Total** | **25** (NFX-144 is extra) | | 5 epics + 20 tickets |
 
 ```
 v1.1  [##########] shipped 2026-11-09
-v1.2  [#########-] only NFX-113 (code) and NFX-125 (devices) left
+v1.2  [##########] shipped 2026-11-13
 v1.3  [####------] NFX-81, 82, 124 done; 4 open
 v1.4  [----------] not started
 ```
@@ -35,8 +34,8 @@ v1.4  [----------] not started
 Jira NFX
 ├── Epics: M1 Via core (2), M2 gate and exports (3), M3 share-ready (4), M4 portable harness (34), M5 unattended-ready (84)
 └── Releases (fixVersion)
-    ├── v1.2  113, 125
-    ├── v1.3  20, 25, 111, 141
+    ├── v1.2  shipped
+    ├── v1.3  20, 25, 111, 125, 141
     ├── v1.4  76, 77, 87, 90, 91, 112
     └── Later 15, 21, 22, 43, 45, 50, 60, 67
 ```
@@ -62,12 +61,9 @@ NFX-91 -> NFX-87 -> NFX-90
 
 ## Per release
 
-### v1.2 (NFX-113 and NFX-125)
+### v1.2
 
-| Key | Title | Priority | Status | Blocked by |
-| --- | --- | --- | --- | --- |
-| NFX-113 | Drift cleanup: delete `claude/agents`, rules under budget, refresh roadmap | Medium | In progress | none |
-| NFX-125 | Live checks still unproven: agy plugin and gate, Windows sync | Medium | To Do, `ready-for-human`, env-device | none |
+Shipped 2026-11-13. Every code ticket is Done. NFX-125 moved to v1.3.
 
 ### v1.3
 
@@ -77,6 +73,7 @@ NFX-91 -> NFX-87 -> NFX-90
 | NFX-25 | Meet Via docs, CONTRIBUTING and a fresh-user test | Medium | To Do | NFX-20 |
 | NFX-111 | Via check: a pending-human state that doesn't count as open | Medium | To Do | none |
 | NFX-141 | ticket-check: can S tickets with explicit file paths skip it? | Medium | To Do, `needs-triage` | none |
+| NFX-125 | Live checks still unproven: Windows sync (agy plugin and gate proven on the Mac 2026-11-13) | Medium | To Do, `ready-for-human`, env-device | none |
 
 ### v1.4
 
@@ -101,7 +98,7 @@ NFX-15 learning loop, 21 Obsidian run note, 22 `/via export figma` (device), 43 
 | Fact: stale ticket text | NFX-113 says "land after NFX-77", but NFX-77 moved to v1.4 and has no link to NFX-113. | Ignore; edit the ticket if you want. |
 | Fact: CHANGELOG vs Jira (fixed in the NFX-113 PR) | `CHANGELOG.md` kept every unreleased entry under `1.3.0`. Jira puts NFX-81 and 82 in v1.3; the others are v1.2. | Done: the v1.2 items moved under `1.2.0`; NFX-81 and 82 stay under `1.3.0`. |
 | Fact: cross-release block | NFX-112 (v1.4) is blocked by NFX-111 (v1.3). | Fine: v1.3 lands first. |
-| Fact: missing fixVersion | NFX-142 and NFX-143 are Done with no fixVersion. | Set v1.2 in Jira (your call). |
+| Fact: missing fixVersion (fixed) | NFX-142 and NFX-143 had no fixVersion. | Done: set to v1.2 on 2026-11-13. |
 | Check: epic state | NFX-2, 3 and 4 are open although v1.0 and v1.1 shipped. | Confirm which epics still have open children, then close the finished ones. |
 | Check: unconfirmed live work | NFX-110, NFX-115 and the pinned checkout SHA are merged but unverified on real GitHub or Windows (handoff). | NFX-125 and the manual steps cover them. |
 | Order violations | Done tickets with an open blocker: none found. Epics with every child Done: not computed (no child list queried). | |
@@ -110,25 +107,21 @@ NFX-15 learning loop, 21 Obsidian run note, 22 `/via export figma` (device), 43 
 
 | Ticket | Unblocks | Value | Risk | Priority | Effort | Total |
 | --- | --- | --- | --- | --- | --- | --- |
-| NFX-113 | 1 (release) | 2 | 1 | 2 | M | 6 |
-| NFX-125 | 1 (release) | 2 | 3 | 2 | S | 8 (needs you) |
+| NFX-125 | 0 | 2 | 3 | 2 | S | 7 (needs you; Windows) |
 | NFX-20 | 2 | 3 | 1 | 2 | M | 8 |
 | NFX-111 | 1 | 2 | 0 | 2 | S | 5 |
 | NFX-25 | 0 | 2 | 0 | 2 | M | 4 |
 | NFX-141 | 0 | 1 | 0 | 2 | S | 3 |
 
-1. NFX-113: last v1.2 code ticket; its PR is open for you to merge.
-2. NFX-125: needs your devices. It gates the `v1.2.0` tag.
-3. NFX-20: starts v1.3 and unblocks NFX-25; it carries `fable-review`, so ask before using `architect`.
-4. NFX-111: small and unblocks NFX-112.
-5. NFX-25, then NFX-141 (needs triage first).
+1. NFX-125: needs your Windows PC (agy gate on the Mac is proven).
+2. NFX-20: starts v1.3 and unblocks NFX-25; it carries `fable-review`, so ask before using `architect`.
+3. NFX-111: small and unblocks NFX-112.
+4. NFX-25, then NFX-141 (needs triage first).
 
 **Defer:** all of v1.4 (starts after v1.3), and every "Later" ticket. NFX-87 is High, but its blocker NFX-91 needs an emulator.
 
 ## Needs you
 
-- Merge the NFX-113 PR, then tag `v1.2.0` (follow `docs/RUNBOOK.md`).
-- NFX-125 on your devices (agy plugin and gate, Windows sync).
-- Manual ACs: NFX-110 (throwaway PR with and without `review-skip`), NFX-115 on real Windows.
-- Run `python3 -B scripts/nousfx_sync.py --tools claude` to install the drift hook.
-- Decide whether to set the missing fixVersion on NFX-142 and 143.
+- Merge the NFX-144 PR, then I tag `v1.2.0` and mark v1.2 released in Jira (follow `docs/RUNBOOK.md`).
+- NFX-125, Windows part: `python scripts\nousfx_sync.py --tools claude,agy --check` on the Windows PC, and the NFX-115 check there.
+- Merge the five project setup PRs (demonica #9, Ganamnesis #87, Animus #150, PawlyPaint #21, Yuyay #33).

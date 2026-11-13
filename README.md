@@ -220,6 +220,15 @@ Read-only. Costs are relative weights at list price, not a bill. It shows:
 ## Roadmap
 Tracked in Jira project **NFX**.
 
+| Release | Theme | Status |
+|---|---|---|
+| v1.0, v1.1 | First releases | Shipped 2026-11-09 |
+| **v1.2** | **Hardened harness**: tickets end in `Proof:` lines that `prove.py` runs, the gate reads its check command from the default branch, CI verifies the review attestation, and one source for the agents (`harness/agents`) | **Shipped 2026-11-13.** The Windows live checks moved to v1.3 |
+| v1.3 | Via 2: a gate for UI PRs, docs and a fresh-user test | Next |
+| v1.4 | Unattended mode and PR evidence | Later |
+
+Details of each release are in [CHANGELOG.md](CHANGELOG.md).
+
 - **Via, the designer** (named after Octavia, one of my cats). The old UI review skill grew into a designer:
 
   | Command | What it does |
