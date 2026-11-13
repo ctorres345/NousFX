@@ -2,6 +2,9 @@
 
 ## 1.3.0 (unreleased)
 
+### Review gate
+- A screenshots branch can be pushed. In a project with the pre-push hook, `<prefix>/<KEY>-shots` was blocked (not `<prefix>/<KEY>`, no review mark), so PR screenshots could not go up. A new `review-gate.py check-shots` passes such a branch only when it is named right and everything it changes is a regular media file under `shots/<KEY>/`; the hook asks it first for any `-shots` branch and falls through to the normal check otherwise. Re-run the sync (`nousfx_sync.py --tools claude`, and `--project` per repo) to get the new gate and hook (NFX-143).
+
 ### Tickets
 - The jira-sync audit warns when a `Proof:` command names a repo path that does not exist (`proof-path:<KEY>`, medium). It checks `ready-for-agent` tickets (a draft may name a file it will create), skips `manual:` proofs, flags, globs, URLs, git refs, redirects, `cd` commands and absolute or `~` paths, and never fails the ready check, so a false positive costs a warning, not a blocked ticket (NFX-140).
 

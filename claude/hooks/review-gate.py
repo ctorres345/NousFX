@@ -733,6 +733,66 @@ def check_commits(argv):
     return 0
 
 
+SHOTS_MEDIA = {"png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"}
+
+
+def shots_path_ok(path, key):
+    """True for shots/<KEY>/<name>.<media extension>, at any depth under the key, with no empty, `.` or `..` part."""
+    parts = path.split("/")
+    if len(parts) < 3 or parts[0] != "shots" or parts[1] != key or any(p in ("", ".", "..") for p in parts):
+        return False
+    stem, _, ext = parts[-1].rpartition(".")
+    return bool(stem) and ext.lower() in SHOTS_MEDIA
+
+
+def check_shots(argv):
+    """`check-shots BRANCH --head SHA [--base REF] [--cwd DIR]` (pre-push, NFX-143): 0 when BRANCH is
+    `<prefix>/<KEY>-shots` and every path it adds, changes or deletes (against the merge base with REF; with no REF or
+    no merge base, every path in its tree) is a media file under shots/<KEY>/ and every file it holds is a regular
+    one (mode 100644, so no symlink or submodule). Anything else, and any git error, is 1: the caller then runs the
+    normal check, which blocks. A screenshots branch never merges, so it carries no review; this keeps code off it."""
+    cwd = option(argv, "--cwd") or os.getcwd()
+    base, head = option(argv, "--base"), option(argv, "--head")
+    if len(argv) < 3 or argv[2].startswith("--") or not head:
+        print("usage: review-gate.py check-shots BRANCH --head SHA [--base REF] [--cwd DIR]", file=sys.stderr)
+        return 1
+    branch, prefix = argv[2], branch_prefix()
+    m = re.fullmatch(rf"{re.escape(prefix) if prefix else '[a-z0-9-]+'}/({BRANCH_KEY})-shots", branch)
+    if m is None:
+        print(f'Branch "{branch}" is not named {prefix or "<prefix>"}/<JIRA-KEY>-shots.', file=sys.stderr)
+        return 1
+    key = m.group(1)
+    try:
+        commit = git(["rev-parse", "--verify", "--quiet", f"{head}^{{commit}}"], cwd)
+        merge_base = None
+        if base:
+            git(["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], cwd)  # a bad base fails closed
+            try:
+                merge_base = git(["merge-base", base, commit], cwd)
+            except RuntimeError:  # unrelated histories: judge the whole tree
+                merge_base = None
+        if merge_base:
+            changed = git(["diff-tree", "-r", "--no-renames", "--name-only", "-z", merge_base, commit], cwd)
+        else:
+            changed = git(["ls-tree", "-r", "--name-only", "-z", commit], cwd)
+        modes = {}
+        for entry in git(["ls-tree", "-r", "-z", commit], cwd).split("\0"):
+            info, _, name = entry.partition("\t")
+            modes[name] = info.split(" ")[0]
+    except (RuntimeError, GateTimeout) as e:
+        print(f"Cannot read {head}: {e}", file=sys.stderr)
+        return 1
+    paths = [p for p in changed.split("\0") if p]
+    bad = [p for p in paths if not shots_path_ok(p, key) or modes.get(p, "100644") != "100644"]
+    if not paths or bad:
+        print(f"{branch} is not a screenshots-only branch: "
+              + (", ".join(bad[:5]) + (" ..." if len(bad) > 5 else "") if bad else "it changes nothing")
+              + f". Allowed: media files (png, jpg, gif, webp, mp4, mov, webm) under shots/{key}/.", file=sys.stderr)
+        return 1
+    print(f"{branch}: {len(paths)} media file(s) under shots/{key}/, no review needed.")
+    return 0
+
+
 SHORT_VALUE_FLAGS = "FCcStu"  # `git commit` short flags that take the rest of the word (or the next one) as a value
 COMMIT_OPT_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--exec-path", "--namespace"}  # git options before `commit`
 HEREDOC_SUBJECT = re.compile(r"<<-?[ \t]*(['\"]?)\w+\1[ \t]*\n[ \t]*(\S[^\n]*)")
@@ -1462,6 +1522,8 @@ if __name__ == "__main__":
         sys.exit(check_branch(sys.argv))
     if sys.argv[1:2] == ["check-commits"]:
         sys.exit(check_commits(sys.argv))
+    if sys.argv[1:2] == ["check-shots"]:
+        sys.exit(check_shots(sys.argv))
     if "--allow-branch" in sys.argv:
         sys.exit(allow_branch(sys.argv))
     sys.exit(mark(sys.argv) if "--mark" in sys.argv else gate(sys.argv))
