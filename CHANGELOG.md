@@ -3,7 +3,7 @@
 ## 1.3.0 (unreleased)
 
 ### Tickets
-- The jira-sync audit warns when a `Proof:` command names a repo path that does not exist (`proof-path:<KEY>`, medium). It checks open tickets, skips `manual:` proofs, flags, globs, URLs and absolute or `~` paths, and never fails the ready check, so a false positive costs a warning, not a blocked ticket (NFX-140).
+- The jira-sync audit warns when a `Proof:` command names a repo path that does not exist (`proof-path:<KEY>`, medium). It checks `ready-for-agent` tickets (a draft may name a file it will create), skips `manual:` proofs, flags, globs, URLs, git refs, redirects, `cd` commands and absolute or `~` paths, and never fails the ready check, so a false positive costs a warning, not a blocked ticket (NFX-140).
 
 ### Via
 - The prototype page is easier to compare and to read (NFX-82). At 700 px and narrower each finding gets a CSS-only Before/After switch (After selected) so you no longer scroll past two 844 px frames; the spec panel highlights the Light or Dark column for the selected theme (bolder header too, not colour alone); the "Jump to finding" list is plain underlined links, no longer styled like the variant tabs; the toggle is named "Mockup theme"; the before image's alt names the screen, theme and issue. `audit.md` and `prototype.md` tell variant authors to redraw the whole screen, not one element in an empty frame.

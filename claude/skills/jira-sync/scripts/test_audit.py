@@ -9,7 +9,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from audit import audit, commit_keys, next_up, repo_evidence
+from audit import audit, commit_keys, missing_proof_paths, next_up, repo_evidence
 
 READY = ("## Goal\nx\n## Scope\nx\n## Acceptance criteria\n- [ ] x works. Proof: `true`\n"
          "- [ ] x on device. Proof: manual: open the app\n## Failure modes\nx\n## Environment\nx\n"
@@ -159,12 +159,18 @@ class ProofPaths(unittest.TestCase):
         self.assertEqual(len(flagged), 1)
 
     def test_existing_path_passes(self):
-        self.assertEqual(self.found("`python3 -I claude/hooks/test_real.py`")[0], [])
-        self.assertEqual(self.found("`pytest claude/hooks/test_real.py::TestX`")[0], [])
+        # The same command with a missing sibling is flagged, so an empty result shows the check ran.
+        gone = "claude/hooks/test_gone.py"
+        for command in ("python3 -I {}", "pytest {}::TestX", "ls {}"):
+            real = command.format("claude/hooks/test_real.py")
+            self.assertEqual(self.found(f"`{real}`")[0], [], real)
+            self.assertEqual(len(self.found(f"`{command.format(gone)}`")[0]), 1, command)
         self.assertEqual(self.found("`ls claude/hooks`")[0], [])
 
     def test_manual_and_pathless_commands_pass(self):
-        for proof in ("manual: open claude/hooks/test_gone.py", "`true`", "`python3 -B scripts`".replace("scripts", "-m unittest")):
+        gone = "claude/hooks/test_gone.py"
+        self.assertEqual(len(self.found(f"`python3 {gone}`")[0]), 1)
+        for proof in (f"manual: open {gone}", f"manual: run `python3 {gone}`", "`true`", "`python3 -B -m unittest`"):
             self.assertEqual(self.found(proof)[0], [], proof)
 
     def test_flags_globs_urls_and_absolute_paths_pass(self):
@@ -172,20 +178,71 @@ class ProofPaths(unittest.TestCase):
                       "`curl http://host/a/b.json`", "`cat /etc/hosts`", "`cat ~/a/b.txt`", "`cat $HOME/a/b.txt`"):
             self.assertEqual(self.found(proof)[0], [], proof)
 
+    def test_refs_modules_redirects_and_api_paths_pass(self):
+        for proof in ("`git diff origin/main...HEAD`", "`python3 -m unittest scripts.test_audit`",
+                      "`grep -q foo claude/hooks/test_real.py 2>/dev/null`", "`python3 claude/hooks/test_real.py > out/log.txt`",
+                      "`python3 claude/hooks/test_real.py >out/log.txt`", "`gh api repos/o/r/pulls`", "`cat ../outside.txt`"):
+            self.assertEqual(self.found(proof)[0], [], proof)
+
+    def test_quoted_args_fd_redirects_cd_and_git_paths_pass(self):
+        real = "claude/hooks/test_real.py"
+        for proof in ('`bash -c "python3 claude/gone.py"`', f"`python3 {real} 2> err.txt`", f"`python3 {real} 2>> log.txt`",
+                      f"`python3 {real} &> out.txt`", "`cd claude/hooks && python3 -B test_gone.py`",
+                      "`git show HEAD:claude/hooks/x.py`", "`git show origin/main:claude/hooks/x.py`"):
+            self.assertEqual(self.found(proof)[0], [], proof)
+
+    def test_unspaced_shell_operators_do_not_hide_a_path(self):
+        for proof in ("`python3 claude/hooks/test_gone.py|tee log`", "`python3 claude/hooks/test_gone.py;echo ok`",
+                      "`python3 claude/hooks/test_gone.py&&echo ok`"):
+            self.assertEqual(len(self.found(proof)[0]), 1, proof)
+        for proof in ("test checks `response.json()` is empty", "`el.html()`"):
+            self.assertEqual(self.found(proof)[0], [], proof)
+        self.assertEqual(self.found("`python3 claude/hooks/test_real.py|tee log`")[0], [])
+
+    def test_a_span_that_is_only_a_path_is_checked(self):
+        for proof in ("`scripts/gone.sh`", "`./scripts/gone.sh`", "new test in `claude/hooks/test_gone.py`",
+                      "`true` and see `docs/gone.md`"):
+            self.assertEqual(len(self.found(proof)[0]), 1, proof)
+        self.assertEqual(self.found("new test in `claude/hooks/test_real.py`")[0], [])
+
+    def test_emphasised_labels_and_directory_flags(self):
+        gone = "python3 claude/hooks/test_gone.py"
+        self.assertEqual(self.found(f"manual: run `{gone}`")[0], [])
+        item = f"- [ ] x. **Proof:** manual: run `{gone}`"
+        self.assertEqual(missing_proof_paths([item], self.repo), [])
+        self.assertEqual(missing_proof_paths([f"- [ ] x. _Proof:_ `{gone}`"], self.repo), ["claude/hooks/test_gone.py"])
+        self.assertEqual(self.found("`git -C claude/hooks ls-files test_x.py`")[0], [])
+        self.assertEqual(self.found("`npm --prefix web run t.js`")[0], [])
+
+    def test_quoted_proof_label_in_the_prose_does_not_hide_the_command(self):
+        item = "- [ ] A ticket with no `Proof:` line is flagged. Proof: `python3 claude/hooks/test_gone.py`"
+        self.assertEqual(missing_proof_paths([item], self.repo), ["claude/hooks/test_gone.py"])
+        self.assertEqual(missing_proof_paths(["- [ ] x. proof: `python3 claude/hooks/test_gone.py`"], self.repo),
+                         ["claude/hooks/test_gone.py"])
+
     def test_warning_never_blocks_the_ticket(self):
         flagged, findings = self.found("`python3 claude/hooks/test_gone.py`")
         self.assertEqual(len(flagged), 1)
         self.assertNotIn("ready-check:DEM-1", {f["id"] for f in findings})
 
-    def test_warns_before_ready_for_agent_but_not_on_done_tickets(self):
-        self.assertEqual(len(self.found("`python3 claude/hooks/test_gone.py`", labels=("env-none",))[0]), 1)
+    def test_warns_on_ready_for_agent_only_and_not_on_done_tickets(self):
+        self.assertEqual(len(self.found("`python3 claude/hooks/test_gone.py`")[0]), 1)
+        self.assertEqual(self.found("`python3 claude/hooks/test_gone.py`", labels=("env-none",))[0], [])  # a draft may name a file it will create
         text = READY.replace("Proof: `true`", "Proof: `python3 claude/hooks/test_gone.py`")
-        done = audit("DEM", dict([issue("DEM-1", cat="done", text=text)]), evidence(repo=self.repo))
+        ready = ("env-none", "ready-for-agent")
+        open_ticket = audit("DEM", dict([issue("DEM-1", labels=ready, text=text)]), evidence(repo=self.repo))
+        self.assertIn("proof-path:DEM-1", {f["id"] for f in open_ticket})  # control: only the status differs below
+        done = audit("DEM", dict([issue("DEM-1", cat="done", labels=ready, text=text)]), evidence(repo=self.repo))
         self.assertNotIn("proof-path:DEM-1", {f["id"] for f in done})
 
     def test_no_repo_skips_the_check(self):
         text = READY.replace("Proof: `true`", "Proof: `python3 claude/hooks/test_gone.py`")
-        self.assertNotIn("proof-path:DEM-1", ids([issue("DEM-1", text=text)]))
+        ready = ("env-none", "ready-for-agent")
+        self.assertIn("proof-path:DEM-1", ids([issue("DEM-1", labels=ready, text=text)], evidence(repo=self.repo)))  # control
+        self.assertNotIn("proof-path:DEM-1", ids([issue("DEM-1", labels=ready, text=text)]))
+
+    def test_directory_flag_with_equals_skips_the_command(self):
+        self.assertEqual(self.found("`node --prefix=web src/gone.js`")[0], [])
 
 
 class NextUp(unittest.TestCase):

@@ -14,7 +14,11 @@ from collections import defaultdict
 REQUIRED_SECTIONS = ["goal", "scope", "acceptance criteria", "failure modes", "environment", "review", "human gates", "blocked by"]
 CHECKBOX = re.compile(r"^\s*[-*]\s*\\?\[[ xX]\\?\]")  # Jira escapes the brackets
 PROOF = re.compile(r"proof:\s*\S", re.I)
-NOT_REALLY_DONE = re.compile(r"won.?t|duplicate|declined|cannot|can.?t|abandon|obsolete|invalid", re.I)
+REDIRECT = re.compile(r"^(\d*[<>]{1,2}|&>>?)$")
+PROOF_LABEL = re.compile(r"(?<![-`A-Za-z0-9])Proof:", re.I)
+CHANGES_DIRECTORY = {"cd", "pushd", "-C", "--prefix", "--cwd", "--directory"}
+FILE_EXTENSIONS = {"py", "md", "sh", "json", "js", "ts", "tsx", "kt", "kts", "swift", "dart", "toml", "yml", "yaml", "txt", "css", "html"}
+NOT_REALLY_DONE =re.compile(r"won.?t|duplicate|declined|cannot|can.?t|abandon|obsolete|invalid", re.I)
 UI_WORDS = re.compile(r"\b(ui|ux|screen|screens|button|sheet|dialog|layout|theme|dark mode|icon|empty state|tab bar|"
                       r"navigation bar|animation|visual|redesign|widget)\b", re.I)
 DEPENDENCY_WORDS = r"(?:blocked by|depends on|requires|after|needs|waiting on|waits for)"
@@ -166,19 +170,29 @@ def missing_proof_paths(criteria, repo):
     """Repo-relative file paths named in `command` proofs that do not exist. Flags, globs, URLs and absolute paths are skipped."""
     missing = []
     for item in criteria:
-        _, _, rest = item.partition("Proof:")
-        if rest.strip().lower().startswith("manual:"):
+        found = PROOF_LABEL.search(item)  # the label, not a `Proof:` quoted in the criterion's prose
+        rest = item[found.end():] if found else ""
+        if rest.lstrip("*_ \t").lower().startswith("manual:"):  # also after a bold or italic label
             continue
         for command in re.findall(r"`([^`]*)`", rest):
+            command = re.sub(r"&&|[|;]", " ", command)  # shlex keeps `a.py|tee` as one word; a `)` is left alone so `x.json()` stays a call
             try:
                 tokens = shlex.split(command)
             except ValueError:
                 tokens = command.split()
-            for token in tokens[1:]:
+            if any(t in CHANGES_DIRECTORY or t.split("=", 1)[0] in CHANGES_DIRECTORY for t in tokens):  # later paths are relative to another directory
+                continue
+            redirect = False
+            for token in tokens:  # a bare program name has no slash or file extension, so it is skipped below
+                skip, redirect = redirect, bool(REDIRECT.match(token))  # the word after a bare redirect is a file we write or read
                 path = token.split("::", 1)[0]
-                if (not path or path[0] in "-/~$" or "://" in path or any(c in path for c in "*?[=")
-                        or not ("/" in path or re.search(r"\.\w+$", path))):
+                if (skip or not path or path[0] in "-/~$" or "://" in path or ".." in path or re.search(r"\s", path)
+                        or any(c in path for c in "*?[=<>") or ":" in path):  # a `ref:path` for git
                     continue
+                name = path.rsplit("/", 1)[-1]
+                ext = re.search(r"\.([A-Za-z0-9]{1,5})$", name)
+                if not ext or ("/" not in path and ext.group(1).lower() not in FILE_EXTENSIONS):
+                    continue  # no extension (a directory, a git ref, a URL path), or a dotted module name
                 if not os.path.exists(os.path.join(repo, path)) and path not in missing:
                     missing.append(path)
     return missing
@@ -244,11 +258,11 @@ def audit(project, issues, evidence):
 
         parts = sections(text)
         criteria = [ln.strip() for ln in parts.get("acceptance criteria", "").splitlines() if CHECKBOX.match(ln)]
-        if evidence.get("repo"):
+        if evidence.get("repo") and "ready-for-agent" in labels:
             gone = missing_proof_paths(criteria, evidence["repo"])
             if gone:
                 add("proof-path", key, "medium", "A Proof names a path that does not exist", ", ".join(gone),
-                    "Point the Proof at the file that holds the test")
+                    "Point the Proof at the file that holds the test (ignore it if this ticket creates the file)")
         if "ready-for-agent" in labels:
             problems = []
             for name in REQUIRED_SECTIONS:
