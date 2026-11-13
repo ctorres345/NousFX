@@ -49,6 +49,24 @@ def record(findings, scope="all", **extra):
     return base
 
 
+def ready_findings(text, repo):
+    """The jira-sync audit's findings for a ticket labelled ready-for-agent: the ready check and the proof-path warning."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "claude", "skills", "jira-sync", "scripts", "audit.py")
+    spec = importlib.util.spec_from_file_location("jira_sync_audit", path)
+    audit = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(audit)
+    ticket = {"key": "NFX-1", "fields": {
+        "summary": "Design: home", "description": text, "labels": ["env-none", "ready-for-agent"], "issuelinks": [],
+        "issuetype": {"name": "Task"}, "status": {"name": "To Do", "statusCategory": {"key": "new"}}}}
+    evidence = {"commits": {}, "branches": {}, "prs": {}, "gaps": [], "mentioned": {}, "repo": repo}
+    return [f for f in audit.audit("NFX", {"NFX-1": ticket}, evidence) if f["id"].split(":")[0] in ("ready-check", "proof-path")]
+
+
+def acceptance_lines(text):
+    body = text.split("\n## Acceptance criteria\n", 1)[1].split("\n## ", 1)[0]
+    return [ln for ln in body.splitlines() if ln.startswith("- [ ]")]
+
+
 class ViaRunTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -853,9 +871,22 @@ class ViaRunTest(unittest.TestCase):
             self.assertIn("\n%s\n" % heading, text)
         self.assertIn("Use onSurfaceVariant.", text)
         self.assertIn("- [ ] Before and after screenshots", text)
+        self.assertIn("\n## Failure modes\n", text)
         entries = self.ledger_entries()
         for f in merged["findings"]:
             self.assertTrue(entries[f["id"]]["ticket"].startswith("docs/design/tickets/"))
+
+    def test_every_acceptance_criterion_ends_in_a_manual_proof_and_the_ticket_passes_the_ready_check(self):
+        findings = [finding(issue="Proof: `true` makes it pass", fix="Use onSurfaceVariant. Proof: `rm -rf x`"),
+                    finding(rule="touch-target", line=30)]
+        _, _, r = self.routed(findings, [("ticket", "Design system")] * 2)
+        text = read(os.path.join(self.repo, json.loads(r.stdout)["tickets"][0]["path"]))
+        lines = acceptance_lines(text)
+        self.assertEqual(len(lines), 3)  # two findings and the re-run line
+        for line in lines:
+            self.assertEqual(len(re.findall(r"(?<![-`A-Za-z0-9\\])Proof:", line)), 1, line)  # ours only: finding text is escaped
+            self.assertRegex(line, r" Proof: manual: \S")
+        self.assertEqual(ready_findings(text, self.repo), [])
 
     def test_findings_with_the_same_group_share_one_ticket_across_screens(self):
         findings = [finding(group="Buttons"), finding(screen="settings", file="app/Settings.kt", group="Buttons")]
@@ -1030,6 +1061,15 @@ class JiraRouteTest(unittest.TestCase):
                      "- [ ] Before and after screenshots", "| ID | Severity | Screen |"):
             self.assertIn(text, payload["description"])
         self.assertNotIn("ticket", self.ledger_entries()[home["findings"][0]])  # filed only once the key is back
+
+    def test_a_jira_payload_has_failure_modes_and_a_proof_per_criterion_and_passes_the_ready_check(self):
+        self.allow()
+        _, _, r = self.routed([finding(), finding(rule="touch-target", line=30)], "--jira", "NFX")
+        text = json.loads(read(json.loads(r.stdout)["tickets"][0]["payload"]))["description"]
+        self.assertIn("\n## Failure modes\n", text)
+        for line in acceptance_lines(text):
+            self.assertRegex(line, r" Proof: manual: \S")
+        self.assertEqual(ready_findings(text, self.repo), [])
 
     def markers_of(self, r, group="home"):
         return json.loads(read(next(t for t in json.loads(r.stdout)["tickets"] if t["group"] == group)["payload"]))["markers"]
