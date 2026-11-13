@@ -362,6 +362,7 @@ h2{font-size:1.125rem;font-weight:600;margin:0 0 4px}
 .vp-variant:first-of-type{display:block}
 .vp-finding:has(.vp-variant:target) .vp-variant:first-of-type:not(:target){display:none}
 .vp-variant:target{display:block}
+.vp-variant:focus{outline:none}
 .vp-pair{display:grid;grid-template-columns:minmax(0,390px) minmax(240px,1fr);gap:24px;align-items:start}
 .vp-tab[aria-current]{background:#1d1d1b;color:#fff;border-color:#1d1d1b}
 .vp-why{margin:8px 0 0;font-size:.875rem;max-width:44ch}
@@ -434,7 +435,7 @@ def render(run_name, blocks, tokens):
             tabs = "".join('<a class="vp-tab" href="#%s"%s>%s</a>' % (
                 o["anchor"], ' aria-current="true"' if o is v else "", esc(o["label"])) for o in b["variants"])
             variants.append(
-                '<article class="vp-variant" id="%s" aria-label="%s"><div class="vp-tabs">%s</div><div class="vp-pair">'
+                '<article class="vp-variant" id="%s" tabindex="-1" aria-label="%s"><div class="vp-tabs">%s</div><div class="vp-pair">'
                 '<div><div class="vp-frame vp-scope"><div class="vp-fragment" inert>%s</div></div><p class="vp-why">%s</p></div>%s'
                 '</div></article>'
                 % (v["anchor"], esc(v["label"]), tabs, v["html"], esc(v["rationale"]), v["spec"]))

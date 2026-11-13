@@ -133,6 +133,10 @@ class Build(Base):
             tabs = re.findall(r'<a class="vp-tab" href="#([^"]+)"( aria-current="true")?>', body)
             self.assertEqual(len(tabs), 2)
             self.assertEqual([h for h, cur in tabs if cur], [own])
+        # Activating a tab hides its own row, so the shown variant must take focus (and be announced) instead.
+        self.assertEqual(page.count('class="vp-variant" id='), 2)
+        self.assertEqual(len(re.findall(r'<article class="vp-variant" id="[^"]+" tabindex="-1" aria-label=', page)), 2)
+        self.assertIn(".vp-variant:focus{outline:none}", page)
         self.assertNotIn('class="vp-tabs"', page.split("</style>")[1].split('<article')[0])
         self.assertNotIn("<script", page.lower())
 
