@@ -886,6 +886,7 @@ class ViaRunTest(unittest.TestCase):
         for line in lines:
             self.assertEqual(len(re.findall(r"(?<![-`A-Za-z0-9\\])Proof:", line)), 1, line)  # ours only: finding text is escaped
             self.assertRegex(line, r" Proof: manual: \S")
+        self.assertIn("a person closes the ticket with a Via re-run", text)  # all-manual proofs: prove.py refuses them
         self.assertEqual(ready_findings(text, self.repo), [])
 
     def test_findings_with_the_same_group_share_one_ticket_across_screens(self):
