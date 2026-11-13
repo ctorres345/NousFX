@@ -6,4 +6,4 @@ timeout = 1800
 
 # Files that control the review itself. Read from the default branch like [check] (review-loop tier script, NFX-62).
 [review]
-risk_paths = ["claude/hooks", "claude/githooks", "claude/skills/review-loop", "claude/agents", "harness", "scripts", ".nousfx", "install.sh", "install.ps1"]
+risk_paths = ["claude/hooks", "claude/githooks", "claude/skills/review-loop", "harness", "scripts", ".nousfx", "install.sh", "install.ps1"]

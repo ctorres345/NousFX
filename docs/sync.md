@@ -236,7 +236,7 @@ harness/models.toml     per tool, each role -> model + effort (claude: haiku / s
 - An unknown or missing role fails the run with the agent and role named. Nothing is written.
 - `--dry-run`, `--check`, `--restore` and the backup cover these files like the rest.
 - Sync never deletes an agent file I removed from the sources.
-- The one intended difference from `claude/agents/*.md` is the generated header. The golden test in `scripts/test_nousfx_agents.py` enforces it, so the old files stay as the reference for that test.
+- `harness/agents/*.md` is the only copy of each agent. The generated file differs from its source in two ways: the header after the frontmatter, and the `model:` (and `effort:`) lines that `harness/models.toml` fills in for the `role:` line. The golden test in `scripts/test_nousfx_agents.py` enforces both.
 
 ### Who writes the code: the `implementer`
 

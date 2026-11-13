@@ -108,7 +108,7 @@ def skills_text(repo):
     out = []
     for path in sorted(glob.glob(os.path.join(repo, "claude", "skills", "*", "SKILL.md"))
                        + glob.glob(os.path.join(repo, "claude", "skills", "*", "assets", "*.md"))
-                       + glob.glob(os.path.join(repo, "claude", "agents", "*.md"))):
+                       + glob.glob(os.path.join(repo, "harness", "agents", "*.md"))):
         with open(path, encoding="utf-8") as f:
             out.append(f.read())
     return FILE_BREAK.join(out)

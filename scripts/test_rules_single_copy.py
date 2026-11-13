@@ -41,7 +41,7 @@ def on_use_files():
     """Where moved rules live: skills and agents."""
     return sorted(glob.glob(os.path.join(ROOT, "claude", "skills", "*", "SKILL.md"))
                   + glob.glob(os.path.join(ROOT, "claude", "skills", "*", "assets", "*.md"))
-                  + glob.glob(os.path.join(ROOT, "claude", "agents", "*.md")))
+                  + glob.glob(os.path.join(ROOT, "harness", "agents", "*.md")))
 
 
 def sentences(path):

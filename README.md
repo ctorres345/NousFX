@@ -109,15 +109,16 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 
 | Path | Purpose |
 |---|---|
-| `claude/agents/Explore.md` | Haiku code search; replaces the built-in Explore |
-| `claude/agents/researcher.md` | Haiku docs and API lookups |
-| `claude/agents/test-runner.md` | Haiku build and test runner; returns only failures |
-| `claude/agents/implementer.md` | Sonnet builder for ready-for-agent tickets of size S or M, from a plan the main session writes |
-| `claude/agents/reviewer.md` | Read-only Opus code reviewer (tier 2) |
-| `claude/agents/reviewer-light.md` | Read-only Sonnet reviewer (tiers 0 and 1) |
-| `claude/agents/reviewer-high.md` | Read-only Opus reviewer at high effort (tier 3) |
-| `claude/agents/reviewer-deep.md` | Fable second-opinion reviewer for large or risky changes, only after asking |
-| `claude/agents/architect.md` | Fable architecture and performance consultant, read-only, only after asking |
+| `harness/models.toml` | Maps each agent's `role:` to a model and effort per tool; sync fills them in |
+| `harness/agents/Explore.md` | Haiku code search; replaces the built-in Explore |
+| `harness/agents/researcher.md` | Haiku docs and API lookups |
+| `harness/agents/test-runner.md` | Haiku build and test runner; returns only failures |
+| `harness/agents/implementer.md` | Sonnet builder for ready-for-agent tickets of size S or M, from a plan the main session writes |
+| `harness/agents/reviewer.md` | Read-only Opus code reviewer (tier 2) |
+| `harness/agents/reviewer-light.md` | Read-only Sonnet reviewer (tiers 0 and 1) |
+| `harness/agents/reviewer-high.md` | Read-only Opus reviewer at high effort (tier 3) |
+| `harness/agents/reviewer-deep.md` | Fable second-opinion reviewer for large or risky changes, only after asking |
+| `harness/agents/architect.md` | Fable architecture and performance consultant, read-only, only after asking |
 | `claude/skills/review-loop/` | `/review-loop`: review-fix loop, rounds set by the risk tier (max 5), never commits |
 | `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/argon_review.py` is the Argon UI second opinion that `review-loop` calls; the project must be on the outbound allow-list in `~/.config/nousfx/via.json`. `scripts/gemini_common.py` holds the safety checks both Gemini scripts share; they run on macOS and Windows |
 | `claude/skills/handoff/` | `/handoff`: session handoff note |
@@ -186,7 +187,7 @@ Never commit `settings.local.json`, handoffs, memory, session history or anythin
 
 ## Optional: Fable
 `reviewer-deep` and `architect` need Fable access, which is included on Max up to 50% of the weekly limit (terms may change). Without it, remove:
-- `claude/agents/reviewer-deep.md` and `claude/agents/architect.md`
+- `harness/agents/reviewer-deep.md` and `harness/agents/architect.md`
 - `claude/skills/review-loop/references/fable.md` and the "Fable offers" stub in the review-loop skill, and the sentences that say "see Fable offers"
 - their lines in `harness/overlays/claude.overlay.md`
 
