@@ -154,8 +154,12 @@ class Workflow(unittest.TestCase):
         self.assertIn("grep -q 'sys.argv\\[1:2\\] == \\[\"run-check\"\\]' \"$gate_dir/review-gate.py\"", self.text)
 
     def test_a_skip_attestation_does_not_skip_the_check(self):
-        self.assertNotIn("exit 0", self.text.split("run-check --ref")[0].split("verify-attestation")[-1])
-        self.assertNotIn("skipped:", self.text.split("run-check --ref")[0].split("case \"$out\" in")[-1])
+        # NFX-110: the skip-label block may add failures for a skip, but never an exit 0 or a way past the check.
+        label = self.text.split("# NFX-110 skip label check")[1].split("# end NFX-110")[0]
+        self.assertNotIn("exit 0", label)
+        text = self.text.replace(label, "")
+        self.assertNotIn("exit 0", text.split("run-check --ref")[0].split("verify-attestation")[-1])
+        self.assertNotIn("skipped:", text.split("run-check --ref")[0].split("case \"$out\" in")[-1])
 
     def test_check_step_needs_a_positive_confirmation(self):
         self.assertIn('*"Check passed."*', self.text)
