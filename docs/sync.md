@@ -41,6 +41,7 @@ What it checks:
 - **This machine is out of date.** It runs `nousfx_sync.py --check --summary` in the clone. Any exit 1 with a valid summary counts, so a skill collision I have not decided yet also warns.
 - **The clone is behind `origin/main`.** It counts `HEAD..origin/main` from the last fetch. The hook starts `git fetch` first, in the background, at most every 10 minutes (no password prompts, no window on Windows), so the next session sees fresh data. The warning can be one session late, and it never waits for the network.
 
+- **Only from `main`.** Before any of that it asks git where the clone is. On a feature branch the clone's own `nousfx_sync.py` would run at every session start and its output would go into the model's context, so on any branch but `main` it runs no check and prints one note for me only (`NousFX drift check skipped: the clone at <clone> is on branch x, not main.`), not for the model. A detached HEAD counts as `main` only when it equals `origin/main` (the last fetch). If git cannot say, it says nothing.
 - **The rules are too long or repeat the harness.** It reads the summary's `rules` object, also on exit 0 (the budget only warns). See Rules budget below.
 
 What it prints: nothing when all is well. Otherwise one line, for example `NousFX on this machine is out of date (2 files, 13 skills need a decision). Run python3 -B scripts/nousfx_sync.py in <clone>.` On Windows the command says `python`. The same text goes to me and to the model.

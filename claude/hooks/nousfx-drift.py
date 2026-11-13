@@ -13,6 +13,10 @@ Rules this file keeps:
     that keeps origin/main fresh for the NEXT session (never waited for, at most every 10 minutes).
   - It never fails the session start: every error, timeout or odd output means "say nothing", exit 0.
   - It stays under a 2 second budget; whatever is not finished by then is skipped quietly.
+  - It checks only from `main` (NFX-109): on a feature branch the clone's own sync script and files would run at
+    every session start and their output would reach the model. A detached HEAD counts as main only when it
+    equals origin/main. Anywhere else it prints one note for me (not the model) and runs no check. If git
+    cannot say where the clone is, it says nothing.
   - Standard library only. The hook changes into the clone first, so on Windows a `git.exe` sitting in the
     project I opened is never the one that runs.
 
@@ -71,6 +75,26 @@ def drift_counts(args, deadline):
     if not isinstance(counts, dict) or (r.returncode == 0 and not rules_issue(counts)):
         return None
     return counts, r.returncode == 1
+
+
+def clone_position(args, deadline):
+    """"main" when the clone is on main, or detached at origin/main; a label ("branch x" or "detached at abc1234")
+    for anywhere else; None when git cannot say."""
+    def git(*cmd):
+        left = min(GIT_WAIT, deadline - time.monotonic())
+        r = run(["git", *cmd], args.repo, left) if left > 0 else None
+        return r.stdout.strip() if r is not None and r.returncode == 0 else None
+
+    head = git("rev-parse", "HEAD")
+    if not head:
+        return None
+    branch = git("symbolic-ref", "-q", "--short", "HEAD")
+    if branch:
+        return "main" if branch == "main" else f"branch {branch[:60]}"
+    origin = git("rev-parse", "--verify", "-q", "refs/remotes/origin/main")  # full ref: a local `origin/main` branch or tag must not win
+    if origin is None:  # no origin/main, or git ran out of time: cannot say
+        return None
+    return "main" if head == origin else f"detached at {head[:7]}"
 
 
 def commits_behind(args, deadline):
@@ -160,6 +184,13 @@ def main(argv=None):
     os.chdir(args.repo)
     start_background_fetch(args)  # first, so a slow check can never starve it; it is not waited for
     deadline = started + BUDGET
+    where = clone_position(args, deadline)
+    if where is None:
+        return 0
+    if where != "main":  # a note for me only: nothing from a branch reaches the model
+        print(json.dumps({"systemMessage": f"NousFX drift check skipped: the clone at {args.repo} is on {where}, "
+                                           f"not main."}))
+        return 0
     counts, stale = drift_counts(args, deadline) or (None, False)
     behind = commits_behind(args, deadline)
     rules = rules_issue(counts)
