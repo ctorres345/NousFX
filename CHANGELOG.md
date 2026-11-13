@@ -2,6 +2,9 @@
 
 ## 1.3.0 (unreleased)
 
+### Docs
+- `docs/agents/issue-tracker.md` names one server and tool per Jira action, the Done transition id (`31` on cjthdev) and a compact list call with `fields` (NFX-137). Two Atlassian servers were connected, so an agent guessed a transition tool that exists on only one and a JQL list returned 49 KB for 12 tickets. `after-merge` points to the doc.
+
 ### Review gate
 - On Windows a check that times out is stopped with its whole process tree (NFX-115). `run_check` ran `proc.kill()`, which ended only `cmd.exe`, so a Gradle daemon or test runner could keep editing files after the tree comparison. It now runs `taskkill /T /F /PID <pid>`; if `taskkill` is missing, hangs or fails, it falls back to `proc.kill()` and the failure message says only the shell was stopped. A timeout never passes, so a child that outlives `taskkill` still refuses the mark. POSIX is unchanged (process group kill). Only timeouts are covered: on Windows, children left behind by a check that exits on time are still not stopped. Not confirmed on a real Windows machine yet (the manual AC).
 - The gate closes two low gaps in how it reads a command run by an unknown program (NFX-123, left by the NFX-120 review). A shell named in an assignment (`SH=bash; $SH $OPTS "$(cat c.txt)" name`, `X=sh; Y=-c; ...`) or as `$SHELL`/`${SHELL}` now counts as a shell, and a `$(...)` or backtick in any word after the variable counts, not only in the first one. All of them block as a possible `gh pr create`; the adb forms (`A=adb; D="-s X"; $A $D shell ...`) still pass.
