@@ -2,6 +2,9 @@
 
 ## 1.3.0 (unreleased)
 
+### Docs
+- Meet Via (NFX-25). The README has a "Meet Via" section: a three-command quickstart, an example run on `samples/web` with screenshots, the config table and what Via does when an integration is missing. `CONTRIBUTING.md` has a skill-writing checklist. `scripts/fresh_user_test.py` installs Via from the marketplace in a temp HOME, and `docs/fresh-user-test.md` records the run: the install and the `via_setup.py` doctor passed (as scripts, not through Claude), the first capture on a new browser profile timed out, and `/via audit` inside Claude Code was not run. `scripts/test_readme_quickstart.py` checks the README commands, links and config keys.
+
 ### Review gate
 - A PR that touches UI cannot be opened until `/via check` passed on the code (NFX-20). The gate reads `tier.py`'s `ui` flag and, for a UI diff, the `via-check-ok` record that `via_run.py pass` writes: it must be for the current code with `findings_open` exactly 0, and `pending_human` passes with a note. An unreadable diff, a `tier.py` error or timeout, or a `fallback` result blocks, with the error named. `--via-skip "<reason>"` records a skip (never unattended, never a secret-shaped reason); `attest` prints a `Via-Check:` line, and CI's new `verify-via` checks it, accepting a skip only with the `via-skip` label. `tier.py` results carry a `fallback` key, and the Via files are on the deny list with `--via-skip` an ask rule. A repo with no `origin/main` blocks a PR create now, because the gate cannot tell whether the diff is UI. The base branch needs `verify-via` before CI can verify this PR, so I merge it by hand.
 
