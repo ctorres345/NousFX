@@ -29,6 +29,12 @@ class SandboxTest(unittest.TestCase):
                                  setattr(f.via_home, "legacy_config", saved[2])))
         self.bak = os.path.join(f.STATE_DIR, "via.json.bak")
 
+        def no_run(*a, **k):
+            raise AssertionError("a test must not run a real command: %r" % (a,))
+        saved_run = f.subprocess.run
+        f.subprocess.run = no_run
+        self.addCleanup(setattr, f.subprocess, "run", saved_run)
+
     def work(self, marker=True):
         work = tempfile.mkdtemp(prefix="via-fresh-")
         self.addCleanup(lambda: os.path.isdir(work) and __import__("shutil").rmtree(work))
@@ -74,6 +80,22 @@ class RestoreTest(SandboxTest):
         self.assertEqual(f.restore(), 0)
         self.assertEqual(open(self.cfg).read(), "real")
         self.assertFalse(os.path.exists(self.bak))
+        self.assertFalse(os.path.exists(f._state_path()))
+        # a stop after the backup was removed, before the state file was: the same state again must finish cleanly
+        self.state(work, [{"path": self.cfg, "backup": self.bak, "sha": f._sha(self.cfg)}])
+        self.assertEqual(f.restore(), 0)
+        self.assertEqual(open(self.cfg).read(), "real")
+
+    def test_file_the_run_created_is_removed(self):
+        open(self.cfg, "w").write("test run")
+        self.state(self.work(), [{"path": self.cfg, "backup": None, "sha": None}])
+        self.assertEqual(f.restore(), 0)
+        self.assertFalse(os.path.exists(self.cfg))
+
+    def test_state_with_missing_keys_is_damaged_not_a_crash(self):
+        with open(f._state_path(), "w") as fh:
+            json.dump({"configs": [{"path": self.cfg}]}, fh)
+        self.assertEqual(f.restore(), 1)
 
     def test_damaged_state_exits_one_and_names_the_backup(self):
         open(self.bak, "w").write("real")
@@ -96,6 +118,13 @@ class PrepareTest(SandboxTest):
         self.assertEqual(f.prepare(), 1)
         self.assertEqual(open(self.bak).read(), "real")
         self.assertEqual(open(self.cfg).read(), "test config")
+
+    def test_prepare_refuses_a_symlinked_config(self):
+        target = os.path.join(self.root, "dotfiles-via.json")
+        open(target, "w").write("mine")
+        os.symlink(target, self.cfg)
+        self.assertEqual(f.prepare(), 1)
+        self.assertTrue(os.path.islink(self.cfg))
 
     def test_prepare_refuses_when_a_state_file_exists(self):
         open(f._state_path(), "w").write("{not json")

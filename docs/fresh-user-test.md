@@ -15,7 +15,7 @@ I ran this on 2026-11-14 for NFX-25 to see what a friend gets on a clean machine
 | Sample app | copy of `samples/web` in a folder with `git init` |
 | Environment | `PATH` cut to `/usr/bin:/bin` plus the Python stand-in; no Gemini key, Jira, Figma or Obsidian |
 
-A temp `$HOME` does not move Via's config. Via reads the home from the system user record, so `/via setup` writes the real `~/.config/nousfx/via.json` whatever `$HOME` says. `prepare` backs that file up and `restore` puts it back. For the setup and capture steps I used the stand-in in `plugins/via/scripts/nousfx_testhome.py`, which points the user record at the temp home. After `restore`, the real file's sha256 matched the backup.
+A temp `$HOME` does not move what Via reads from the real home: its config, the locked skills in `~/.agents/skills` and `~/.claude/skills`, and the Gemini and Obsidian detection. Via reads the home from the system user record, so `/via setup` writes the real `~/.config/nousfx/via.json` whatever `$HOME` says. `prepare` backs the config up (and the old `~/.claude/via.json`) and moves it aside, and `restore` puts it back. A person running the manual steps should say no to the locked-skills install, because `restore` does not undo it. For the setup and capture steps I used the stand-in in `plugins/via/scripts/nousfx_testhome.py`, which points the user record at the temp home. After `restore`, the real file's sha256 matched the backup.
 
 ## Steps
 

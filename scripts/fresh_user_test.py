@@ -3,10 +3,11 @@
 
   fresh_user_test.py prepare   make the temp HOME and a git-initialised copy of samples/web, back up the real
                                via.json, install Via from the marketplace, print the manual steps
-  fresh_user_test.py verify    check what the manual run left behind (via.json, .via/runs/ report)
+  fresh_user_test.py verify    check what the manual run left behind (via.json, a findings.json in .via/runs/)
   fresh_user_test.py restore   put the real via.json back and delete the temp folders
 
-A temp $HOME moves Claude Code's plugin state but NOT Via's config: Via reads the home from the system
+A temp $HOME moves Claude Code's plugin state but NOT what Via reads from the real home (its config, the
+locked skills in ~/.agents/skills and ~/.claude/skills, and the Gemini and Obsidian detection): Via reads the home from the system
 user record (plugins/via/scripts/via_home.py), so `/via setup` writes the real ~/.config/nousfx/via.json
 whatever $HOME says. `prepare` backs that file up and `restore` puts it back, so run `restore` when done.
 
@@ -73,6 +74,9 @@ def prepare():
         return 1
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
     for cfg, backup in _configs():
+        if os.path.islink(cfg):
+            print("%s is a symlink; move it aside by hand first, this test would replace it with a file" % cfg, file=sys.stderr)
+            return 1
         if os.path.exists(backup):
             print("an old backup is still here: %s. It may be your real config; restore it by hand "
                   "(copy it to %s) and delete it, then run `prepare` again" % (backup, cfg), file=sys.stderr)
@@ -92,26 +96,38 @@ def prepare():
         moved.append({"path": cfg, "backup": backup if has else None, "sha": _sha(cfg) if has else None})
     # The state goes down first, so a stop at any later point still leaves `restore` something to work from.
     _save({"work": work, "home": home, "app": app, "configs": moved})
-    for m in moved:
-        if m["backup"]:
-            shutil.copy2(m["path"], m["backup"])
-            if _sha(m["backup"]) != m["sha"]:
-                print("backup of %s did not copy cleanly; nothing was moved" % m["path"], file=sys.stderr)
-                return 1
-    for m in moved:
-        if m["backup"]:
-            os.remove(m["path"])  # setup must start from nothing; `restore` puts the backup back
     env = {**os.environ, "HOME": home}
-    for cmd in SHELL_STEPS:
+    for cmd in SHELL_STEPS:  # before any config is moved, so a missing `claude` costs nothing
         print("$ HOME=%s %s" % (home, cmd))
-        r = subprocess.run(cmd.split(), env=env, cwd=app)
+        try:
+            r = subprocess.run(cmd.split(), env=env, cwd=app)
+        except OSError as e:
+            print("could not run `%s` (%s); run `restore` to clean up" % (cmd, e), file=sys.stderr)
+            return 1
         if r.returncode != 0:
             print("step failed (exit %d); run `restore` to clean up" % r.returncode, file=sys.stderr)
             return 1
+    written = []
+    try:
+        for m in moved:
+            if m["backup"]:
+                shutil.copy2(m["path"], m["backup"])
+                written.append(m["backup"])
+                if _sha(m["backup"]) != m["sha"]:
+                    raise OSError("backup of %s did not copy cleanly" % m["path"])
+    except OSError as e:
+        for b in written:
+            os.remove(b)
+        os.remove(_state_path())
+        print("%s; nothing was moved and the state is cleared" % e, file=sys.stderr)
+        return 1
+    for m in moved:
+        if m["backup"]:
+            os.remove(m["path"])  # setup must start from nothing; `restore` puts the backup back
     print("\nManual steps (Claude Code cannot be driven unattended):")
     print("  1. cd %s" % app)
     print("  2. HOME=%s claude      (log in once with /login)" % home)
-    print("  3. /reload-plugins, then %s, then /via audit" % ", then ".join(c for c in QUICKSTART if c.startswith("/")))
+    print("  3. /reload-plugins, then %s (say no to the locked-skills install), then /via audit" % ", then ".join(c for c in QUICKSTART if c.startswith("/")))
     print("  4. python3 -B scripts/fresh_user_test.py verify")
     print("  5. python3 -B scripts/fresh_user_test.py restore")
     return 0
@@ -132,7 +148,9 @@ def verify():
         for dirpath, _, files in os.walk(runs):
             found += [os.path.join(dirpath, f) for f in files]
     print(".via/runs: %d file(s)" % len(found))
-    ok &= bool(found)
+    reports = [f for f in found if os.path.basename(f) == "findings.json"]
+    print("audit report (findings.json): %s" % ("present" if reports else "MISSING (/via audit did not finish)"))
+    ok &= bool(reports)
     for f in sorted(found)[:20]:
         print("  " + os.path.relpath(f, st["app"]))
     return 0 if ok else 1
@@ -170,7 +188,9 @@ def restore():
         print("nothing to restore")
         return 0
     st = _load()
-    if not st or not isinstance(st.get("configs"), list):
+    keys = ("path", "backup", "sha")
+    if (not isinstance(st, dict) or not isinstance(st.get("work"), str) or not isinstance(st.get("configs"), list)
+            or not all(isinstance(m, dict) and all(k in m for k in keys) for m in st["configs"])):
         print("state file %s is damaged. Backups, if any: %s. Copy them back by hand, then delete the state file."
               % (_state_path(), ", ".join(leftovers) or "none"), file=sys.stderr)
         return 1
