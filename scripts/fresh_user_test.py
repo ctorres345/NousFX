@@ -68,6 +68,13 @@ def _save(state):
     os.replace(tmp, _state_path())
 
 
+def _abandon(work):
+    """Drop a run that failed before any config was moved: the originals are untouched, so nothing needs restoring."""
+    shutil.rmtree(work, ignore_errors=True)
+    if os.path.exists(_state_path()):
+        os.remove(_state_path())
+
+
 def prepare():
     if os.path.exists(_state_path()):
         print("a run is already prepared (or its state file is damaged: %s); run `restore` first" % _state_path(), file=sys.stderr)
@@ -87,38 +94,47 @@ def prepare():
     app = os.path.join(work, "app")
     os.makedirs(home)
     shutil.copytree(os.path.join(ROOT, "samples", "web"), app)
-    for cmd in (["git", "init", "-q"], ["git", "add", "-A"],
-                ["git", "-c", "user.name=fresh", "-c", "user.email=fresh@example.invalid", "commit", "-qm", "sample"]):
-        subprocess.run(cmd, cwd=app, check=True, capture_output=True)
+    try:
+        for cmd in (["git", "init", "-q"], ["git", "add", "-A"],
+                    ["git", "-c", "user.name=fresh", "-c", "user.email=fresh@example.invalid", "commit", "-qm", "sample"]):
+            subprocess.run(cmd, cwd=app, check=True, capture_output=True)
+    except (OSError, subprocess.CalledProcessError) as e:
+        _abandon(work)
+        print("could not set up the sample app (%s); nothing was changed" % e, file=sys.stderr)
+        return 1
     moved = []
     for cfg, backup in _configs():
         has = os.path.isfile(cfg)
         moved.append({"path": cfg, "backup": backup if has else None, "sha": _sha(cfg) if has else None})
     # The state goes down first, so a stop at any later point still leaves `restore` something to work from.
     _save({"work": work, "home": home, "app": app, "configs": moved})
-    env = {**os.environ, "HOME": home}
+    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME")}
+    env["HOME"] = home  # a set CLAUDE_CONFIG_DIR would send the install to the real Claude config
     for cmd in SHELL_STEPS:  # before any config is moved, so a missing `claude` costs nothing
         print("$ HOME=%s %s" % (home, cmd))
         try:
             r = subprocess.run(cmd.split(), env=env, cwd=app)
         except OSError as e:
-            print("could not run `%s` (%s); run `restore` to clean up" % (cmd, e), file=sys.stderr)
+            _abandon(work)
+            print("could not run `%s` (%s); nothing was changed" % (cmd, e), file=sys.stderr)
             return 1
         if r.returncode != 0:
-            print("step failed (exit %d); run `restore` to clean up" % r.returncode, file=sys.stderr)
+            _abandon(work)
+            print("step failed (exit %d); nothing was changed" % r.returncode, file=sys.stderr)
             return 1
     written = []
     try:
         for m in moved:
             if m["backup"]:
+                written.append(m["backup"])  # listed first, so a half-written copy is removed too
                 shutil.copy2(m["path"], m["backup"])
-                written.append(m["backup"])
                 if _sha(m["backup"]) != m["sha"]:
                     raise OSError("backup of %s did not copy cleanly" % m["path"])
     except OSError as e:
         for b in written:
-            os.remove(b)
-        os.remove(_state_path())
+            if os.path.exists(b):
+                os.remove(b)
+        _abandon(work)
         print("%s; nothing was moved and the state is cleared" % e, file=sys.stderr)
         return 1
     for m in moved:
@@ -126,7 +142,7 @@ def prepare():
             os.remove(m["path"])  # setup must start from nothing; `restore` puts the backup back
     print("\nManual steps (Claude Code cannot be driven unattended):")
     print("  1. cd %s" % app)
-    print("  2. HOME=%s claude      (log in once with /login)" % home)
+    print("  2. env -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME=%s claude      (log in once with /login; on macOS the login may share your keychain)" % home)
     print("  3. /reload-plugins, then %s (say no to the locked-skills install), then /via audit" % ", then ".join(c for c in QUICKSTART if c.startswith("/")))
     print("  4. python3 -B scripts/fresh_user_test.py verify")
     print("  5. python3 -B scripts/fresh_user_test.py restore")
@@ -137,6 +153,10 @@ def verify():
     st = _load()
     if not st:
         print("nothing prepared", file=sys.stderr)
+        return 1
+    if not (isinstance(st, dict) and isinstance(st.get("app"), str) and isinstance(st.get("configs"), list) and st["configs"]
+            and isinstance(st["configs"][0], dict) and isinstance(st["configs"][0].get("path"), str)):
+        print("state file %s is damaged; run `restore`" % _state_path(), file=sys.stderr)
         return 1
     ok = True
     cfg = st["configs"][0]["path"]

@@ -47,6 +47,18 @@ class SandboxTest(unittest.TestCase):
             json.dump({"work": work, "home": "", "app": "", "configs": configs}, fh)
 
 
+class VerifyTest(SandboxTest):
+    def test_damaged_state_is_a_clean_exit(self):
+        with open(f._state_path(), "w") as fh:
+            json.dump({"work": "x"}, fh)
+        self.assertEqual(f.verify(), 1)
+
+    def test_state_that_is_not_an_object_is_a_clean_exit(self):
+        with open(f._state_path(), "w") as fh:
+            json.dump([1], fh)
+        self.assertEqual(f.verify(), 1)
+
+
 class RestoreTest(SandboxTest):
     def test_work_without_marker_is_not_deleted(self):
         work = self.work(marker=False)
@@ -112,6 +124,61 @@ class RestoreTest(SandboxTest):
 
 
 class PrepareTest(SandboxTest):
+    def stub_commands(self, returncode=0):
+        f.subprocess.run = lambda args, **k: __import__("subprocess").CompletedProcess(args, returncode)
+
+    def test_prepare_then_restore_round_trip(self):
+        open(self.cfg, "w").write("real")
+        open(self.legacy, "w").write("old")
+        self.stub_commands()
+        self.assertEqual(f.prepare(), 0)
+        self.assertFalse(os.path.exists(self.cfg))
+        self.assertFalse(os.path.exists(self.legacy))
+        self.assertEqual(open(self.bak).read(), "real")
+        open(self.cfg, "w").write("written by the test run")
+        self.assertEqual(f.restore(), 0)
+        self.assertEqual(open(self.cfg).read(), "real")
+        self.assertEqual(open(self.legacy).read(), "old")
+        self.assertFalse(os.path.exists(f._state_path()))
+
+    def test_failed_install_step_changes_nothing(self):
+        open(self.cfg, "w").write("real")
+        self.stub_commands(returncode=1)
+        self.assertEqual(f.prepare(), 1)
+        self.assertEqual(open(self.cfg).read(), "real")
+        self.assertFalse(os.path.exists(f._state_path()))
+        self.assertFalse(os.path.exists(self.bak))
+
+    def test_half_written_backup_is_removed(self):
+        open(self.cfg, "w").write("real")
+        self.stub_commands()
+        real_copy = f.shutil.copy2
+
+        def partial_copy(src, dst, **k):
+            open(dst, "w").write("re")  # then the disk fills up
+            raise OSError("no space left")
+        f.shutil.copy2 = partial_copy
+        self.addCleanup(setattr, f.shutil, "copy2", real_copy)
+        self.assertEqual(f.prepare(), 1)
+        self.assertFalse(os.path.exists(self.bak))
+        self.assertEqual(open(self.cfg).read(), "real")
+        self.assertFalse(os.path.exists(f._state_path()))
+
+    def test_corrupt_backup_copy_moves_nothing(self):
+        open(self.cfg, "w").write("real")
+        self.stub_commands()
+        real_copy = f.shutil.copy2
+
+        def bad_copy(src, dst, **k):
+            real_copy(src, dst, **k)
+            open(dst, "w").write("garbage")
+        f.shutil.copy2 = bad_copy
+        self.addCleanup(setattr, f.shutil, "copy2", real_copy)
+        self.assertEqual(f.prepare(), 1)
+        self.assertEqual(open(self.cfg).read(), "real")
+        self.assertFalse(os.path.exists(self.bak))
+        self.assertFalse(os.path.exists(f._state_path()))
+
     def test_prepare_refuses_to_overwrite_an_existing_backup(self):
         open(self.bak, "w").write("real")
         open(self.cfg, "w").write("test config")
