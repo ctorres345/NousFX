@@ -9,6 +9,7 @@ import http.server
 import json
 import os
 import socket
+import signal
 import subprocess
 import sys
 import tempfile
@@ -54,6 +55,11 @@ if u.scheme == "http":
 if u.scheme == "http" and os.environ.get("VIA_FAKE_HOST"):
     status, _, body, _ = get(u, "/index.html", host=os.environ["VIA_FAKE_HOST"])
     note({"probe": "host", "status": status, "location": None, "body": body})
+if os.environ.get("VIA_FAKE_SLOW_AT"):  # call number N (1 = the first launch) answers late, the others at once
+    with open(log_path) as log:
+        calls = len([line for line in log if line.strip()])
+    if calls == int(os.environ["VIA_FAKE_SLOW_AT"]):
+        time.sleep(3)
 if os.environ.get("VIA_FAKE_HANG"):
     child = subprocess.Popen(["sleep", "300"])
     with open(os.environ["VIA_FAKE_HANG"], "w") as f:
@@ -604,6 +610,101 @@ class ViaCaptureTest(unittest.TestCase):
         got = self.probes()["host"]
         self.assertIn(got["status"], (403, 421))
         self.assertNotIn("private", got["body"])
+
+    def test_a_slow_first_launch_gets_extra_time_instead_of_failing(self):
+        r = self.capture("home=index.html", extra_env={"VIA_FAKE_SLOW_AT": "1", "VIA_SHOT_TIMEOUT": "2"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(json.loads(r.stdout)["screenshots"]), 4)
+        self.assertEqual(len(self.pngs()), 4)
+        self.assertEqual(len(self.calls()), 4)  # waited, did not relaunch
+        self.assertIn("first launch is slow", r.stderr)
+        self.assertNotIn("first launch is slow", r.stdout)  # stdout stays the run record
+
+    def test_a_fast_run_prints_no_slow_launch_note(self):
+        r = self.capture("home=index.html")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("slow", r.stderr)
+
+    def test_a_later_shot_that_is_slow_still_fails_at_the_normal_limit(self):
+        r = self.capture("home=index.html", extra_env={"VIA_FAKE_SLOW_AT": "2", "VIA_SHOT_TIMEOUT": "2"})
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertEqual(self.pngs(), [])
+        self.assertEqual(len(self.calls()), 2)
+        self.assertNotIn("first launch is slow", r.stderr)
+
+    def test_a_first_launch_that_never_answers_gives_up_within_three_times_the_limit(self):
+        pidfile = os.path.join(self.tmp, "helper.pid")
+        start = time.monotonic()
+        r = self.capture("home=index.html", extra_env={"VIA_FAKE_HANG": pidfile, "VIA_SHOT_TIMEOUT": "2"})
+        took = time.monotonic() - start
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertIn("first launch is slow", r.stderr)
+        self.assertIn("home-light-phone.png", r.stderr)
+        self.assertEqual(self.pngs(), [])
+        self.assertGreaterEqual(took, 6)  # it did wait the extra time
+        self.assertLess(took, 6 + 10)  # and no longer than 3x the limit plus start-up slack
+
+    @unittest.skipIf(sys.platform == "win32", "SIGTERM cannot be handled on Windows")
+    def test_a_capture_that_is_terminated_still_kills_the_browser_and_cleans_up(self):
+        """The Bash tool stops a command that runs too long with SIGTERM. The browser must not be left behind."""
+        pidfile = os.path.join(self.tmp, "helper.pid")
+        env = {**os.environ, "VIA_CHROME": self.browser, "VIA_FAKE_LOG": self.log, "VIA_FAKE_HANG": pidfile}
+        proc = subprocess.Popen([sys.executable, CAPTURE, "--run-dir", self.run_dir, "--project", self.repo,
+                                 "--screen=home=index.html"], env=env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        self.addCleanup(proc.kill)
+        for _ in range(100):
+            if os.path.exists(pidfile) and os.path.getsize(pidfile):
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("the stand-in browser never started")
+        with open(pidfile) as f:
+            pid = int(f.read())
+        proc.terminate()
+        proc.wait(timeout=15)
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, 9)
+            self.fail("the helper process outlived a terminated capture")
+        self.assertEqual(os.listdir(self.run_dir), [])  # no .stage- folder left behind
+
+    @unittest.skipIf(sys.platform == "win32", "SIGHUP does not exist on Windows")
+    def test_a_capture_started_under_nohup_keeps_ignoring_a_hangup(self):
+        pidfile = os.path.join(self.tmp, "helper.pid")
+        env = {**os.environ, "VIA_CHROME": self.browser, "VIA_FAKE_LOG": self.log, "VIA_FAKE_HANG": pidfile}
+        proc = subprocess.Popen([sys.executable, CAPTURE, "--run-dir", self.run_dir, "--project", self.repo,
+                                 "--screen=home=index.html"], env=env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_IGN))
+        self.addCleanup(proc.kill)
+        for _ in range(100):
+            if os.path.exists(pidfile) and os.path.getsize(pidfile):
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("the stand-in browser never started")
+        proc.send_signal(signal.SIGHUP)
+        time.sleep(1)
+        self.assertIsNone(proc.poll(), "a hangup stopped a capture that was started with SIGHUP ignored")
+        proc.terminate()  # SIGTERM is still handled, and a second one during the cleanup is ignored
+        proc.terminate()
+        proc.wait(timeout=15)
+        with open(pidfile) as f:
+            pid = int(f.read())
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, 9)
+            self.fail("the helper process outlived the capture")
 
     def test_a_browser_that_hangs_is_killed_with_its_helper_processes(self):
         pidfile = os.path.join(self.tmp, "helper.pid")

@@ -60,6 +60,19 @@ class ReadmeQuickstartTest(unittest.TestCase):
         self.assertIn("](CONTRIBUTING.md)", self.readme)
         self.assertTrue(os.path.isfile(os.path.join(ROOT, "CONTRIBUTING.md")))
 
+    def test_the_slow_first_launch_is_handled_not_left_to_a_manual_rerun(self):
+        """NFX-148: neither the README row nor the fresh-user report tells the user to rerun by hand."""
+        row = re.search(r"^\| A first browser launch \|(.*)\|$", self.meet, re.M)
+        self.assertTrue(row, "README has no 'A first browser launch' row")
+        report = read("docs", "fresh-user-test.md")
+        finding = re.search(r"^1\. \*\*The first capture.*$", report, re.M)
+        self.assertTrue(finding, "fresh-user-test.md has no finding 1")
+        for name, text in (("README row", row.group(1)), ("finding 1", finding.group(0))):
+            for stale in ("Run it again", "Retry, or", "VIA_SHOT_TIMEOUT=180"):
+                self.assertNotIn(stale, text, "%s still says: %s" % (name, stale))
+        self.assertIn("NFX-148", finding.group(0))
+        self.assertIn("first launch is slow", row.group(1))
+
     def test_config_table_keys_are_real(self):
         with open(os.path.join(ROOT, "plugins", "via", "assets", "via.example.json")) as f:
             example = json.load(f)

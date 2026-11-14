@@ -32,7 +32,7 @@ A temp `$HOME` does not move what Via reads from the real home: its config, the 
 
 ## Findings
 
-1. **The first capture on a new browser profile is slow.** Chrome's first launch in an empty HOME took 174 s for four shots, over the 60 s default of `VIA_SHOT_TIMEOUT`. Run it again and it takes 17 s. A friend's first `/via audit` can stop with exit 4 and no shots. Retry, or set `VIA_SHOT_TIMEOUT=180`. The README now says so. I did not change the default, because this ticket adds no features.
+1. **The first capture on a new browser profile is slow.** Chrome's first launch in an empty HOME took 174 s for four shots, over the 60 s default of `VIA_SHOT_TIMEOUT`. A second run took 17 s. A friend's first `/via audit` could stop with exit 4 and no shots. Fixed in NFX-148: the first shot of a run now waits up to 120 s longer (180 s in all by default), with a note on stderr, so nobody has to rerun it by hand. Later shots keep the 60 s limit, and a browser that never answers still exits 4.
 2. **`$HOME` does not isolate Via.** Said above. A test must back up and restore the real config.
 3. **`/via audit` was not proven.** The audit's findings, second opinion and report were not run in a clean Claude session. The README says the audit looks for the sample's two planted flaws, but this test did not confirm that it reports them.
 4. **`/reload-plugins` reported "1 error during load"** in my own session. I did not find out which plugin it was, and it is not shown to come from Via.
