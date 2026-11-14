@@ -28,8 +28,10 @@ google-chrome, chromium or chromium-browser on PATH.
 Exit 0 success, 1 invalid input, 3 no browser found (say that visual checks were skipped),
 4 a URL did not answer or the browser failed to write a shot. Shots land in RUN_DIR only when every one
 succeeded. A browser that outlives VIA_SHOT_TIMEOUT seconds (default 60) is killed with its helper processes.
-The first shot of a run may take two limits longer (180 s in all by default), because a browser's first launch
-on a new machine is slow. A note on stderr says so. A hung first launch is still killed after three limits.
+The first shot of a run may wait up to two limits longer, at most 120 s more (180 s in all by default), because
+a browser's first launch on a new machine is slow. A note on stderr says so. A hung first launch is still killed.
+The run can outlast a foreground command, so run it in the background. SIGTERM and SIGHUP end it with exit 4
+after the browser and its helpers are killed.
 """
 import argparse
 import http.client
@@ -60,6 +62,7 @@ MAC_BROWSERS = (
 )
 PATH_BROWSERS = ("google-chrome", "chromium", "chromium-browser")
 SHOT_TIMEOUT = 60
+FIRST_LAUNCH_EXTRA = 120  # most seconds the first shot may wait beyond VIA_SHOT_TIMEOUT
 UPSTREAM_TIMEOUT = 30
 BLUR_PX = 8
 # Form fields that carry what people type, minus the controls whose look is the design under review.
@@ -478,12 +481,12 @@ def take(browser, profile, stage, shot, first=False):
         except subprocess.TimeoutExpired:
             if not first:
                 raise
-            extra = 2 * limit
+            extra = min(2 * limit, FIRST_LAUNCH_EXTRA)
             print("The first launch is slow (%d s so far). Waiting up to %d s more." % (limit, extra),
                   file=sys.stderr, flush=True)
             proc.wait(timeout=extra)
     except (OSError, subprocess.SubprocessError) as e:
-        slow = " The first launch was slow and still did not finish in %d s." % (3 * limit) \
+        slow = " The first launch was slow and still did not finish in %d s." % (limit + min(2 * limit, FIRST_LAUNCH_EXTRA)) \
             if first and isinstance(e, subprocess.TimeoutExpired) else ""
         die("the browser failed on %s (%s).%s No screenshots were kept." % (name, type(e).__name__, slow), 4)
     finally:
@@ -501,6 +504,15 @@ def main():
     ap.add_argument("--project")
     ap.add_argument("--redact-selector", action="append", default=[], metavar="CSS")
     args = ap.parse_args()
+    def stop_run(number, _frame):
+        for other in stoppers:  # a second signal must not break into the cleanup
+            signal.signal(other, signal.SIG_IGN)
+        sys.exit(4)
+
+    stoppers = [getattr(signal, n) for n in ("SIGTERM", "SIGHUP") if hasattr(signal, n)]
+    for sig in stoppers:  # a tool that stops a long run must still reach the cleanup below
+        if signal.getsignal(sig) is signal.SIG_DFL:  # a run started under nohup keeps ignoring a hangup
+            signal.signal(sig, stop_run)
     project = os.path.abspath(args.project or os.getcwd())
     if not os.path.isdir(project):
         die("%s is not a folder." % project)

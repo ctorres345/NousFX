@@ -9,6 +9,7 @@ import http.server
 import json
 import os
 import socket
+import signal
 import subprocess
 import sys
 import tempfile
@@ -642,6 +643,68 @@ class ViaCaptureTest(unittest.TestCase):
         self.assertEqual(self.pngs(), [])
         self.assertGreaterEqual(took, 6)  # it did wait the extra time
         self.assertLess(took, 6 + 10)  # and no longer than 3x the limit plus start-up slack
+
+    @unittest.skipIf(sys.platform == "win32", "SIGTERM cannot be handled on Windows")
+    def test_a_capture_that_is_terminated_still_kills_the_browser_and_cleans_up(self):
+        """The Bash tool stops a command that runs too long with SIGTERM. The browser must not be left behind."""
+        pidfile = os.path.join(self.tmp, "helper.pid")
+        env = {**os.environ, "VIA_CHROME": self.browser, "VIA_FAKE_LOG": self.log, "VIA_FAKE_HANG": pidfile}
+        proc = subprocess.Popen([sys.executable, CAPTURE, "--run-dir", self.run_dir, "--project", self.repo,
+                                 "--screen=home=index.html"], env=env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        self.addCleanup(proc.kill)
+        for _ in range(100):
+            if os.path.exists(pidfile) and os.path.getsize(pidfile):
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("the stand-in browser never started")
+        with open(pidfile) as f:
+            pid = int(f.read())
+        proc.terminate()
+        proc.wait(timeout=15)
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, 9)
+            self.fail("the helper process outlived a terminated capture")
+        self.assertEqual(os.listdir(self.run_dir), [])  # no .stage- folder left behind
+
+    @unittest.skipIf(sys.platform == "win32", "SIGHUP does not exist on Windows")
+    def test_a_capture_started_under_nohup_keeps_ignoring_a_hangup(self):
+        pidfile = os.path.join(self.tmp, "helper.pid")
+        env = {**os.environ, "VIA_CHROME": self.browser, "VIA_FAKE_LOG": self.log, "VIA_FAKE_HANG": pidfile}
+        proc = subprocess.Popen([sys.executable, CAPTURE, "--run-dir", self.run_dir, "--project", self.repo,
+                                 "--screen=home=index.html"], env=env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_IGN))
+        self.addCleanup(proc.kill)
+        for _ in range(100):
+            if os.path.exists(pidfile) and os.path.getsize(pidfile):
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("the stand-in browser never started")
+        proc.send_signal(signal.SIGHUP)
+        time.sleep(1)
+        self.assertIsNone(proc.poll(), "a hangup stopped a capture that was started with SIGHUP ignored")
+        proc.terminate()  # SIGTERM is still handled, and a second one during the cleanup is ignored
+        proc.terminate()
+        proc.wait(timeout=15)
+        with open(pidfile) as f:
+            pid = int(f.read())
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, 9)
+            self.fail("the helper process outlived the capture")
 
     def test_a_browser_that_hangs_is_killed_with_its_helper_processes(self):
         pidfile = os.path.join(self.tmp, "helper.pid")
