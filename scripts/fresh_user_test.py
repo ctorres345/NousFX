@@ -33,7 +33,7 @@ QUICKSTART = [
 ]
 SHELL_STEPS = [c for c in QUICKSTART if not c.startswith("/")]
 STATE_NAME = "fresh_user_state.json"
-STATE_DIR = os.path.join(tempfile.gettempdir(), "nousfx-fresh-user")
+STATE_DIR = os.path.join(via_home.anchor(), "fresh-user")  # in my own config folder, not a shared /tmp
 
 
 def _sha(path):
@@ -57,7 +57,7 @@ def prepare():
     if _load():
         print("a run is already prepared; run `restore` first", file=sys.stderr)
         return 1
-    os.makedirs(STATE_DIR, exist_ok=True)
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
     work = tempfile.mkdtemp(prefix="via-fresh-")
     home = os.path.join(work, "home")
     app = os.path.join(work, "app")
@@ -118,6 +118,12 @@ def restore():
         print("nothing to restore")
         return 0
     cfg, backup = st["config"], st["backup"]
+    work = os.path.realpath(st["work"])
+    if (cfg != via_home.default_config() or os.path.dirname(work) != os.path.realpath(tempfile.gettempdir())
+            or not os.path.basename(work).startswith("via-fresh-")
+            or (backup and os.path.dirname(os.path.realpath(backup)) != work)):
+        print("state file does not look like one `prepare` wrote; not touching anything", file=sys.stderr)
+        return 1
     if backup:
         if not os.path.isfile(backup) or _sha(backup) != st["backup_sha"]:
             print("backup %s changed; not restoring over your config" % backup, file=sys.stderr)
@@ -128,7 +134,7 @@ def restore():
     elif os.path.isfile(cfg):
         os.remove(cfg)  # the run created it; there was none before
         print("removed %s (it did not exist before the run)" % cfg)
-    shutil.rmtree(st["work"], ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
     os.remove(_state_path())
     return 0
 
