@@ -28,6 +28,8 @@ google-chrome, chromium or chromium-browser on PATH.
 Exit 0 success, 1 invalid input, 3 no browser found (say that visual checks were skipped),
 4 a URL did not answer or the browser failed to write a shot. Shots land in RUN_DIR only when every one
 succeeded. A browser that outlives VIA_SHOT_TIMEOUT seconds (default 60) is killed with its helper processes.
+The first shot of a run may take two limits longer (180 s in all by default), because a browser's first launch
+on a new machine is slow. A note on stderr says so. A hung first launch is still killed after three limits.
 """
 import argparse
 import http.client
@@ -454,8 +456,11 @@ def shot_timeout():
         return SHOT_TIMEOUT
 
 
-def take(browser, profile, stage, shot):
-    """Take one shot into the staging folder."""
+def take(browser, profile, stage, shot, first=False):
+    """Take one shot into the staging folder. The first shot of a run may wait two limits longer.
+
+    A browser's first launch on a new machine can take minutes. It is the same process still warming up, so the
+    wait is extended instead of killing it and starting over. A hung browser still dies within three limits."""
     name, url = shot["path"], shot["url"]
     width, height = SIZES[shot["size"]]
     out = os.path.join(stage, name)
@@ -464,12 +469,23 @@ def take(browser, profile, stage, shot):
            "--blink-settings=preferredColorScheme=%d" % THEMES[shot["theme"]],
            "--window-size=%d,%d" % (width, height), "--screenshot=" + out, url]
     proc = None
+    limit = shot_timeout()
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, start_new_session=True)
-        proc.wait(timeout=shot_timeout())
+        try:
+            proc.wait(timeout=limit)
+        except subprocess.TimeoutExpired:
+            if not first:
+                raise
+            extra = 2 * limit
+            print("The first launch is slow (%d s so far). Waiting up to %d s more." % (limit, extra),
+                  file=sys.stderr, flush=True)
+            proc.wait(timeout=extra)
     except (OSError, subprocess.SubprocessError) as e:
-        die("the browser failed on %s (%s). No screenshots were kept." % (name, type(e).__name__), 4)
+        slow = " The first launch was slow and still did not finish in %d s." % (3 * limit) \
+            if first and isinstance(e, subprocess.TimeoutExpired) else ""
+        die("the browser failed on %s (%s).%s No screenshots were kept." % (name, type(e).__name__, slow), 4)
     finally:
         if proc is not None:
             stop_group(proc)  # helpers can outlive the browser, so the whole group goes either way
@@ -516,8 +532,9 @@ def main():
     stage = tempfile.mkdtemp(prefix=".stage-", dir=run_dir)  # same filesystem, so os.replace is atomic
     servers, urls = masked_urls(screens, project, mask_style(args.redact_selector))
     try:
-        for shot in shots:
-            take(browser, os.path.join(work, "profile-" + shot["path"]), stage, {**shot, "url": urls[shot["url"]]})
+        for number, shot in enumerate(shots):
+            take(browser, os.path.join(work, "profile-" + shot["path"]), stage, {**shot, "url": urls[shot["url"]]},
+                 first=number == 0)
             for server in servers:
                 if server.errors:
                     die("%s (while shooting %s). No screenshots were kept." % (server.errors[0], shot["path"]), 4)

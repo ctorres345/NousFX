@@ -54,6 +54,11 @@ if u.scheme == "http":
 if u.scheme == "http" and os.environ.get("VIA_FAKE_HOST"):
     status, _, body, _ = get(u, "/index.html", host=os.environ["VIA_FAKE_HOST"])
     note({"probe": "host", "status": status, "location": None, "body": body})
+if os.environ.get("VIA_FAKE_SLOW_AT"):  # call number N (1 = the first launch) answers late, the others at once
+    with open(log_path) as log:
+        calls = len([line for line in log if line.strip()])
+    if calls == int(os.environ["VIA_FAKE_SLOW_AT"]):
+        time.sleep(3)
 if os.environ.get("VIA_FAKE_HANG"):
     child = subprocess.Popen(["sleep", "300"])
     with open(os.environ["VIA_FAKE_HANG"], "w") as f:
@@ -604,6 +609,39 @@ class ViaCaptureTest(unittest.TestCase):
         got = self.probes()["host"]
         self.assertIn(got["status"], (403, 421))
         self.assertNotIn("private", got["body"])
+
+    def test_a_slow_first_launch_gets_extra_time_instead_of_failing(self):
+        r = self.capture("home=index.html", extra_env={"VIA_FAKE_SLOW_AT": "1", "VIA_SHOT_TIMEOUT": "2"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(json.loads(r.stdout)["screenshots"]), 4)
+        self.assertEqual(len(self.pngs()), 4)
+        self.assertEqual(len(self.calls()), 4)  # waited, did not relaunch
+        self.assertIn("first launch is slow", r.stderr)
+        self.assertNotIn("first launch is slow", r.stdout)  # stdout stays the run record
+
+    def test_a_fast_run_prints_no_slow_launch_note(self):
+        r = self.capture("home=index.html")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("slow", r.stderr)
+
+    def test_a_later_shot_that_is_slow_still_fails_at_the_normal_limit(self):
+        r = self.capture("home=index.html", extra_env={"VIA_FAKE_SLOW_AT": "2", "VIA_SHOT_TIMEOUT": "2"})
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertEqual(self.pngs(), [])
+        self.assertEqual(len(self.calls()), 2)
+        self.assertNotIn("first launch is slow", r.stderr)
+
+    def test_a_first_launch_that_never_answers_gives_up_within_three_times_the_limit(self):
+        pidfile = os.path.join(self.tmp, "helper.pid")
+        start = time.monotonic()
+        r = self.capture("home=index.html", extra_env={"VIA_FAKE_HANG": pidfile, "VIA_SHOT_TIMEOUT": "2"})
+        took = time.monotonic() - start
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertIn("first launch is slow", r.stderr)
+        self.assertIn("home-light-phone.png", r.stderr)
+        self.assertEqual(self.pngs(), [])
+        self.assertGreaterEqual(took, 6)  # it did wait the extra time
+        self.assertLess(took, 6 + 10)  # and no longer than 3x the limit plus start-up slack
 
     def test_a_browser_that_hangs_is_killed_with_its_helper_processes(self):
         pidfile = os.path.join(self.tmp, "helper.pid")

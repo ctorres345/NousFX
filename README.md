@@ -97,7 +97,7 @@ The audit should flag both. You approve once which fixes happen now and which be
 | Figma | Only `/via export figma` is affected. |
 | Obsidian vault | No note is written. |
 | Chrome or Chromium | The capture exits 3 and the visual checks are skipped. Set `VIA_CHROME` to point at a browser. |
-| A fresh browser profile | The first capture can take a few minutes and stop with exit 4 (`TimeoutExpired`). Run it again, or set `VIA_SHOT_TIMEOUT=180`. |
+| A first browser launch | The first capture can take a few minutes. Via waits for it (up to 180 s) and says "The first launch is slow" on stderr. A browser that never answers still stops with exit 4. `VIA_SHOT_TIMEOUT` sets the base limit; the first shot may take three times that. |
 | Simulator or device | Native visual checks are skipped. |
 
 ### Check a change to Via
