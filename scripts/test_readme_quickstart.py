@@ -68,12 +68,11 @@ class ReadmeQuickstartTest(unittest.TestCase):
                 real |= {"%s.%s" % (top, k) for k in val}
             else:
                 real.add(top)
-        code = read("plugins", "via", "scripts", "via_outbound.py")
         table = section(self.meet.replace("### ", "## "), "Config")
         keys = re.findall(r"^\| `([a-z_.]+)` \|", table, re.M)
         self.assertGreaterEqual(len(keys), 8)
         for key in keys:
-            self.assertTrue(key in real or key in code, "config key not in the code or example: " + key)
+            self.assertIn(key, real, "config key not in via.example.json: " + key)
         self.assertEqual(real - set(keys) - {"integrations"}, set(), "example keys missing from the table")
 
 

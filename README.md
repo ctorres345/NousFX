@@ -69,7 +69,7 @@ The repo ships a one-screen sample app, `samples/web`, with two planted flaws: a
 |---|---|
 | ![The sample app in light mode at desktop width](docs/images/via/sample-light-desktop.png) | ![The sample app in dark mode at phone width](docs/images/via/sample-dark-phone.png) |
 
-The audit looks at both. You approve once which fixes happen now and which become tickets. How I tested this on a clean machine, and what fell back, is in [docs/fresh-user-test.md](docs/fresh-user-test.md).
+The audit should flag both. You approve once which fixes happen now and which become tickets. How I tested this on a clean machine, and what fell back, is in [docs/fresh-user-test.md](docs/fresh-user-test.md).
 
 ### Config
 
@@ -83,8 +83,7 @@ The audit looks at both. You approve once which fixes happen now and which becom
 | `obsidian.argon_log` | `"Argon UI review log.md"` | Note name for the second-opinion log. |
 | `figma.state` | `"missing"` | Only `/via export figma` uses it. |
 | `jira.site` | `null` | Your Jira site. |
-| `outbound_allowlist` | `{}` | A project sends nothing out until it is listed here. Key `host/owner/repo` (for example `github.com/acme/app`), value `{"destinations": ["gemini", "jira", "figma", "artifacts", "obsidian"]}`; list only what you want. |
-| `gemini_code_paths` | not set | The only code Gemini may see. |
+| `outbound_allowlist` | `{}` | A project sends nothing out until it is listed here. Key `host/owner/repo` (for example `github.com/acme/app`), value `{"destinations": ["gemini", "jira", "figma", "artifacts", "obsidian"], "gemini_code_paths": ["src/"]}`. List only the destinations you want; `gemini_code_paths` is the only code Gemini may see. |
 | `capture.themes` | `["light", "dark"]` | Themes to shoot. |
 | `capture.font_scale` | `"largest"` | Font scale for native shots. |
 | `capture.max_second_opinion_shots` | `8` | Cap on shots sent for a second opinion. |

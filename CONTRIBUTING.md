@@ -36,7 +36,7 @@ Skills I write live in `claude/skills/<name>/`. Via's live in `plugins/via/skill
 - [ ] **Docs.** One line in the README table or `docs/` if people need to know it exists, and an entry in `CHANGELOG.md`.
 - [ ] **Run it.** Try the skill on a real task, then `python3 -B scripts/run_checks.py`.
 
-To see the skill on your machine, run `python3 -B scripts/nousfx_sync.py`. It links my skills into `~/.claude/skills` and `~/.agents/skills`, so an edit is live.
+To see the skill on your machine, run `python3 -B scripts/nousfx_sync.py --dry-run` to see what it would change. The real sync installs my whole harness (rules, agents, hooks, the review gate and a deny list in `~/.claude/settings.json`), not only skill links, so read [docs/sync.md](docs/sync.md) first.
 
 ## Reporting a problem
 

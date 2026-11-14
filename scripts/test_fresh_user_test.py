@@ -19,12 +19,15 @@ class RestoreGuardTest(unittest.TestCase):
         self.victim = os.path.join(tmp.name, "victim")
         os.makedirs(self.victim)
         open(os.path.join(self.victim, "keep.txt"), "w").close()
-        saved = f.STATE_DIR
+        self.cfg = os.path.join(tmp.name, "fake-via.json")  # never the real config
+        open(self.cfg, "w").write("{}")
+        saved = (f.STATE_DIR, f.via_home.default_config)
         f.STATE_DIR = self.state_dir
-        self.addCleanup(setattr, f, "STATE_DIR", saved)
+        f.via_home.default_config = lambda: self.cfg
+        self.addCleanup(lambda: (setattr(f, "STATE_DIR", saved[0]), setattr(f.via_home, "default_config", saved[1])))
 
     def write_state(self, **over):
-        st = {"work": self.victim, "home": "", "app": "", "config": f.via_home.default_config(),
+        st = {"work": self.victim, "home": "", "app": "", "config": self.cfg,
               "backup": None, "backup_sha": None, **over}
         with open(f._state_path(), "w") as fh:
             json.dump(st, fh)
@@ -35,8 +38,11 @@ class RestoreGuardTest(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.victim, "keep.txt")))
 
     def test_config_elsewhere_is_refused(self):
-        self.write_state(config=os.path.join(self.victim, "keep.txt"))
+        work = tempfile.mkdtemp(prefix="via-fresh-")  # passes the work guard, so only the config guard can refuse
+        self.addCleanup(lambda: os.path.isdir(work) and os.rmdir(work))
+        self.write_state(work=work, config=os.path.join(self.victim, "keep.txt"))
         self.assertEqual(f.restore(), 1)
+        self.assertTrue(os.path.isdir(work))
         self.assertTrue(os.path.exists(os.path.join(self.victim, "keep.txt")))
 
     def test_nothing_prepared_is_ok(self):

@@ -71,6 +71,7 @@ def prepare():
     if os.path.isfile(cfg):
         backup = os.path.join(work, "via.json.bak")
         shutil.copy2(cfg, backup)
+        os.remove(cfg)  # setup must start from nothing; `restore` puts the backup back
     state = {"work": work, "home": home, "app": app, "config": cfg, "backup": backup,
              "backup_sha": _sha(backup) if backup else None}
     with open(_state_path(), "w") as f:
