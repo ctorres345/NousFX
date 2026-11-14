@@ -11,7 +11,7 @@ A shareable framework for building software with Claude Code. It holds the agent
 | **Delegation** | The main session (Opus) plans and edits. Cheap Haiku subagents do search, docs lookups and noisy test runs. Fable agents give premium second opinions, only after you approve |
 | **Spec-to-ticket flow** | Grill the idea, write a spec, split it into Jira tickets, implement, review, open the PR |
 | **Quality gates** | A review loop that must pass before `gh pr create` works, and UI review with screenshots for anything users see |
-| **Designer (Via)** | *Planned.* A designer skill that audits UI, shows prototypes and files tickets with screenshots and specs. See [Roadmap](#roadmap) |
+| **Designer (Via)** | A plugin that audits UI, shows prototypes and files tickets with screenshots and specs. See [Meet Via](#meet-via) |
 | **Tooling** | Jira board audits, session handoffs, project setup and a token usage report |
 
 ```
@@ -39,9 +39,11 @@ If `~/.claude/settings.json` is a symlink (a dotfiles setup), replace it with a 
 
 Setting up a new machine, updating after a merge, setting up one project, the smoke checks and rolling back are in [docs/RUNBOOK.md](docs/RUNBOOK.md). If you use agy, my `gemini-orchestrator` plugin decides its delegation and model choice, so install it too.
 
-### Install Via (early preview)
+## Meet Via
 
-Via is a plugin in this repo's marketplace. It is at version 0.4.0: `/via setup`, `/via audit` (web projects only) and `/via spec` work so far, and the other modes say they are not built yet.
+Via is my designer skill, named after Octavia, one of my cats. It audits UI, shows before/after prototypes and files tickets with screenshots and specs. It is a plugin in this repo's marketplace, version 0.4.0: `/via setup`, `/via audit` (web projects only) and `/via spec` work so far, and the other modes say they are not built yet. You need Claude Code and nothing else; every integration is optional.
+
+### Quickstart
 
 ```bash
 claude plugin marketplace add ctorres345/NousFX
@@ -51,11 +53,55 @@ claude plugin marketplace add ctorres345/NousFX
 claude plugin install via@nousfx
 ```
 
-Then run `/reload-plugins` and `/via setup`. It checks which integrations you have (Gemini, Jira, Figma, Obsidian, simulators, a browser, design skills), says why each matters and links the fix. It saves the result to `~/.config/nousfx/via.json`, which holds statuses and paths only, never keys. Running it again changes nothing when nothing changed. A project sends nothing out until you list it under `outbound_allowlist` in that file, as `"owner/repo": {"destinations": ["gemini", "jira", "figma", "artifacts", "obsidian"]}` (list only the destinations you want). Unlisted projects get local-only output.
+Then, inside Claude Code, run `/reload-plugins` and:
 
-For a web project, `/via audit` (or `/via audit <screen>`) takes light and dark screenshots at phone and desktop width with headless Chrome or Chromium, runs the web design skills, gets a second opinion and saves a findings report in `.via/runs/`, which git ignores.
+```text
+/via setup
+```
 
-To check a change to Via, run its eval set:
+`/via setup` checks which integrations you have (Gemini, Jira, Figma, Obsidian, simulators, a browser, design skills), says why each matters and links the fix. It saves the result to `~/.config/nousfx/via.json`, which holds statuses and paths only, never keys. Running it again changes nothing when nothing changed.
+
+### An example run
+
+The repo ships a one-screen sample app, `samples/web`, with two planted flaws: a subtitle at `#BBBBBB` on white, and a 96x28 button below the touch target. Copy it into a folder with `git init` and run `/via audit` there. Via takes light and dark screenshots at phone and desktop width with headless Chrome or Chromium, runs the web design skills, gets a second opinion and saves a findings report in `.via/runs/`, which git ignores.
+
+| Light, desktop | Dark, phone |
+|---|---|
+| ![The sample app in light mode at desktop width](docs/images/via/sample-light-desktop.png) | ![The sample app in dark mode at phone width](docs/images/via/sample-dark-phone.png) |
+
+The audit looks at both. You approve once which fixes happen now and which become tickets. How I tested this on a clean machine, and what fell back, is in [docs/fresh-user-test.md](docs/fresh-user-test.md).
+
+### Config
+
+`/via setup` writes `~/.config/nousfx/via.json`. It must stay outside any git work tree; the scripts refuse a config kept in a project. The home comes from your system user record, so setting `$HOME` does not move it.
+
+| Key | Default | What it is |
+|---|---|---|
+| `version` | `1` | Config format. |
+| `integrations` | filled by `/via setup` | Status of each integration, never a key. |
+| `obsidian.vault_path` | `null` | Your vault. Set only after you say so. |
+| `obsidian.argon_log` | `"Argon UI review log.md"` | Note name for the second-opinion log. |
+| `figma.state` | `"missing"` | Only `/via export figma` uses it. |
+| `jira.site` | `null` | Your Jira site. |
+| `outbound_allowlist` | `{}` | A project sends nothing out until it is listed here. Key `host/owner/repo` (for example `github.com/acme/app`), value `{"destinations": ["gemini", "jira", "figma", "artifacts", "obsidian"]}`; list only what you want. |
+| `gemini_code_paths` | not set | The only code Gemini may see. |
+| `capture.themes` | `["light", "dark"]` | Themes to shoot. |
+| `capture.font_scale` | `"largest"` | Font scale for native shots. |
+| `capture.max_second_opinion_shots` | `8` | Cap on shots sent for a second opinion. |
+
+### When something is missing
+
+| Missing | What Via does |
+|---|---|
+| Gemini key | A fresh-context Claude reviewer gives the second opinion. |
+| Atlassian (Jira) | Tickets are written as markdown. |
+| Figma | Only `/via export figma` is affected. |
+| Obsidian vault | No note is written. |
+| Chrome or Chromium | The capture exits 3 and the visual checks are skipped. Set `VIA_CHROME` to point at a browser. |
+| A fresh browser profile | The first capture can take a few minutes and stop with exit 4 (`TimeoutExpired`). Run it again, or set `VIA_SHOT_TIMEOUT=180`. |
+| Simulator or device | Native visual checks are skipped. |
+
+### Check a change to Via
 
 ```bash
 python3 -B plugins/via/scripts/via_eval.py
@@ -63,7 +109,7 @@ python3 -B plugins/via/scripts/via_eval.py
 
 [`plugins/via/evals/cases.json`](plugins/via/evals/cases.json) lists each case as a sample prompt and the behavior I expect: routing (fix now, ticket or reject), the fresh-context fallback when Gemini is missing, unattended runs that change nothing, and Via never committing. The runner checks each one on a throwaway git repo, with no model calls and nothing sent out, and prints `ok` or `FAIL` per case. `--only <id>` runs one case and `--json` prints the results as JSON. `scripts/run_checks.py` runs it too, through `test_via_eval.py`. It does not score visual quality.
 
-A plugin can ship hooks that run code on your machine. Via 0.4.0 has none, but read `plugins/via/` before you install a later version.
+A plugin can ship hooks that run code on your machine. Via 0.4.0 has none, but read `plugins/via/` before you install a later version. Want to add a skill of your own? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## How to use it day to day
 
@@ -238,8 +284,7 @@ Details of each release are in [CHANGELOG.md](CHANGELOG.md).
   | `/via audit` | Audits the app at any time |
 
   For each problem it shows before/after prototypes. You approve once which fixes happen now and which become Jira tickets; tickets carry inline screenshots and a spec table. It exports to Obsidian and Figma. It learns from every project, but only saves a lesson after you approve it. Every integration is optional, so it works with only Claude Code installed.
-- **Plugin marketplace.** Install Via with `/plugin marketplace add ctorres345/NousFX`. The rest of the harness comes from the sync; third-party skills are already pinned by commit and checksum.
-- **Contributing guide** with a skill-writing checklist.
+- **Plugin marketplace.** Install Via with `claude plugin marketplace add ctorres345/NousFX`. The rest of the harness comes from the sync; third-party skills are already pinned by commit and checksum.
 - **Plugins named after my cats.** Only Via is planned; the rest are ideas for later.
 
   | Plugin | Role | Would hold |
