@@ -195,6 +195,10 @@ ONLY_MENTIONS = [
 
 
 class Base(unittest.TestCase):
+    # NFX-20: a PR create asks tier.py whether the diff touches UI, and tier.py needs origin/main to diff against.
+    # The --mark tests turn it off: a default-branch ref makes the gate read the check command from it, not the tree.
+    origin = True
+
     def setUp(self):
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="review-gate-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
@@ -210,7 +214,12 @@ class Base(unittest.TestCase):
             self.write_check(path, "exit 0")
             self.sh("git", "add", "-A", cwd=path)
             self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init", cwd=path)
+            if self.origin:
+                self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD", cwd=path)  # NFX-20: tier.py's base
         return path
+
+    def add_origin(self):
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD", cwd=self.repo)
 
     def sh(self, *args, cwd):
         subprocess.run(args, cwd=cwd, check=True, capture_output=True)
@@ -452,6 +461,7 @@ class Failure(Base):
 
 class CheckCommand(Base):
     """NFX-54: --mark runs the project's check command itself."""
+    origin = False
 
     def test_failing_check_refuses_the_mark(self):
         self.write_check(self.repo, "exit 1")
@@ -633,6 +643,7 @@ class CheckCommand(Base):
         self.write_check(self.repo, None)
         self.commit(self.repo)
         self.assertEqual(self.mark("--skip", "approved").returncode, 0)
+        self.add_origin()  # NFX-20: the create asks tier.py for a base
         self.assertEqual(self.run_gate("gh pr create"), ALLOWED)
 
     def test_check_that_changes_files_is_refused(self):
@@ -674,6 +685,8 @@ class CheckCommand(Base):
 
 
 class Marker(Base):
+    origin = False
+
     def test_mark_alone_is_refused_and_records_nothing(self):
         r = self.mark()
         self.assertNotEqual(r.returncode, 0)
@@ -698,6 +711,7 @@ class Marker(Base):
 
     def test_zero_findings_passes(self):
         self.assertEqual(self.mark("--findings", "0").returncode, 0)
+        self.add_origin()  # NFX-20: the create asks tier.py for a base
         self.assertEqual(self.run_gate("gh pr create"), ALLOWED)
 
     def test_open_findings_block(self):
@@ -706,6 +720,7 @@ class Marker(Base):
 
     def test_skip_passes(self):
         self.assertEqual(self.mark("--skip", "approved").returncode, 0)
+        self.add_origin()  # NFX-20: the create asks tier.py for a base
         self.assertEqual(self.run_gate("gh pr create"), ALLOWED)
         self.mark("--findings", "2", "--skip", "approved")
         self.assertEqual(self.run_gate("gh pr create"), ALLOWED)
@@ -727,6 +742,7 @@ class Marker(Base):
         self.mark("--findings", "0")
         with open(os.path.join(self.repo, "f.txt"), "a", encoding="utf-8") as f:
             f.write("more")
+        self.add_origin()  # NFX-20: the create asks tier.py for a base
         self.assertEqual(self.run_gate("gh pr create"), ALLOWED)  # uncommitted: not part of the PR
         self.sh("git", "add", "-A", cwd=self.repo)
         self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x", cwd=self.repo)
@@ -738,6 +754,7 @@ class Marker(Base):
         self.mark("--findings", "0")
         self.sh("git", "add", "-A", cwd=self.repo)
         self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x", cwd=self.repo)
+        self.add_origin()  # NFX-20: the create asks tier.py for a base
         self.assertEqual(self.run_gate("gh pr create"), ALLOWED)
 
 

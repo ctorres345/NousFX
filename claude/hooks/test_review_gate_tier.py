@@ -33,7 +33,7 @@ class TierCheck(Base):
             os.makedirs(scripts)
             self.sentinel = os.path.join(self.tmp, "tier-ran")
             if body is None:
-                body = json.dumps({"tier": tier, "reasons": ["Tier %d: fake" % tier], "ui": False, "stats": {}})
+                body = json.dumps({"tier": tier, "reasons": ["Tier %d: fake" % tier], "ui": False, "fallback": False, "stats": {}})
             with open(os.path.join(scripts, "tier.py"), "w", encoding="utf-8") as f:
                 f.write("import sys\nopen(%r, 'w').close()\nprint(%r)\nsys.exit(%d)\n" % (self.sentinel, body, code))
         return os.path.join(hooks, "review-gate.py")
@@ -143,6 +143,7 @@ class TierCheck(Base):
         self.assertEqual(len(r.stdout.splitlines()), 1)
 
     def test_the_real_tier_py_runs_and_a_repo_without_a_merge_base_is_tier_2(self):
+        self.sh("git", "update-ref", "-d", "refs/remotes/origin/main")  # Base adds it for the Via rule (NFX-20)
         r = self.mark("--findings", "0", "--tier", "0")
         self.assertEqual(r.returncode, 2)
         self.assertIn("Tier 2", r.stderr)

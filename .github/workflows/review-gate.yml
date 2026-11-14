@@ -87,6 +87,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
           SKIP_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'review-skip') }}
+          VIA_SKIP_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'via-skip') }}
           REPO: ${{ github.repository }}
           REPO_OWNER: ${{ github.repository_owner }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -184,6 +185,49 @@ jobs:
             *"Review tier checked."*) ;;
             *) echo "::error::The base gate did not confirm the tier check."; exit 1 ;;
           esac
+          # NFX-20 Via check (before the check command, which runs the PR's code and could rewrite tier.json or the
+          # base gate copy): a diff that touches UI (tier.json says so) needs a `Via-Check: <tree>` line, or a skip line
+          # plus the via-skip label. A tier.json that could not read the diff (fallback) fails: unknown is not "no UI".
+          if ! grep -q 'sys.argv\[1:2\] == \["verify-via"\]' "$gate_dir/review-gate.py"; then
+            echo "::error::The gate on '$BASE_REF' has no verify-via, so the Via check cannot be verified. The PR that introduces it cannot be verified; merge it by hand as the repo owner."
+            exit 1
+          fi
+          via_out=$(python3 -B "$gate_dir/review-gate.py" verify-via --tier-json "$RUNNER_TEMP/tier.json" \
+                      --text-file "$RUNNER_TEMP/pr-body.txt" --text-file "$RUNNER_TEMP/commit-msg.txt" \
+                      --tree "$tree" </dev/null 2>&1) || {
+            printf '%s\n' "$via_out"
+            echo "::error::The Via check failed (message above): a PR that touches UI needs the Via-Check line from 'review-gate.py attest' after '/via check' passed."
+            exit 1
+          }
+          printf '%s\n' "$via_out"
+          # The outcome is the first line, compared exactly: a skip reason is free text, so it must not pick the arm.
+          via_first=$(printf '%s\n' "$via_out" | head -n 1)
+          case "$via_first" in
+            "Via check verified."|"Via check not needed.") ;;
+            "Via check skipped: "*)
+              # Same rule as the review skip: the via-skip label, applied last by the repo owner or an org member.
+              if [ "$VIA_SKIP_LABEL" != "true" ]; then
+                echo "::error::A skipped Via check needs the via-skip label, applied by the repo owner or an org member."
+                exit 1
+              fi
+              events=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/events?per_page=100" \
+                  --jq '.[] | select(.event == "labeled" and .label.name == "via-skip") | [.actor.login, .actor.type] | @tsv' \
+                  </dev/null) || { echo "::error::Could not read the PR events to see who applied the via-skip label."; exit 1; }
+              labeler=$(printf '%s\n' "$events" | tail -n 1)
+              login=${labeler%%$(printf '\t')*}
+              kind=${labeler#*$(printf '\t')}
+              if [ -z "$login" ] || [ "$kind" = "Bot" ]; then
+                echo "::error::Could not find a person who applied the via-skip label (events unreadable, none found, or a bot)."
+                exit 1
+              fi
+              if [ "$login" != "$REPO_OWNER" ] && ! gh api "orgs/$REPO_OWNER/members/$login" --silent </dev/null >/dev/null 2>&1; then
+                echo "::error::The via-skip label was last applied by $login, who is not the repo owner or an org member."
+                exit 1
+              fi
+              echo "via-skip label applied by $login." ;;
+            *) echo "::error::The base gate did not confirm the Via check."; exit 1 ;;
+          esac
+          # end NFX-20
           # A skip attestation waives the review, never the tests: the check always runs.
           check_out=$(python3 -B "$gate_dir/review-gate.py" run-check --ref "origin/$BASE_REF" </dev/null) || {
             printf '%s\n' "$check_out"
