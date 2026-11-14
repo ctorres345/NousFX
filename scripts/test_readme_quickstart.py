@@ -33,11 +33,12 @@ class ReadmeQuickstartTest(unittest.TestCase):
         self.assertTrue(self.meet, "README has no '## Meet Via' section")
 
     def test_quickstart_commands_match_the_fresh_user_test(self):
+        quick = re.search(r"^### Quickstart\n(.*?)(?=^### |\Z)", self.meet, re.S | re.M)
+        self.assertTrue(quick, "Meet Via has no '### Quickstart' subsection")
         lines = []
-        for block in re.findall(r"```[a-z]*\n(.*?)```", self.meet, re.S):
+        for block in re.findall(r"```[a-z]*\n(.*?)```", quick.group(1), re.S):
             lines += [l.strip() for l in block.splitlines() if l.strip()]
-        quick = [l for l in lines if l in fresh_user_test.QUICKSTART]
-        self.assertEqual(quick, fresh_user_test.QUICKSTART, "README quickstart differs from fresh_user_test.QUICKSTART")
+        self.assertEqual(lines, fresh_user_test.QUICKSTART, "README quickstart differs from fresh_user_test.QUICKSTART")
 
     def test_marketplace_commands_name_a_real_plugin(self):
         with open(os.path.join(ROOT, ".claude-plugin", "marketplace.json")) as f:

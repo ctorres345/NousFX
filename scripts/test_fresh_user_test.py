@@ -27,7 +27,7 @@ class RestoreGuardTest(unittest.TestCase):
         self.addCleanup(lambda: (setattr(f, "STATE_DIR", saved[0]), setattr(f.via_home, "default_config", saved[1])))
 
     def write_state(self, **over):
-        st = {"work": self.victim, "home": "", "app": "", "config": self.cfg,
+        st = {"tmp_root": os.path.realpath(tempfile.gettempdir()), "work": self.victim, "home": "", "app": "", "config": self.cfg,
               "backup": None, "backup_sha": None, **over}
         with open(f._state_path(), "w") as fh:
             json.dump(st, fh)

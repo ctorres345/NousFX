@@ -2,7 +2,7 @@
 
 I ran this on 2026-11-14 for NFX-25 to see what a friend gets on a clean machine. Run it again with `python3 -B scripts/fresh_user_test.py prepare`, then `verify`, then `restore`.
 
-**Result: partly passed.** The install and `/via setup` ran in a temp HOME with nothing configured. The capture passed on a retry. **`/via audit` inside Claude Code was not run**, so this is not a full pass of the ticket's first criterion.
+**Result: partly passed.** The install ran through the real `claude plugin` commands in a temp HOME, and the `via_setup.py` doctor ran as a script (not the `/via setup` skill) with nothing configured. The capture passed on a retry. **`/via audit` inside Claude Code was not run**, so this is not a full pass of the ticket's first criterion.
 
 ## Setup
 
@@ -23,7 +23,7 @@ A temp `$HOME` does not move Via's config. Via reads the home from the system us
 |---|---|---|
 | 1 | `claude plugin marketplace add ctorres345/NousFX` | Passed. Cloned over HTTPS. |
 | 2 | `claude plugin install via@nousfx` | Passed. `claude plugin list` shows `via@nousfx` 0.4.0, enabled. |
-| 3 | `/via setup` doctor (`via_setup.py`, no flags set) | Passed. Wrote `via.json`; a second run said `unchanged`. |
+| 3 | `via_setup.py` doctor, as a script under the stand-in (not the `/via setup` skill; `verify` does not apply to a stand-in run) | Passed. Wrote `via.json`; a second run said `unchanged`. |
 | 4 | `via_skills.py plan` | Passed. Lists 9 locked skills to install; nothing was installed. |
 | 5 | `via_capture.py` on `samples/web`, default timeout | **Failed**, exit 4, `TimeoutExpired` on the first shot. |
 | 6 | The same capture with `VIA_SHOT_TIMEOUT=180` | Passed. Took 174 s. Four shots written. |

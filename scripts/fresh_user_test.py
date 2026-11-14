@@ -54,8 +54,8 @@ def _load():
 
 
 def prepare():
-    if _load():
-        print("a run is already prepared; run `restore` first", file=sys.stderr)
+    if os.path.exists(_state_path()):
+        print("a run is already prepared (or its state file is damaged: %s); run `restore` first" % _state_path(), file=sys.stderr)
         return 1
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
     work = tempfile.mkdtemp(prefix="via-fresh-")
@@ -69,10 +69,10 @@ def prepare():
     cfg = via_home.default_config()
     backup = None
     if os.path.isfile(cfg):
-        backup = os.path.join(work, "via.json.bak")
+        backup = os.path.join(STATE_DIR, "via.json.bak")  # not in /tmp, which gets purged
         shutil.copy2(cfg, backup)
         os.remove(cfg)  # setup must start from nothing; `restore` puts the backup back
-    state = {"work": work, "home": home, "app": app, "config": cfg, "backup": backup,
+    state = {"tmp_root": os.path.realpath(tempfile.gettempdir()), "work": work, "home": home, "app": app, "config": cfg, "backup": backup,
              "backup_sha": _sha(backup) if backup else None}
     with open(_state_path(), "w") as f:
         json.dump(state, f)
@@ -120,10 +120,10 @@ def restore():
         return 0
     cfg, backup = st["config"], st["backup"]
     work = os.path.realpath(st["work"])
-    if (cfg != via_home.default_config() or os.path.dirname(work) != os.path.realpath(tempfile.gettempdir())
+    if (cfg != via_home.default_config() or os.path.dirname(work) != st.get("tmp_root")
             or not os.path.basename(work).startswith("via-fresh-")
-            or (backup and os.path.dirname(os.path.realpath(backup)) != work)):
-        print("state file does not look like one `prepare` wrote; not touching anything", file=sys.stderr)
+            or (backup and backup != os.path.join(STATE_DIR, "via.json.bak"))):
+        print("state file does not look like one `prepare` wrote; not touching anything (your config backup, if any: %s)" % backup, file=sys.stderr)
         return 1
     if backup:
         if not os.path.isfile(backup) or _sha(backup) != st["backup_sha"]:
@@ -131,6 +131,7 @@ def restore():
             return 1
         os.makedirs(os.path.dirname(cfg), exist_ok=True)
         shutil.copy2(backup, cfg)
+        os.remove(backup)
         print("restored %s (sha256 %s)" % (cfg, _sha(cfg)[:12]))
     elif os.path.isfile(cfg):
         os.remove(cfg)  # the run created it; there was none before
