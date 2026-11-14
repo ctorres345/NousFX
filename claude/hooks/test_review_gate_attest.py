@@ -158,6 +158,9 @@ class Workflow(unittest.TestCase):
         label = self.text.split("# NFX-110 skip label check")[1].split("# end NFX-110")[0]
         self.assertNotIn("exit 0", label)
         text = self.text.replace(label, "")
+        via = text.split("# NFX-20 Via check")[1].split("# end NFX-20")[0]  # NFX-20: its skip arm only fails or passes on a label
+        self.assertNotIn("exit 0", via)
+        text = text.replace(via, "")
         self.assertNotIn("exit 0", text.split("run-check --ref")[0].split("verify-attestation")[-1])
         self.assertNotIn("skipped:", text.split("run-check --ref")[0].split("case \"$out\" in")[-1])
 

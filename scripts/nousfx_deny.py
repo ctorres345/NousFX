@@ -59,7 +59,7 @@ EXCLUDABLE = (tuple(f"{tool}({p})" for p in SECRETS for tool in ("Read", "Edit")
 # matches the (unique) file name anywhere. The gate itself writes them from python, which no Read or Edit
 # rule sees. deny.toml cannot exclude these: they are part of the review gate, not a preference.
 GATE_FILES = ("claude-review-ok", "claude-review-stamp-key", "claude-review-check-pass", "claude-branch-ok",
-              "claude-proof-pass")
+              "claude-proof-pass", "via-check-ok", "via-check-skip")  # the last two: the Via pass and skip (NFX-20)
 GATE_RULES = tuple(f"{tool}(//**/{name})" for name in GATE_FILES for tool in ("Read", "Edit"))
 RULES = EXCLUDABLE + GATE_RULES
 # Best-effort ask rules (permissions.ask) for the gate's waivers, which only the user may approve (NFX-101).
@@ -68,7 +68,7 @@ RULES = EXCLUDABLE + GATE_RULES
 # any path to the gate matches; `python3 -c`, a copy of the script or `eval` do not (docs/review-gate.md).
 # The gate hook also runs on Windows' PowerShell tool, whose rules have the same shape as Bash rules.
 ASK_RULES = tuple(f"{tool}(*review-gate.py*{flag}*)" for tool in ("Bash", "PowerShell")
-                  for flag in ("--skip", "--tier-override", "--allow-branch"))
+                  for flag in ("--skip", "--tier-override", "--allow-branch", "--via-skip"))
 FILE_NAME = "deny.toml"
 _RULE = re.compile(r"^(Read|Edit)\((.+)\)$")
 

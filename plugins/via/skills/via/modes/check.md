@@ -58,7 +58,7 @@ Only when the code is final (no edits since the last capture and merge), on the 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/via_run.py" pass <run_dir>
 ```
-It records the current code state with `findings_open`, the high and medium findings still open (findings with a filed ticket and rejected ones do not count; in an unattended run nothing is filed, so a routed medium finding that is not accessibility counts as `pending_human` instead, and a high, an accessibility or an unrouted one stays open; only findings in this run's record can be pending, older ledger entries stay open). The check passes when `findings_open` is 0. Any later code edit makes the record stale: check again. Unattended runs record it too; it writes only in the git folder.
+It records the current code state with `findings_open`, the high and medium findings still open (findings with a filed ticket and rejected ones do not count; in an unattended run nothing is filed, so a routed medium finding that is not accessibility counts as `pending_human` instead, and a high, an accessibility or an unrouted one stays open; only findings in this run's record can be pending, older ledger entries stay open). The check passes when `findings_open` is 0. Any later code edit makes the record stale: check again. In a repo with the NousFX review gate, this record is what `gh pr create` reads for a UI diff (`docs/review-gate.md`, Via check): without a current pass the create is blocked, and skipping is the user's call (`review-gate.py --via-skip "<reason>"`). Unattended runs record it too; it writes only in the git folder.
 
 ## 10. Report
 Print, in this order:

@@ -53,6 +53,8 @@ class Base(unittest.TestCase):
             f.write('[check]\ncommand = "exit 0"\n')
         self.sh("git", "add", "-A")
         self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+        # NFX-20: the Via rule asks tier.py whether the diff touches UI, and tier.py needs a base to diff against.
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD")
 
     def sh(self, *args):
         subprocess.run(args, cwd=self.repo, check=True, capture_output=True)

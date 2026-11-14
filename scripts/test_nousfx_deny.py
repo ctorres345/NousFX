@@ -44,7 +44,7 @@ class Rules(unittest.TestCase):
 
     def test_gate_files_are_off_limits_in_any_git_dir(self):
         """NFX-101: matched by name anywhere, so .git/, worktree, submodule and separate git dirs all count."""
-        self.assertEqual(len(GATE_FILES), 5)
+        self.assertEqual(len(GATE_FILES), 7)  # NFX-20 added via-check-ok and via-check-skip
         for name in GATE_FILES:
             for tool in ("Read", "Edit"):
                 self.assertIn(f"{tool}(//**/{name})", RULES)
@@ -58,8 +58,9 @@ class Rules(unittest.TestCase):
 
     def test_ask_rules_cover_the_gate_waivers(self):
         self.assertEqual(ASK, [f"{tool}(*review-gate.py*{flag}*)" for tool in ("Bash", "PowerShell")
-                               for flag in ("--skip", "--tier-override", "--allow-branch")])
+                               for flag in ("--skip", "--tier-override", "--allow-branch", "--via-skip")])
         self.assertIn("Bash(*review-gate.py*--skip*)", ASK)
+        self.assertIn("Bash(*review-gate.py*--via-skip*)", ASK)  # NFX-20: "--via-skip" does not contain "--skip"
         self.assertIn("PowerShell(*review-gate.py*--allow-branch*)", ASK)
 
 

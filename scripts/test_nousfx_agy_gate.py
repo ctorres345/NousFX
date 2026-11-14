@@ -52,6 +52,12 @@ class Base(unittest.TestCase):
         shutil.copy(ADAPTER, self.hooks)
         for name in GATE_FILES:
             shutil.copy(os.path.join(GATE_DIR, name), self.hooks)
+        # NFX-20: the gate asks tier.py about UI. Sync links the review-loop skill next to the hooks; tier.py loads
+        # git_refs.py from the hooks folder.
+        shutil.copy(os.path.join(GATE_DIR, "git_refs.py"), self.hooks)
+        tier_dir = os.path.join(self.tmp, "plugins", "nousfx", "skills", "review-loop", "scripts")
+        os.makedirs(tier_dir)
+        shutil.copy(os.path.join(REPO, "claude", "skills", "review-loop", "scripts", "tier.py"), tier_dir)
         self.repo = os.path.join(self.tmp, "repo")
         os.makedirs(self.repo)
         self.init_repo(self.repo, "cesar/DEM-1")
@@ -66,6 +72,7 @@ class Base(unittest.TestCase):
             f.write('[check]\ncommand = "exit 0"\n')
         self.sh("git", "add", "-A", cwd=path)
         self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init", cwd=path)
+        self.sh("git", "update-ref", "refs/remotes/origin/main", "HEAD", cwd=path)  # NFX-20: tier.py's base
 
     def sh(self, *args, cwd=None):
         subprocess.run(args, cwd=cwd or self.repo, check=True, capture_output=True, env=CLEAN_ENV)
