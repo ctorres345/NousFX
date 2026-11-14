@@ -41,7 +41,7 @@ Setting up a new machine, updating after a merge, setting up one project, the sm
 
 ## Meet Via
 
-Via is my designer skill, named after Octavia, one of my cats. It audits UI, shows before/after prototypes and files tickets with screenshots and specs. It is a plugin in this repo's marketplace, version 0.4.0: `/via setup`, `/via audit` (web projects only) and `/via spec` work so far, and the other modes say they are not built yet. You need Claude Code and nothing else; every integration is optional.
+Via is my designer skill, named after Octavia, one of my cats. It audits UI, shows before/after prototypes and files tickets with screenshots and specs. It is a plugin in this repo's marketplace, version 0.4.0: `/via setup`, `/via audit` (web projects only) and `/via spec` work so far, and the other modes say they are not built yet. You need Claude Code, Python 3 and git; Chrome or Chromium is needed only for visual checks. Every integration is optional.
 
 ### Quickstart
 
