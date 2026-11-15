@@ -129,7 +129,7 @@ jobs:
           # skip_label_ok <label>: a skip label counts only when its last event for that label is a `labeled` event by a
           # person (the repo owner or an org member) and that event is strictly newer than the last push to the PR head.
           # GitHub keeps no server time for a normal push, so the push time is the earliest review-gate run for this head
-          # SHA and PR (a run starts on every push), or the last force-push event when that is later. A pusher can forge a
+          # SHA and PR (a run starts on every push) that is not older than the last force-push event. A pusher can forge a
           # committer date, never a run time. Fail closed: an unreadable list, no matching run, a bad time, a removed label,
           # a bot or a stranger all end the step. It ends the step with a failure only, never a pass, and it takes no
           # value into a jq program: the filters get their values from --arg.
@@ -163,11 +163,22 @@ jobs:
             fi
             runs=$(gh api --paginate "repos/$REPO/actions/workflows/review-gate.yml/runs?head_sha=$HEAD_SHA&event=pull_request&per_page=100" </dev/null) \
               || { echo "::error::Could not read the review-gate runs to date the last push."; exit 1; }
-            push=$(printf '%s' "$runs" | jq -r --argjson pr "$PR_NUMBER" --arg sha "$HEAD_SHA" --arg ref "$HEAD_REF" \
-                   '.workflow_runs[] | select(.head_sha == $sha and .head_branch == $ref and any(.pull_requests[]?; .number == $pr)) | .created_at') \
+            # Only a run created at or after the last force push can date a push of this head: a rewind to an older commit
+            # and a later fast-forward back to this head leave one force-push event and an old run for the same SHA.
+            if [ -n "$force" ]; then
+              case "$force" in
+                [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
+                *) echo "::error::Could not date the last force push (got '$force')."; exit 1 ;;
+              esac
+            fi
+            push=$(printf '%s' "$runs" | jq -r --argjson pr "$PR_NUMBER" --arg sha "$HEAD_SHA" --arg ref "$HEAD_REF" --arg since "$force" \
+                   '.workflow_runs[] | select(.head_sha == $sha and .head_branch == $ref and any(.pull_requests[]?; .number == $pr) and .created_at >= $since) | .created_at') \
               || { echo "::error::Could not read the review-gate runs to date the last push."; exit 1; }
             push=$(printf '%s\n' "$push" | LC_ALL=C sort | head -n 1)
-            if [ -n "$force" ] && [ "$force" \> "$push" ]; then push=$force; fi
+            if [ -z "$push" ]; then
+              echo "::error::No review-gate run for this PR head since the last force push, so the last push cannot be dated. Re-run the job."
+              exit 1
+            fi
             for t in "$when" "$push"; do
               case "$t" in
                 [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
@@ -177,7 +188,7 @@ jobs:
             when_n=$(printf '%s' "$when" | tr -cd '0-9')
             push_n=$(printf '%s' "$push" | tr -cd '0-9')
             if [ "$when_n" -le "$push_n" ]; then
-              echo "::error::The $label label was applied before the last push ($push). Ask the owner to re-apply it once this push's review-gate run has started."
+              echo "::error::The $label label was applied before the last push ($push). Ask the owner to remove the label and add it again (adding a label that is already on the PR does nothing) once this push's review-gate run has started."
               exit 1
             fi
             echo "$label label applied by $login."
