@@ -18,6 +18,7 @@ on:
 permissions:
   contents: read
   issues: read
+  actions: read
 
 jobs:
   check:
@@ -88,6 +89,8 @@ jobs:
           AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
           SKIP_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'review-skip') }}
           VIA_SKIP_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'via-skip') }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.head_ref }}
           REPO: ${{ github.repository }}
           REPO_OWNER: ${{ github.repository_owner }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -122,6 +125,64 @@ jobs:
             *"Review attestation found for tree $tree."*) ;;
             *) echo "::error::The base gate did not confirm the attestation."; exit 1 ;;
           esac
+          # NFX-147 skip label
+          # skip_label_ok <label>: a skip label counts only when its last event for that label is a `labeled` event by a
+          # person (the repo owner or an org member) and that event is strictly newer than the last push to the PR head.
+          # GitHub keeps no server time for a normal push, so the push time is the earliest review-gate run for this head
+          # SHA and PR (a run starts on every push), or the last force-push event when that is later. A pusher can forge a
+          # committer date, never a run time. Fail closed: an unreadable list, no matching run, a bad time, a removed label,
+          # a bot or a stranger all end the step. It ends the step with a failure only, never a pass, and it takes no
+          # value into a jq program: the filters get their values from --arg.
+          skip_label_ok() {
+            label=$1
+            case "$PR_NUMBER" in ''|*[!0-9]*) echo "::error::The PR number is not a number, so the $label label cannot be checked."; exit 1 ;; esac
+            case "$HEAD_SHA" in *[!0-9a-f]*) bad=1 ;; *) bad=0 ;; esac
+            if [ "$bad" = 1 ] || [ "${#HEAD_SHA}" -ne 40 ]; then
+              echo "::error::The PR head is not a full commit sha, so the $label label cannot be checked."
+              exit 1
+            fi
+            # Capture first: a pipe would hide a failed later page, and an earlier labeler could then pass.
+            events=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/events?per_page=100" </dev/null) \
+              || { echo "::error::Could not read the PR events to see who applied the $label label."; exit 1; }
+            row=$(printf '%s' "$events" | jq -r --arg label "$label" \
+                  '.[] | select((.event == "labeled" or .event == "unlabeled") and .label.name == $label)
+                   | [.event, (.actor.login // "-"), (.actor.type // "-"), .created_at] | @tsv') \
+              || { echo "::error::Could not read the $label label events."; exit 1; }
+            row=$(printf '%s\n' "$row" | tail -n 1)
+            force=$(printf '%s' "$events" | jq -r '.[] | select(.event == "head_ref_force_pushed") | .created_at') \
+              || { echo "::error::Could not read the PR force-push events."; exit 1; }
+            force=$(printf '%s\n' "$force" | LC_ALL=C sort | tail -n 1)
+            IFS=$'\t' read -r last login kind when <<< "$row"
+            if [ "$last" != "labeled" ] || [ -z "$login" ] || [ "$kind" = "Bot" ] || [ "$login" = "-" ]; then
+              echo "::error::Could not find a person who applied the $label label (events unreadable, none found, it was removed, or a bot)."
+              exit 1
+            fi
+            if [ "$login" != "$REPO_OWNER" ] && ! gh api "orgs/$REPO_OWNER/members/$login" --silent </dev/null >/dev/null 2>&1; then
+              echo "::error::The $label label was last applied by $login, who is not the repo owner or an org member."
+              exit 1
+            fi
+            runs=$(gh api --paginate "repos/$REPO/actions/workflows/review-gate.yml/runs?head_sha=$HEAD_SHA&event=pull_request&per_page=100" </dev/null) \
+              || { echo "::error::Could not read the review-gate runs to date the last push."; exit 1; }
+            push=$(printf '%s' "$runs" | jq -r --argjson pr "$PR_NUMBER" --arg sha "$HEAD_SHA" --arg ref "$HEAD_REF" \
+                   '.workflow_runs[] | select(.head_sha == $sha and .head_branch == $ref and any(.pull_requests[]?; .number == $pr)) | .created_at') \
+              || { echo "::error::Could not read the review-gate runs to date the last push."; exit 1; }
+            push=$(printf '%s\n' "$push" | LC_ALL=C sort | head -n 1)
+            if [ -n "$force" ] && [ "$force" \> "$push" ]; then push=$force; fi
+            for t in "$when" "$push"; do
+              case "$t" in
+                [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
+                *) echo "::error::Could not date the last push or the $label label (got '$t')."; exit 1 ;;
+              esac
+            done
+            when_n=$(printf '%s' "$when" | tr -cd '0-9')
+            push_n=$(printf '%s' "$push" | tr -cd '0-9')
+            if [ "$when_n" -le "$push_n" ]; then
+              echo "::error::The $label label was applied before the last push ($push). Ask the owner to re-apply it once this push's review-gate run has started."
+              exit 1
+            fi
+            echo "$label label applied by $login."
+          }
+          # end NFX-147
           # NFX-110 skip label check
           # A skip attestation passes only with the review-skip label, applied last by the repo owner or an org member.
           # Fail closed: an unreadable events list, no labeled event, a bot or a stranger all fail.
@@ -131,22 +192,7 @@ jobs:
                 echo "::error::A skipped review needs the review-skip label, applied by the repo owner or an org member."
                 exit 1
               fi
-              # Capture first: a pipe would hide a failed later page, and an earlier labeler could then pass.
-              events=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/events?per_page=100" \
-                  --jq '.[] | select(.event == "labeled" and .label.name == "review-skip") | [.actor.login, .actor.type] | @tsv' \
-                  </dev/null) || { echo "::error::Could not read the PR events to see who applied the review-skip label."; exit 1; }
-              labeler=$(printf '%s\n' "$events" | tail -n 1)
-              login=${labeler%%$(printf '\t')*}
-              kind=${labeler#*$(printf '\t')}
-              if [ -z "$login" ] || [ "$kind" = "Bot" ]; then
-                echo "::error::Could not find a person who applied the review-skip label (events unreadable, none found, or a bot)."
-                exit 1
-              fi
-              if [ "$login" != "$REPO_OWNER" ] && ! gh api "orgs/$REPO_OWNER/members/$login" --silent </dev/null >/dev/null 2>&1; then
-                echo "::error::The review-skip label was last applied by $login, who is not the repo owner or an org member."
-                exit 1
-              fi
-              echo "review-skip label applied by $login." ;;
+              skip_label_ok review-skip ;;
           esac
           # end NFX-110
           # The tier check (NFX-70) runs before the slow check command, with the same base copies plus tier.py.
@@ -210,21 +256,7 @@ jobs:
                 echo "::error::A skipped Via check needs the via-skip label, applied by the repo owner or an org member."
                 exit 1
               fi
-              events=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/events?per_page=100" \
-                  --jq '.[] | select(.event == "labeled" and .label.name == "via-skip") | [.actor.login, .actor.type] | @tsv' \
-                  </dev/null) || { echo "::error::Could not read the PR events to see who applied the via-skip label."; exit 1; }
-              labeler=$(printf '%s\n' "$events" | tail -n 1)
-              login=${labeler%%$(printf '\t')*}
-              kind=${labeler#*$(printf '\t')}
-              if [ -z "$login" ] || [ "$kind" = "Bot" ]; then
-                echo "::error::Could not find a person who applied the via-skip label (events unreadable, none found, or a bot)."
-                exit 1
-              fi
-              if [ "$login" != "$REPO_OWNER" ] && ! gh api "orgs/$REPO_OWNER/members/$login" --silent </dev/null >/dev/null 2>&1; then
-                echo "::error::The via-skip label was last applied by $login, who is not the repo owner or an org member."
-                exit 1
-              fi
-              echo "via-skip label applied by $login." ;;
+              skip_label_ok via-skip ;;
             *) echo "::error::The base gate did not confirm the Via check."; exit 1 ;;
           esac
           # end NFX-20

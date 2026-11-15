@@ -3,7 +3,9 @@
 is on the PR and the last person who applied it is the repo owner or an org member.
 Run: python3 -B -I scripts/test_review_gate_workflow.py
 
-The block between the NFX-110 markers in review-gate.yml runs under bash with a stub `gh` on PATH.
+The block between the NFX-110 markers in review-gate.yml runs under bash with a stub `gh` on PATH, after the
+`skip_label_ok` function (NFX-147) it calls. The stub serves raw JSON; the filters run in real jq. The time rule
+itself is tested in claude/hooks/test_review_gate_via.py.
 """
 import json
 import os
@@ -18,6 +20,8 @@ import unittest
 sys.dont_write_bytecode = True
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "review-gate.yml")
+FN_START = "          # NFX-147 skip label\n"
+FN_END = "          # end NFX-147\n"
 START = "          # NFX-110 skip label check\n"
 END = "          # end NFX-110\n"
 
@@ -30,13 +34,18 @@ def read_workflow():
 def block():
     """The skip-label script, dedented. It reads $out (the verify-attestation output) and the env set by the step."""
     text = read_workflow()
-    body = text.split(START)[1].split(END)[0]
+    body = text.split(FN_START)[1].split(FN_END)[0] + text.split(START)[1].split(END)[0]
     return "\n".join(line[10:] for line in body.splitlines()) + "\n"
 
 
-def event(actor, actor_type="User"):
-    """One line of what the block's `gh api --jq` prints for a labeled review-skip event: login TAB type."""
-    return "%s\t%s" % (actor, actor_type)
+def event(actor, actor_type="User", kind="labeled", at="2026-11-15T10:05:00Z"):
+    """One review-skip label event as the issue events API returns it (a null actor stays null)."""
+    return {"event": kind, "label": {"name": "review-skip"}, "created_at": at,
+            "actor": None if actor is None else {"login": actor, "type": actor_type}}
+
+
+RUN = {"workflow_runs": [{"head_sha": "a" * 40, "head_branch": "cesar/NFX-1", "created_at": "2026-11-15T10:00:00Z",
+                          "pull_requests": [{"number": 7}]}]}
 
 
 class SkipLabel(unittest.TestCase):
@@ -50,22 +59,25 @@ class SkipLabel(unittest.TestCase):
         with open(self.script, "w", encoding="utf-8") as f:
             f.write(block())
 
-    def stub_gh(self, events=None, fail=False, members=()):
-        """events: lines the events call prints (already filtered by --jq). members: logins the org call accepts."""
-        data = os.path.join(self.tmp, "events.txt")
+    def stub_gh(self, events=None, fail=False, members=(), runs=RUN):
+        """events: the events API page. members: logins the org call accepts. runs: the workflow runs page."""
+        data = os.path.join(self.tmp, "events.json")
         with open(data, "w", encoding="utf-8") as f:
-            f.write("".join(e + "\n" for e in (events or [])))
+            json.dump(events or [], f)
+        run_data = os.path.join(self.tmp, "runs.json")
+        with open(run_data, "w", encoding="utf-8") as f:
+            json.dump(runs, f)
         gh = os.path.join(self.bin, "gh")
         cases = "".join("  *orgs/cesar/members/%s*) exit 0 ;;\n" % m for m in members)
         with open(gh, "w", encoding="utf-8") as f:
-            f.write('#!/bin/sh\necho "$@" >> "%s"\ncase "$*" in\n%s  *orgs/*) exit 1 ;;\nesac\n%s\n'
-                    % (self.calls, cases, 'cat "%s"; exit 1' % data if fail else 'cat "%s"' % data))
+            f.write('#!/bin/sh\necho "$@" >> "%s"\ncase "$*" in\n%s  *orgs/*) exit 1 ;;\n  */actions/workflows/*) cat "%s"; exit 0 ;;\nesac\n%s\n'
+                    % (self.calls, cases, run_data, 'cat "%s"; exit 1' % data if fail else 'cat "%s"' % data))
         os.chmod(gh, os.stat(gh).st_mode | stat.S_IEXEC)
 
     def run_block(self, out, label=True, owner="cesar"):
         env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "GH_"))}
         env.update(PATH=self.bin + os.pathsep + env["PATH"], SKIP_LABEL="true" if label else "false", REPO="o/r",
-                   PR_NUMBER="7", REPO_OWNER=owner, GH_TOKEN="x")
+                   PR_NUMBER="7", REPO_OWNER=owner, GH_TOKEN="x", HEAD_SHA="a" * 40, HEAD_REF="cesar/NFX-1")
         wrapper = os.path.join(self.tmp, "wrap.sh")
         with open(wrapper, "w", encoding="utf-8") as f:
             f.write("set -eu\nout=%s\n. %s\n" % (shlex.quote(out), self.script))
@@ -121,7 +133,7 @@ class SkipLabel(unittest.TestCase):
         self.assertIn("::error::", r.stdout)
 
     def test_an_event_with_no_actor_fails(self):
-        self.stub_gh(["\t"], members=["cesar"])  # a null actor prints a lone tab; the org call must not be reached
+        self.stub_gh([event(None)], members=["cesar"])  # a null actor has no login; the org call must not be reached
         self.assertEqual(self.run_block(self.SKIP).returncode, 1)
         self.assertFalse("members" in open(self.calls).read() if self.called() else False)
 
@@ -138,6 +150,7 @@ class SkipLabel(unittest.TestCase):
     def test_workflow_wiring(self):
         text = read_workflow()
         self.assertIn("issues: read", text)
+        self.assertIn("actions: read", text)  # NFX-147 reads the review-gate runs
         self.assertIn("types: [opened, synchronize, reopened, edited, labeled, unlabeled]", text)
         step = text.split("Verify the review attestation with the base branch's gate")[1].split("\n      - name:")[0]
         self.assertIn("contains(github.event.pull_request.labels.*.name, 'review-skip')", step)
@@ -148,6 +161,14 @@ class SkipLabel(unittest.TestCase):
         # The label check follows the attestation and runs before the check command.
         self.assertLess(text.index("verify-attestation --tree"), text.index("# NFX-110 skip label check"))
         self.assertLess(text.index("# end NFX-110"), text.index('review-gate.py" run-check'))
+
+
+class Layout(unittest.TestCase):
+    def test_no_script_line_leaves_the_yaml_block(self):  # NFX-147
+        """A heredoc terminator at column 0 inside a `run: |` block ends the block scalar and breaks the workflow."""
+        for n, line in enumerate(read_workflow().splitlines(), 1):
+            if line and not line.startswith((" ", "#")):
+                self.assertRegex(line, r"^(name|on|permissions|jobs):", "line %d: %r" % (n, line))
 
 
 class Pins(unittest.TestCase):
