@@ -4,13 +4,16 @@ Run: python3 -B claude/hooks/test_review_gate_attest.py
 
 Throwaway git repos under a temp dir. Exit 0 ok, 2 refused.
 """
+import json
 import os
 import subprocess
 import sys
+import textwrap
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_review_gate_check import GATE, Base  # noqa: E402
+from test_review_gate_via import STUB_GH, SHA, BRANCH, label_event, gate_run, skip_label_ok_script  # noqa: E402
 
 
 class Attest(Base):
@@ -152,6 +155,33 @@ class Workflow(unittest.TestCase):
         self.assertIn('run-check --ref "origin/$BASE_REF"', self.text)
         self.assertIn('python3 -B "$gate_dir/review-gate.py" run-check', self.text)
         self.assertIn("grep -q 'sys.argv\\[1:2\\] == \\[\"run-check\"\\]' \"$gate_dir/review-gate.py\"", self.text)
+
+    def run_skip_arm(self, out, label_set, events, runs):
+        """Run the workflow's `case "$out"` skip arm under bash with the NFX-147 function and a stubbed `gh`."""
+        start = self.text.index('          case "$out" in\n            *"skipped:"*)')
+        end = self.text.index("          esac", start) + len("          esac")
+        script = (STUB_GH + "REPO=o/r; PR_NUMBER=1; REPO_OWNER=owner; HEAD_REF=" + BRANCH + "; HEAD_SHA=" + SHA + "\n"
+                  + skip_label_ok_script(self.text) + textwrap.dedent(self.text[start:end]) + "\necho reached-the-end\n")
+        env = {**os.environ, "out": out, "SKIP_LABEL": label_set, "EVENTS_JSON": json.dumps(events),
+               "RUNS_JSON": json.dumps({"workflow_runs": runs}), "EV_FAIL": "", "RUNS_FAIL": "", "IS_MEMBER": "0"}
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+
+    def test_a_review_skip_label_must_be_newer_than_the_push(self):  # NFX-147
+        skipped = "Review attestation found for tree x. skipped: no time"
+        after = [label_event("labeled", "review-skip")]
+        before = [label_event("labeled", "review-skip", at="2026-11-15T09:00:00Z")]
+        ok = self.run_skip_arm(skipped, "true", after, [gate_run()])
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+        self.assertIn("reached-the-end", ok.stdout)
+        old = self.run_skip_arm(skipped, "true", before, [gate_run()])
+        self.assertEqual(old.returncode, 1)
+        self.assertIn("applied before the last push", old.stdout)
+        self.assertEqual(self.run_skip_arm(skipped, "false", after, [gate_run()]).returncode, 1)
+        # a real review needs no label at all
+        self.assertEqual(self.run_skip_arm("Review attestation found for tree x.", "false", [], []).returncode, 0)
+
+    def test_the_review_skip_arm_calls_the_shared_check(self):  # NFX-147
+        self.assertIn("skip_label_ok review-skip", self.text)
 
     def test_a_skip_attestation_does_not_skip_the_check(self):
         # NFX-110: the skip-label block may add failures for a skip, but never an exit 0 or a way past the check.

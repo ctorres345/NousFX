@@ -25,6 +25,170 @@ UI_FILE = "app/src/main/java/ui/HomeScreen.kt"
 MCP = "mcp__github__create_pull_request"
 
 
+SHA = "a" * 40
+STUB_GH = ("set -eu\ngh() { case \"$*\" in\n"
+           "  *\"/issues/\"*\"/events\"*) [ -z \"$EV_FAIL\" ] || return 1; printf '%s' \"$EVENTS_JSON\" ;;\n"
+           "  *\"/actions/workflows/\"*) [ -z \"$RUNS_FAIL\" ] || return 1; printf '%s' \"$RUNS_JSON\" ;;\n"
+           "  *\"orgs/\"*) [ \"$IS_MEMBER\" = 1 ] ;;\n"
+           "  *) return 1 ;;\nesac; }\n")
+BRANCH = "cesar/NFX-1"
+
+
+def label_event(event, label, login="owner", kind="User", at="2026-11-15T10:05:00Z"):
+    return {"event": event, "label": {"name": label}, "actor": {"login": login, "type": kind}, "created_at": at}
+
+
+def force_push_event(at):
+    return {"event": "head_ref_force_pushed", "actor": {"login": "mallory", "type": "User"}, "created_at": at}
+
+
+def gate_run(at="2026-11-15T10:00:00Z", sha=SHA, branch=BRANCH, prs=(1,)):
+    return {"head_sha": sha, "head_branch": branch, "pull_requests": [{"number": n} for n in prs], "created_at": at}
+
+
+def skip_label_ok_script(workflow_text):
+    """The NFX-147 block of the workflow (the `skip_label_ok` function), dedented so bash can source it."""
+    start = workflow_text.rindex("\n", 0, workflow_text.index("# NFX-147 skip label")) + 1
+    end = workflow_text.index("# end NFX-147")
+    return textwrap.dedent(workflow_text[start:end])
+
+
+def run_skip_label(label, events, runs, events_fail=False, runs_fail=False, member=False, sha=SHA):
+    """Run `skip_label_ok <label>` under bash with a stubbed `gh` that answers from JSON fixtures.
+    `events` is a list (one page), `runs` is a list of workflow runs (one page). The filters run in real jq."""
+    with open(WORKFLOW, encoding="utf-8") as f:
+        text = f.read()
+    script = (STUB_GH + f"REPO=o/r; PR_NUMBER=1; REPO_OWNER=owner; HEAD_SHA={sha}; HEAD_REF={BRANCH}\n"
+              + skip_label_ok_script(text) + f"skip_label_ok {label}\necho reached-the-end\n")
+    env = {**os.environ, "EVENTS_JSON": json.dumps(events), "RUNS_JSON": json.dumps({"workflow_runs": runs}),
+           "EV_FAIL": "1" if events_fail else "", "RUNS_FAIL": "1" if runs_fail else "",
+           "IS_MEMBER": "1" if member else "0"}
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+
+
+class SkipLabelTime(unittest.TestCase):
+    """NFX-147: a skip label counts only when it was applied after the last push to the PR head."""
+    LABELS = ("via-skip", "review-skip")
+
+    def run_label(self, label, events, runs=None, **kw):
+        runs = [gate_run()] if runs is None else runs
+        return run_skip_label(label, events, runs, **kw)
+
+    def test_a_label_applied_after_the_push_passes(self):
+        for label in self.LABELS:
+            with self.subTest(label):
+                r = self.run_label(label, [label_event("labeled", label)])
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIn(f"{label} label applied by owner.", r.stdout)
+
+    def test_a_label_applied_before_the_push_fails_and_names_the_fix(self):
+        for label in self.LABELS:
+            with self.subTest(label):
+                r = self.run_label(label, [label_event("labeled", label, at="2026-11-15T09:59:59Z")])
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(f"The {label} label was applied before the last push", r.stdout)
+                self.assertIn("remove the label and add it again", r.stdout)
+
+    def test_a_label_applied_at_the_same_second_fails(self):
+        r = self.run_label("via-skip", [label_event("labeled", "via-skip", at="2026-11-15T10:00:00Z")])
+        self.assertEqual(r.returncode, 1)
+
+    def test_the_earliest_run_for_the_head_is_the_push_time(self):
+        """A re-run, or the run a label itself triggers, comes later and must not move the push time."""
+        runs = [gate_run("2026-11-15T10:00:00Z"), gate_run("2026-11-15T10:06:00Z")]
+        self.assertEqual(self.run_label("via-skip", [label_event("labeled", "via-skip")], runs).returncode, 0)
+
+    def test_runs_for_another_sha_branch_or_pr_are_ignored(self):
+        runs = [gate_run("2026-11-15T10:00:00Z"),
+                gate_run("2026-11-15T07:00:00Z", sha="b" * 40), gate_run("2026-11-15T07:00:00Z", branch="other"),
+                gate_run("2026-11-15T07:00:00Z", prs=(2,)), gate_run("2026-11-15T07:00:00Z", prs=())]
+        self.assertEqual(self.run_label("via-skip", [label_event("labeled", "via-skip", at="2026-11-15T09:00:00Z")],
+                                        runs).returncode, 1)
+        late = [gate_run("2026-11-15T10:00:00Z"), gate_run("2026-11-15T11:00:00Z", sha="b" * 40),
+                gate_run("2026-11-15T11:00:00Z", branch="other"), gate_run("2026-11-15T11:00:00Z", prs=(2,))]
+        self.assertEqual(self.run_label("via-skip", [label_event("labeled", "via-skip")], late).returncode, 0)
+
+    def test_no_run_for_the_head_fails_closed(self):
+        for runs in ([], [gate_run(sha="b" * 40)], [gate_run(prs=())]):
+            with self.subTest(runs=runs):
+                self.assertEqual(self.run_label("via-skip", [label_event("labeled", "via-skip")], runs).returncode, 1)
+
+    def test_a_rewind_then_a_fast_forward_back_to_the_head_fails(self):  # F1
+        """Y pushed (run), force-pushed back to X, X labeled, Y pushed again: the old Y run must not date the push."""
+        events = [force_push_event("2026-11-15T10:00:30Z"), label_event("labeled", "via-skip", at="2026-11-15T10:05:00Z")]
+        runs = [gate_run("2026-11-15T09:50:00Z"), gate_run("2026-11-15T10:10:00Z")]
+        self.assertEqual(self.run_label("via-skip", events, runs).returncode, 1)
+        self.assertEqual(self.run_label("via-skip", events, runs[:1]).returncode, 1)
+
+    def test_a_malformed_force_push_time_fails_closed(self):
+        events = [force_push_event("0"), label_event("labeled", "via-skip")]
+        self.assertEqual(self.run_label("via-skip", events).returncode, 1)
+
+    def test_a_force_push_event_does_not_stand_in_for_a_missing_run(self):  # S1
+        events = [force_push_event("2026-11-15T09:00:00Z"), label_event("labeled", "via-skip")]
+        r = self.run_label("via-skip", events, [])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("No review-gate run", r.stdout)
+
+    def test_a_force_push_after_the_label_fails_even_back_to_an_old_sha(self):
+        events = [label_event("labeled", "via-skip"), force_push_event("2026-11-15T10:10:00Z")]
+        runs = [gate_run("2026-11-15T10:00:00Z"), gate_run("2026-11-15T10:10:01Z")]
+        self.assertEqual(self.run_label("via-skip", events, runs).returncode, 1)
+        self.assertEqual(self.run_label("via-skip", events).returncode, 1)  # no run since the force push: closed
+
+    def test_a_force_push_before_the_label_passes(self):
+        events = [force_push_event("2026-11-15T10:01:00Z"), label_event("labeled", "via-skip")]
+        runs = [gate_run("2026-11-15T10:00:00Z"), gate_run("2026-11-15T10:01:01Z")]
+        self.assertEqual(self.run_label("via-skip", events, runs).returncode, 0)
+
+    def test_a_removed_label_fails_and_a_re_added_one_passes(self):
+        events = [label_event("labeled", "via-skip"), label_event("unlabeled", "via-skip", at="2026-11-15T10:06:00Z")]
+        self.assertEqual(self.run_label("via-skip", events).returncode, 1)
+        events.append(label_event("labeled", "via-skip", at="2026-11-15T10:07:00Z"))
+        self.assertEqual(self.run_label("via-skip", events).returncode, 0)
+
+    def test_another_labels_events_do_not_count(self):
+        events = [label_event("labeled", "via-skip"), label_event("unlabeled", "review-skip", at="2026-11-15T10:09:00Z")]
+        self.assertEqual(self.run_label("via-skip", events).returncode, 0)
+        self.assertEqual(self.run_label("review-skip", events).returncode, 1)
+
+    def test_a_bot_or_a_stranger_still_fails(self):
+        for label in self.LABELS:
+            with self.subTest(label):
+                bot = self.run_label(label, [label_event("labeled", label, login="app[bot]", kind="Bot")], member=True)
+                self.assertEqual(bot.returncode, 1)
+                self.assertIn("a bot", bot.stdout)
+                stranger = self.run_label(label, [label_event("labeled", label, login="eve")])
+                self.assertEqual(stranger.returncode, 1)
+                self.assertIn("not the repo owner or an org member", stranger.stdout)
+                member = self.run_label(label, [label_event("labeled", label, login="ann")], member=True)
+                self.assertEqual(member.returncode, 0)
+
+    def test_the_last_labeler_counts(self):
+        events = [label_event("labeled", "via-skip", at="2026-11-15T10:04:00Z"),
+                  label_event("labeled", "via-skip", login="eve", at="2026-11-15T10:05:00Z")]
+        self.assertEqual(self.run_label("via-skip", events).returncode, 1)
+
+    def test_unreadable_or_missing_data_fails_closed(self):
+        ok = [label_event("labeled", "via-skip")]
+        self.assertEqual(self.run_label("via-skip", ok, events_fail=True).returncode, 1)
+        self.assertEqual(self.run_label("via-skip", ok, runs_fail=True).returncode, 1)
+        self.assertEqual(self.run_label("via-skip", []).returncode, 1)
+        self.assertEqual(self.run_label("via-skip", [label_event("labeled", "via-skip", at="yesterday")]).returncode, 1)
+        self.assertEqual(self.run_label("via-skip", ok, [gate_run("soon")]).returncode, 1)
+
+    def test_a_bad_head_sha_or_pr_number_fails(self):
+        r = self.run_label("via-skip", [label_event("labeled", "via-skip")], sha="not-a-sha")
+        self.assertEqual(r.returncode, 1)
+
+    def test_the_block_has_no_way_to_pass_the_step(self):
+        """A skip never ends the step early (the same rule `test_a_skip_attestation_does_not_skip_the_check` holds)."""
+        with open(WORKFLOW, encoding="utf-8") as f:
+            block = skip_label_ok_script(f.read())
+        self.assertNotIn("exit 0", block)
+        self.assertNotIn("skipped:", block)
+
+
 class ViaBase(Base):
     def setUp(self):
         super().setUp()
@@ -530,16 +694,40 @@ class Workflow(unittest.TestCase):
         self.assertIn("via-skip", text)
         self.assertIn("Via check skipped", text)
 
-    def run_arm(self, via_out, label):
-        """Run the workflow's `case "$via_first"` block under bash with a stubbed `gh` (the labeler is the owner)."""
+    def run_arm(self, via_out, label, events=None):
+        """Run the workflow's `case "$via_first"` block under bash with the NFX-147 function and a stubbed `gh`
+        (the labeler is the owner, the label came after the push)."""
         with open(WORKFLOW, encoding="utf-8") as f:
             text = f.read()
         start = text.index("          via_first=$(")
         end = text.index("          esac", start) + len("          esac")
-        script = ("gh() { if [ \"$2\" = --paginate ]; then printf 'owner\\tUser\\n'; else return 0; fi; }\n"
-                  "REPO=o/r; PR_NUMBER=1; REPO_OWNER=owner\n" + textwrap.dedent(text[start:end]))
-        return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                              env={**os.environ, "via_out": via_out, "VIA_SKIP_LABEL": label})
+        script = (STUB_GH + "REPO=o/r; PR_NUMBER=1; REPO_OWNER=owner; HEAD_REF=" + BRANCH + "; HEAD_SHA=" + SHA + "\n"
+                  + skip_label_ok_script(text) + textwrap.dedent(text[start:end]))
+        env = {**os.environ, "via_out": via_out, "VIA_SKIP_LABEL": label,
+               "EVENTS_JSON": json.dumps(events or [label_event("labeled", "via-skip")]),
+               "RUNS_JSON": json.dumps({"workflow_runs": [gate_run()]}), "EV_FAIL": "", "RUNS_FAIL": "", "IS_MEMBER": "0"}
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+
+    def test_a_skip_with_a_label_older_than_the_push_fails_in_the_arm(self):  # NFX-147
+        r = self.run_arm("Via check skipped: no emulator", "true",
+                         [label_event("labeled", "via-skip", at="2026-11-15T09:00:00Z")])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("applied before the last push", r.stdout)
+
+    def test_both_skip_arms_use_the_shared_label_check(self):  # NFX-147
+        with open(WORKFLOW, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("skip_label_ok via-skip", text)
+        self.assertIn("skip_label_ok review-skip", text)
+        self.assertIn("actions: read", text)
+
+    def test_the_docs_say_a_push_needs_the_label_again(self):  # NFX-147
+        docs = os.path.join(os.path.dirname(os.path.dirname(HOOKS)), "docs", "review-gate.md")
+        with open(docs, encoding="utf-8") as f:
+            text = f.read()
+        self.assertNotIn("later pushes to the PR keep the waiver", text)
+        self.assertNotIn("a label already on the PR is not removed by a push", text)
+        self.assertIn("a push needs the label applied again", text)
 
     def test_a_skip_without_the_label_fails_and_with_it_passes(self):  # AC5
         for out in ("Via check skipped: no emulator", "Via check skipped: Via check verified."):
