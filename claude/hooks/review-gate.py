@@ -1542,7 +1542,7 @@ def verify_via(argv):
     line prints `Via check skipped: <reason>` (CI then needs the via-skip label). Only the line for HASH counts, so
     a later push makes a skip stale. The outcome is always the first line printed, so CI can compare it exactly: a
     reason is free text and must never decide the outcome. A fallback result, unreadable JSON, or a UI diff without
-    a line exits 2."""
+    a line exits 2. A skip line for HASH wins over a plain line for it, in any file (NFX-145)."""
     tier_json, tree = option(argv, "--tier-json"), option(argv, "--tree")
     files = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--text-file"]
     if not tier_json or not tree or not files:
@@ -1559,7 +1559,7 @@ def verify_via(argv):
     if not ui:
         print("Via check not needed.")
         return 0
-    skipped = None
+    skipped = passed = None
     for path in files:
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
@@ -1570,12 +1570,15 @@ def verify_via(argv):
         for m in VIA_LINE.finditer(text):
             if m.group(1).lower() != tree.strip().lower():
                 continue
-            if not m.group(2):  # a pass line for this tree wins over a skip line
-                print("Via check verified.")
-                return 0
-            skipped = m.group(2)
-    if skipped:
+            if m.group(2):
+                skipped = skipped or m.group(2)
+            else:
+                passed = True
+    if skipped:  # NFX-145: a skip line wins over a plain line, in any file, so the label check always sees it
         print(f"Via check skipped: {skipped}")
+        return 0
+    if passed:
+        print("Via check verified.")
         return 0
     print(f"Blocked: this PR touches UI and has no `Via-Check: {tree}` line in the PR description or last commit "
           "message. Run `/via check`, then `review-gate.py attest` on the final code and paste its lines.",
