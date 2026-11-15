@@ -438,9 +438,58 @@ class VerifyVia(ViaBase):
                 self.assertEqual(r.returncode, 0, r.stderr)
                 self.assertEqual(r.stdout.splitlines()[0], "Via check skipped: " + reason)
 
-    def test_a_pass_line_wins_over_a_skip_line(self):
-        r = self.verify(self.UI, "Via-Check: " + "a" * 40 + " skipped: x\nVia-Check: " + "a" * 40)
+    def verify_two(self, body, commit, tree="a" * 40):
+        """CI passes the PR body and the last commit message as two --text-file arguments."""
+        tj = os.path.join(self.tmp, "tier.json")
+        with open(tj, "w", encoding="utf-8") as f:
+            json.dump(self.UI, f)
+        args = ["verify-via", "--tier-json", tj, "--tree", tree]
+        for name, text in (("body.txt", body), ("commit.txt", commit)):
+            path = os.path.join(self.tmp, name)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            args += ["--text-file", path]
+        return self.gate(*args)
+
+    def test_a_skip_line_wins_over_a_pass_line(self):  # NFX-145
+        """A plain line next to a skip line must not hide the skip from the label check, in either order."""
+        t = "a" * 40
+        for text in ("Via-Check: " + t + " skipped: x\nVia-Check: " + t,
+                     "Via-Check: " + t + "\nVia-Check: " + t + " skipped: x"):
+            with self.subTest(text):
+                r = self.verify(self.UI, text)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(r.stdout.splitlines()[0], "Via check skipped: x")
+
+    def test_a_skip_in_the_body_wins_over_a_pass_in_the_commit_message(self):  # NFX-145
+        t = "a" * 40
+        r = self.verify_two("Via-Check: " + t + " skipped: x", "Via-Check: " + t)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], "Via check skipped: x")
+
+    def test_a_skip_in_the_commit_message_wins_over_a_pass_in_the_body(self):  # NFX-145
+        t = "a" * 40
+        r = self.verify_two("Via-Check: " + t, "Via-Check: " + t + " skipped: x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], "Via check skipped: x")
+
+    def test_a_plain_line_alone_still_verifies(self):  # NFX-145
+        r = self.verify_two("Via-Check: " + "a" * 40, "nothing")
+        self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.splitlines()[0], "Via check verified.")
+
+    def test_a_stale_skip_for_an_old_tree_does_not_hide_a_pass(self):  # NFX-145
+        """After a push the old tree's skip line is stale: it must not ask for the label next to a pass for the new tree."""
+        r = self.verify_two("Via-Check: " + "b" * 40 + " skipped: old\nVia-Check: " + "a" * 40, "nothing")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], "Via check verified.")
+
+    def test_the_docs_state_the_skip_rule_and_drop_the_old_limit(self):  # NFX-145
+        docs = os.path.join(os.path.dirname(os.path.dirname(HOOKS)), "docs", "review-gate.md")
+        with open(docs, encoding="utf-8") as f:
+            text = f.read()
+        self.assertNotIn("reads as a pass in CI", text)
+        self.assertIn("the skip wins and CI asks for the label", text)
 
     def test_a_fallback_result_fails(self):
         self.assertEqual(self.verify({**self.UI, "ui": False, "fallback": True}, "x").returncode, 2)
