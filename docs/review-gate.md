@@ -35,6 +35,16 @@ A PreToolUse hook that times out or exits 0 lets the call through, so the gate n
 - Marks stay per worktree, in the git dir, keyed by tree hash and branch name. They do not move.
 - A mark also names the branch it was recorded on, and covers only that branch. After a fast-forward or squash merge, main's tree equals the last marked tree, so without this a new branch with no commits would pass. A branch renamed after the mark needs the review loop again: the gate cannot tell a rename from a new branch cut from merged main, so it offers no re-mark shortcut. `--mark` refuses on a detached HEAD, and a create from a detached HEAD blocks. `attest` applies the same branch rule. The rule is local and by name only: a branch recreated under the marked name still matches, and the CI attestation (`Review-Gate: <tree>`) stays tree-only. An old mark with no branch blocks with a message to re-run the review loop.
 
+### Marker hash (NFX-155)
+
+```
+python3 ~/.claude/hooks/review-gate.py marker
+```
+
+- Prints the sha256 of the marker (`git rev-parse --git-path claude-review-ok`, so per worktree) or `absent`. Exit 2 outside a git repo or when the marker cannot be read.
+- Read-only: it never writes, touches or removes the marker, so it cannot invalidate a recorded review.
+- The implementer agent's caller compares it before and after a run. Sync allows this exact command (`docs/sync.md`).
+
 ## The check command
 
 A mark now means the tests passed, not only that a reviewer was satisfied. `--mark --findings N` runs the project's check command itself.

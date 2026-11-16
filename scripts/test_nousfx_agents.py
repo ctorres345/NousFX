@@ -101,7 +101,7 @@ class Mapping(AgentBase):
         for phrase in ("ready-for-agent", "size S or M", "size L", "migrations", "/via check",
                        "long chain of dependent steps",  # the limits
                        "On FAILED", "without DONE or FAILED", "no retry", "take the ticket over on Opus",  # the ladder
-                       "no edits while it runs", "note HEAD", "review marker", "claude-review-ok", "both are unchanged",
+                       "no edits while it runs", "note HEAD", "review marker", "review-gate.py marker", "both are unchanged",
                        "read the full diff", "git diff HEAD", "tier.py", "tier 3", "ui true",  # the main session's duties
                        "Review fixes stay with you"):
             self.assertIn(phrase, description, phrase)

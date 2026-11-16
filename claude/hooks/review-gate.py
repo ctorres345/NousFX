@@ -39,6 +39,10 @@ branch's Jira key in its subject. The Claude hook also warns (never blocks) on a
 `--repo-copy PATH` (the project's cloud fallback hook, NFX-107) runs this gate from the default branch's copy and blocks a PR
 create when the repo's gate or parser at PATH differs from this one. A branch cannot pass itself by editing its copy.
 
+Marker mode: `review-gate.py marker` (NFX-155) prints the sha256 of the marker file (`git rev-parse --git-path
+claude-review-ok`) or `absent`, and only reads it. Around an implementer run the main session compares it, since
+auto mode denies hashing the marker by hand. Exit 2 outside a git repo or when the marker cannot be read.
+
 Mark mode: `review-gate.py --mark --findings N` or `--mark --skip "reason"` records that a
 review ran for the current working tree. /review-loop runs it as its last step.
 `--tier 0-3 [--reasons "..."]` (from the review loop's tier.py) is stored too; `attest` then prints a separate
@@ -267,6 +271,24 @@ def git(args, cwd, env=None, strip=True):
 
 def git_path(name, cwd):
     return os.path.abspath(os.path.join(cwd, git(["rev-parse", "--git-path", name], cwd)))
+
+
+def marker_hash(cwd):
+    """`marker` (NFX-155): print the marker's sha256 or `absent`. Read-only: never writes, touches or removes it."""
+    try:
+        path = git_path("claude-review-ok", cwd)
+    except (RuntimeError, OSError):
+        print("marker: not inside a git repository.", file=sys.stderr)
+        return 2
+    try:
+        with open(path, "rb") as f:
+            print(hashlib.sha256(f.read()).hexdigest())
+    except FileNotFoundError:
+        print("absent")
+    except OSError as e:
+        print(f"marker: cannot read {path} ({type(e).__name__}).", file=sys.stderr)
+        return 2
+    return 0
 
 
 def current_branch(cwd):
@@ -1842,6 +1864,11 @@ def decide(tool, command, cwd, body, repo_copy=None):
 if __name__ == "__main__":
     if sys.argv[1:2] == ["check"]:
         sys.exit(check(sys.argv))
+    if sys.argv[1:2] == ["marker"]:
+        if sys.argv[2:]:
+            print("Usage: review-gate.py marker (no other arguments).", file=sys.stderr)
+            sys.exit(2)
+        sys.exit(marker_hash(os.getcwd()))
     if sys.argv[1:2] == ["attest"]:
         sys.exit(attest(os.getcwd()))
     if sys.argv[1:2] == ["run-check"]:

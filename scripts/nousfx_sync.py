@@ -246,6 +246,7 @@ def merge_settings(current, gate_path, win, drift=None, deny=None, where="settin
     if deny is not None:
         nousfx_deny.merge(cfg, deny, SyncError, where)
         nousfx_deny.merge(cfg, nousfx_deny.ASK_RULES, SyncError, where, section="ask")
+        nousfx_deny.merge(cfg, nousfx_deny.ALLOW_RULES, SyncError, where, section="allow")
     nousfx_automode.merge(cfg, SyncError, where, prefix)
     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
 

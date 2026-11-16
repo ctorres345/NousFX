@@ -14,7 +14,7 @@ A bare pattern drops every rule for that pattern (Read and Edit); a full rule dr
 rule cannot carve one file out of a pattern, so an exclusion always drops a whole rule. An entry
 that matches no rule fails the run, so a typo cannot leave a rule in place without notice.
 
-Sync owns exactly the rules in RULES (deny) and ASK_RULES (ask). The user's own deny rules, and every other setting, are kept.
+Sync owns exactly the rules in RULES (deny), ASK_RULES (ask) and ALLOW_RULES (allow). The user's own deny rules, and every other setting, are kept.
 """
 import importlib.util
 import os
@@ -69,6 +69,12 @@ RULES = EXCLUDABLE + GATE_RULES
 # The gate hook also runs on Windows' PowerShell tool, whose rules have the same shape as Bash rules.
 ASK_RULES = tuple(f"{tool}(*review-gate.py*{flag}*)" for tool in ("Bash", "PowerShell")
                   for flag in ("--skip", "--tier-override", "--allow-branch", "--via-skip"))
+# Allow rules (permissions.allow) for read-only gate commands an agent must run unprompted (NFX-155). Exact text,
+# no "*": a wildcard would also allow e.g. `rm x/review-gate.py marker`. `marker` only reads the marker, so auto
+# mode's classifier, which denies hashing the marker file by hand, has nothing to judge. Bash only: its shell
+# expands "~" (Git Bash too, where the interpreter is `python`); Windows PowerShell 5.1 passes "~" to python as is.
+MARKER_COMMAND = "~/.claude/hooks/review-gate.py marker"
+ALLOW_RULES = tuple(f"Bash({py} {MARKER_COMMAND})" for py in ("python3", "python"))
 FILE_NAME = "deny.toml"
 _RULE = re.compile(r"^(Read|Edit)\((.+)\)$")
 
@@ -119,7 +125,7 @@ def splice_owned(current, rules, owned):
 
 
 def merge(cfg, rules, SyncError, where, section="deny"):
-    """Put `rules` into cfg["permissions"][section] ("deny" or "ask"). Rules sync owns there that are not wanted (now excluded) go;
+    """Put `rules` into cfg["permissions"][section] ("deny", "ask" or "allow"). Rules sync owns there that are not wanted (now excluded) go;
     the user's own rules stay where they are. Ours go where the first of ours was, else at the end."""
     require_patterns(SyncError)
     had_perms, perms = "permissions" in cfg, cfg.get("permissions", {})
@@ -128,7 +134,7 @@ def merge(cfg, rules, SyncError, where, section="deny"):
     had_list, current = section in perms, perms.get(section, [])
     if not isinstance(current, list) or not all(isinstance(r, str) for r in current):
         raise SyncError(f"{where}: \"permissions.{section}\" is not a list of strings; fix it first", 2)
-    current = splice_owned(current, rules, {"deny": RULES, "ask": ASK_RULES}[section])
+    current = splice_owned(current, rules, {"deny": RULES, "ask": ASK_RULES, "allow": ALLOW_RULES}[section])
     if current or had_list:  # never leave an empty key behind that the user did not have
         perms[section] = current
     if perms or had_perms:
