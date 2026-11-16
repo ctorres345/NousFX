@@ -4,8 +4,8 @@
     python3 -I check_memory.py PROJECT [--json] [--home DIR]
     python3 -I check_memory.py --all [--json] [--home DIR]
 
-Reads only <home>/.claude/projects/<slug>/memory/ (never the transcripts beside it) and the project's
-.claude/handoff.md or root HANDOFF.md. Repo facts come from file existence and read-only git commands.
+Reads only <home>/.claude/projects/<slug>/memory/ and handoff.md beside it (never the transcripts), or the
+project's older .claude/handoff.md or root HANDOFF.md. Repo facts come from file existence and read-only git commands.
 It writes nothing. Exit 0 when there are no findings, 1 when there are, 2 on a usage error, 3 when it could not run.
 The --json format is documented in ../SKILL.md ("JSON output").
 """
@@ -30,7 +30,8 @@ except Exception as e:  # exit 1 means findings, so a failed import is 3
 INDEX = "MEMORY.md"
 INDEX_LINES = 200   # Claude Code loads only the first 200 lines of MEMORY.md
 DUP_WORDS = 6
-HANDOFFS = (".claude/handoff.md", "HANDOFF.md")  # reported with '/' on every OS
+HANDOFF = "handoff.md"  # beside memory/, outside the repo (NFX-158); the app blocks worktrees from the main checkout's .claude/
+HANDOFFS = (".claude/handoff.md", "HANDOFF.md")  # in the repo, reported with '/' on every OS; .claude/ one is legacy
 HEADER = re.compile(r"(\d{4}-\d{2}-\d{2})\s*[,·]\s*`?([^\s,`()]+)`?\s*[,·]\s*`?([0-9a-f]{7,40})\b`?")
 DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 SHA = re.compile(r"\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b")
@@ -228,7 +229,7 @@ def parse_header(text):
 
 
 def checked_out(path):
-    """{branch: worktree path} for every worktree of the repo at path. The main checkout's note is shared, so
+    """{branch: worktree path} for every worktree of the repo at path. The handoff note is shared, so
     its header is checked in the worktree that has the header's branch (NFX-153)."""
     code, text = git(path, "worktree", "list", "--porcelain")
     found, tree = {}, None
@@ -240,22 +241,28 @@ def checked_out(path):
     return found
 
 
-def check_handoff(repo):
-    for rel in HANDOFFS:
-        path = os.path.join(repo.path, *rel.split("/"))
+def check_handoff(repo, home_dir=None):
+    """home_dir is the project's folder under ~/.claude/projects, which holds the note since NFX-158."""
+    candidates = [(os.path.join(home_dir, HANDOFF), HANDOFF)] if home_dir else []
+    candidates += [(os.path.join(repo.path, *rel.split("/")), rel) for rel in HANDOFFS]
+    for path, rel in candidates:
         if os.path.isfile(path):
             break
     else:
         return None, []
+    old_note = os.path.join(repo.path, *HANDOFFS[0].split("/"))  # flagged even next to a new note: they drift
+    legacy = [finding("handoff-legacy", HANDOFFS[0], f"{HANDOFFS[0]} is the old place; /handoff now writes "
+                      f"{os.path.join(home_dir, HANDOFF)}; merge its lines there; the user (or a main-checkout session) deletes it")] \
+        if home_dir and os.path.isfile(old_note) else []
     if os.path.islink(path):
         return rel, [finding("handoff-symlink", rel, f"{rel} is a link; not read")]
     if not repo.is_git:
-        return rel, []
+        return rel, legacy
     parsed = parse_header("\n".join(read(path).splitlines()[:5]))
     if not parsed:
-        return rel, [finding("handoff-header", rel, "no \"date, branch, short sha\" in the first lines")]
+        return rel, legacy + [finding("handoff-header", rel, "no \"date, branch, short sha\" in the first lines")]
     date, branch, sha = parsed
-    out = []
+    out = legacy
     where = checked_out(repo.path).get(branch, repo.path)  # a worktree session's note names its own branch
     current = git(where, "branch", "--show-current")[1] or "(detached HEAD)"
     if branch != current:
@@ -276,7 +283,8 @@ def check_handoff(repo):
 
 def check_project(mem, project, ambiguous=None, handoff_at=None):
     """Findings for one memory folder. project is the repo path, or None when it cannot be found. handoff_at is
-    the main checkout, which holds the one handoff note a worktree's sessions share (NFX-153); default project."""
+    the main checkout, whose git state the shared handoff note is checked against (NFX-153); default project.
+    The note itself sits beside mem (NFX-158), or in an older project's checkout."""
     has_mem = os.path.isdir(mem)
     entries = sorted(f for f in os.listdir(mem) if f.endswith(".md") and f != INDEX) if has_mem else []
     links = [f for f in entries if os.path.islink(os.path.join(mem, f))]  # may point outside memory/: never read
@@ -286,7 +294,7 @@ def check_project(mem, project, ambiguous=None, handoff_at=None):
     repo = Repo(project if found else None)
     findings = check_index(mem, notes) + check_refs(repo, notes, texts) + check_duplicates(notes, texts)
     at = handoff_at if found and handoff_at and os.path.isdir(handoff_at) else project
-    handoff, more = check_handoff(repo if at == project else Repo(at)) if found else (None, [])
+    handoff, more = check_handoff(repo if at == project else Repo(at), os.path.dirname(mem)) if found else (None, [])
     findings += more + [finding("note-symlink", f, f"{f} is a link; not read") for f in links]
     if found and not repo.is_git:
         findings.append(finding("project-not-git", "", f"{project} is not a git work tree (or git refused it); "
@@ -302,7 +310,8 @@ def check_project(mem, project, ambiguous=None, handoff_at=None):
 def run(home, project=None, all_projects=False):
     root = os.path.join(home, ".claude", "projects")
     if all_projects:
-        names = sorted(n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n, "memory"))) \
+        names = sorted(n for n in os.listdir(root) if os.path.isdir(os.path.join(root, n, "memory"))
+                       or os.path.isfile(os.path.join(root, n, HANDOFF))) \
             if os.path.isdir(root) else []
         results = []
         for n in names:
