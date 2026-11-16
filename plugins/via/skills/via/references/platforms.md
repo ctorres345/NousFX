@@ -46,6 +46,7 @@ Pages that need a login or real data: do not capture real accounts. Say what was
 
 ### Screens and states
 - A screen is a public `@Preview` function with no parameters (Compose: public or internal, at the top of its file). Flutter uses the `@Preview` annotation from `widget_previews`.
+- Compose previews are read from `src/main` and `src/debug` (`java` or `kotlin`) and, in a Kotlin Multiplatform module, from `src/androidMain`, `src/androidDebug` and `src/commonMain`. Via writes its test to `src/androidUnitTest/kotlin/via/` in a Kotlin Multiplatform module (one with `androidUnitTest`, `androidMain`, `androidDebug` or `commonMain`), else `src/test/kotlin/via/`. Limits: a module on the `com.android.kotlin.multiplatform.library` plugin has no `testDebugUnitTest` task, and right-to-left detection reads only `src/main/res`.
 - The preview's name gives the state. `HomeEmptyPreview` is the `empty` state of `home`. The states are `default`, `empty`, `loading`, `error`, `offline` and `long`. A name with no state word is `default`.
 - Private previews, previews with parameters and nested ones are listed in `coverage` as not captured, with the reason.
 
