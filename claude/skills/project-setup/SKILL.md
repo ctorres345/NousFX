@@ -47,7 +47,7 @@ Merge into existing files, and keep what is already there.
 | `CLAUDE.md` | Add build and test commands and pointers to `docs/agents/`, if missing |
 | PR template | Add Ticket, What and why, How to test, Screenshots, Checklist, if missing |
 
-If `docs/agents/` is missing, tell Cesar to type `/setup-matt-pocock-skills` first, with Jira as the tracker. If no runbook exists, offer to write one from the repo's docs and config. Add stack-specific skills only when the project uses them.
+If `docs/agents/` is missing, tell Cesar to type `/setup-matt-pocock-skills` first, with Jira as the tracker. In a Jira repo's `docs/agents/issue-tracker.md`, make the Move rule say: load a deferred tool with `ToolSearch` (`select:<full tool name>`) before its first call; prefer the claude.ai Atlassian connector over a plugin Atlassian server on the deprecated `/v1/mcp` endpoint; move to Done with `transitionJiraIssue` and `transitionName: "Done"`; if that is rejected, list the transitions with `executeRead`, `name: "listJiraIssueTransitions"`, and pass `transitionId: "<id>"`; never pass `transition: {id}` to the connector, which rejects it. NousFX's own `docs/agents/issue-tracker.md` is the worked example. If no runbook exists, offer to write one from the repo's docs and config. Add stack-specific skills only when the project uses them.
 
 ## 5. Protect
 
