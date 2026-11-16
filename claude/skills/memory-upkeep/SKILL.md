@@ -16,7 +16,7 @@ Memory notes and handoffs leak into every new session, so one wrong note repeats
 python3 -I <this skill's folder>/scripts/check_memory.py <project folder> --json
 ```
 
-(`--all` instead of a folder checks every project under `~/.claude/projects` that has a `memory/` folder; `python` on Windows. It needs Python 3.11+.) Exit 0 means no findings, 1 means findings, 2 a usage error, 3 that it could not run (the message is on stderr). The script reads only the project's `memory/` folder and its `.claude/handoff.md` or root `HANDOFF.md`, plus read-only git. It never writes. A worktree or subfolder uses the main checkout's memory folder, as Claude Code does, and its own branch and handoff.
+(`--all` instead of a folder checks every project under `~/.claude/projects` that has a `memory/` folder; `python` on Windows. It needs Python 3.11+.) Exit 0 means no findings, 1 means findings, 2 a usage error, 3 that it could not run (the message is on stderr). The script reads only the project's `memory/` folder and its `.claude/handoff.md` or root `HANDOFF.md`, plus read-only git. It never writes. A worktree or subfolder uses the main checkout's memory folder, as Claude Code does, and the main checkout's handoff (the one note every worktree shares; a worktree's own copy is stale), checked against the worktree that has the note's branch checked out (else the main checkout).
 
 ## 2. Jira pass
 
@@ -29,7 +29,7 @@ Check each finding before proposing a fix: the script guesses from backticked te
 - **Edit** a note whose path, function or branch changed (give the new name, found with grep or git).
 - **Merge** duplicates into one note, or **delete** a note that is wrong or no longer true.
 - **Index**: add an unlisted note to `MEMORY.md`, remove a dangling line, or shorten an index over 200 lines.
-- **Handoff**: rewrite the stale parts (header, Done, Next, risks) from git and Jira, keeping its structure.
+- **Handoff**: rewrite the stale parts (header, Done, Next, risks) from git and Jira, keeping its structure. Edit the main checkout's file and merge as the `handoff` skill's "Where to save" says; never a worktree's copy.
 
 You may also point out notes that only repeat what the repo or git already records, as your judgment, not a finding.
 
@@ -48,7 +48,7 @@ Before re-deriving a past decision, use a targeted transcript search; never read
   "handoff": ".claude/handoff.md or null", "findings": [{"kind": "...", "file": "note.md", "evidence": "..."}]}]}
 ```
 
-`file` is relative to the memory folder (a note or `MEMORY.md`) or to the repo (the handoff), and empty for `memory-missing`, `project-not-git` and `project-missing`. Kinds:
+`file` is relative to the memory folder (a note or `MEMORY.md`) or to the main checkout (the handoff: the parent of `git rev-parse --path-format=absolute --git-common-dir`, even when `project` is a worktree), and empty for `memory-missing`, `project-not-git` and `project-missing`. Kinds:
 
 | Kind | Meaning |
 |---|---|

@@ -241,6 +241,33 @@ class Safety(Fixture):
             self.assertIn("index-unlisted", {f["kind"] for f in result["findings"]})
             self.assertEqual(code, 1)
 
+    def test_worktree_checks_the_main_checkouts_handoff_not_its_copy(self):
+        self.memory("- [A](a.md) — a\n", {"a.md": "fine"})
+        tree = os.path.join(self.tmp, "tree")
+        sh(self.repo, "git", "worktree", "add", "-q", "-b", "other", tree)
+        self.stale_handoff()  # the main checkout's note: an old sha, so it has a handoff-sha finding
+        write(os.path.join(tree, ".claude", "handoff.md"), "no header in the worktree's stale copy\n")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            check_memory.main([tree, "--json", "--home", self.home])
+        kinds = {f["kind"] for f in json.loads(out.getvalue())["projects"][0]["findings"]}
+        self.assertIn("handoff-sha", kinds)  # read from the main checkout (NFX-153)
+        self.assertNotIn("handoff-header", kinds)  # the worktree's copy is never read
+
+    def test_note_written_from_a_worktree_is_current(self):
+        self.memory("- [A](a.md) — a\n", {"a.md": "fine"})
+        tree = os.path.join(self.tmp, "tree")
+        sh(self.repo, "git", "worktree", "add", "-q", "-b", "other", tree)
+        sh(tree, "git", "commit", "-q", "--allow-empty", "-m", "on other")
+        head = sh(tree, "git", "rev-parse", "--short", "HEAD")
+        self.handoff(f"# Handoff: demo (2026-11-15, other, {head})")  # in the main checkout, which is on main
+        for folder in (tree, self.repo):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                check_memory.main([folder, "--json", "--home", self.home])
+            kinds = {f["kind"] for f in json.loads(out.getvalue())["projects"][0]["findings"]}
+            self.assertFalse(kinds & {"handoff-branch", "handoff-sha"}, folder)
+
     def test_missing_memory_folder_is_a_finding(self):
         found, _ = self.kinds()
         self.assertIn(("memory-missing", ""), found)
