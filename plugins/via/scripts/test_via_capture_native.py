@@ -448,6 +448,75 @@ class Holder {
         self.assertEqual(self.calls(), [])
 
 
+class ComposeMultiplatformTest(ComposeBase):
+    """A Kotlin Multiplatform module keeps previews in androidDebug/androidMain/commonMain and Android tests in androidUnitTest."""
+
+    def setUp(self):
+        super().setUp()
+        os.remove(self.p("app", "src", "main", "java", "dev", "demo", "Home.kt"))
+        write(self.p("app", "src", "androidDebug", "kotlin", "dev", "demo", "Home.kt"), HOME_KT)
+        write(self.p("app", "src", "androidUnitTest", "kotlin", "KeepMe.kt"), "// a test the app already has\n")
+
+    def test_previews_in_android_debug_are_captured(self):
+        before = self.tree()
+        r = self.capture()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        screens = {s["screen"] for s in json.loads(r.stdout)["screenshots"]}
+        self.assertEqual(screens, {"home"})
+        self.assertEqual(self.tree(), before, "the project must be left exactly as it was")
+
+    def test_the_test_is_written_to_android_unit_test_and_removed_afterwards(self):
+        self.capture()
+        (call,) = self.calls()
+        (path,) = call["test_files"]
+        self.assertTrue(path.endswith(os.path.join("src", "androidUnitTest", "kotlin", "via", "ZzViaShotsTest.kt")), path)
+        self.assertFalse(os.path.exists(self.p("app", "src", "test")))
+
+    def test_previews_in_android_main_and_common_main_are_found(self):
+        os.remove(self.p("app", "src", "androidDebug", "kotlin", "dev", "demo", "Home.kt"))
+        write(self.p("app", "src", "androidMain", "kotlin", "dev", "demo", "Home.kt"), HOME_KT)
+        write(self.p("app", "src", "commonMain", "kotlin", "dev", "demo", "Detail.kt"),
+              HOME_KT.replace("Home", "Detail"))
+        out = json.loads(self.capture().stdout)
+        self.assertEqual(sorted({s["screen"] for s in out["screenshots"]}), ["detail", "home"])
+
+    def test_an_android_plugin_applied_through_a_version_catalog_alias_counts(self):
+        write(self.p("app", "build.gradle.kts"),
+              'plugins {\n    alias(libs.plugins.kotlinMultiplatform)\n    alias(libs.plugins.androidApplication)\n}\n'
+              'dependencies { implementation("androidx.compose.material3:material3") }\n')
+        out = json.loads(self.capture().stdout)
+        self.assertEqual({s["screen"] for s in out["screenshots"]}, {"home"})
+
+    def test_a_kmp_module_without_an_android_unit_test_folder_still_gets_its_test_there(self):
+        import shutil
+        shutil.rmtree(self.p("app", "src", "androidUnitTest"))
+        before = self.tree()
+        self.capture()
+        (call,) = self.calls()
+        self.assertTrue(call["test_files"][0].endswith(os.path.join("src", "androidUnitTest", "kotlin", "via", "ZzViaShotsTest.kt")))
+        self.assertEqual(self.tree(), before)
+
+    def test_the_same_screen_in_two_source_sets_is_shot_once(self):
+        write(self.p("app", "src", "commonMain", "kotlin", "dev", "other", "Home.kt"),
+              HOME_KT.replace("package dev.demo", "package dev.other"))
+        out = json.loads(self.capture().stdout)
+        paths = [s["path"] for s in out["screenshots"]]
+        self.assertEqual(len(paths), len(set(paths)))
+        self.assertEqual({s["screen"] for s in out["screenshots"]}, {"home"})
+
+    def test_a_root_build_file_that_only_declares_the_android_plugin_is_not_a_module(self):
+        write(self.p("build.gradle.kts"), 'plugins {\n    alias(libs.plugins.androidApplication) apply false\n}\n// com.android\n')
+        self.capture()
+        (call,) = self.calls()
+        self.assertEqual(len(call["test_files"]), 1)
+
+    def test_an_existing_generated_test_file_in_android_unit_test_stops_the_run(self):
+        write(self.p("app", "src", "androidUnitTest", "kotlin", "via", "ZzViaShotsTest.kt"), "mine")
+        r = self.capture()
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.calls(), [])
+
+
 # A stand-in for `adb`: a phone whose settings live in a JSON file, so a test can see what was changed and restored.
 FAKE_ADB = '''#!%(python)s
 import json, os, sys

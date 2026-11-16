@@ -523,6 +523,16 @@ class ZzViaShotsTest {
 """
 
 
+# A plugin id ("com.android.application") or a version-catalog alias (libs.plugins.androidApplication, libs.plugins.android.library).
+ANDROID_PLUGIN_RE = re.compile(r"com\.android|plugins\.android(?![a-z])|androidApplication|androidLibrary|androidTarget")
+
+
+def has_android_plugin(build_text):
+    """An Android plugin the module applies: comments and `apply false` lines (a root build file declaring it) don't count."""
+    return any(ANDROID_PLUGIN_RE.search(line) for line in build_text.splitlines()
+               if not line.lstrip().startswith(("//", "*", "/*")) and "apply false" not in line)
+
+
 def compose_modules(root):
     """Android modules (their build file mentions com.android) in the root folder or up to two folders below it."""
     found = []
@@ -533,7 +543,7 @@ def compose_modules(root):
             dirs[:] = []
             continue
         for name in ("build.gradle", "build.gradle.kts"):
-            if "com.android" in read(os.path.join(folder, name)):
+            if has_android_plugin(read(os.path.join(folder, name))):
                 found.append(os.path.relpath(folder, root))
                 break
     return found
@@ -546,6 +556,9 @@ def compose_previews(module):
     for variant in ("main", "debug"):
         for lang in ("java", "kotlin"):
             files += glob.glob(os.path.join(module, "src", variant, lang, "**", "*.kt"), recursive=True)
+    # Kotlin Multiplatform keeps Android code in androidMain/androidDebug and shared code in commonMain.
+    for variant in ("androidMain", "androidDebug", "commonMain"):
+        files += glob.glob(os.path.join(module, "src", variant, "kotlin", "**", "*.kt"), recursive=True)
     for path in sorted(files):
         text = read(path)
         package = (re.search(r"^package\s+([\w.]+)", text, re.MULTILINE) or [None, ""])[1]
@@ -573,6 +586,14 @@ def compose_previews(module):
                 previews.append({"screen": screen, "state": state, "function": function,
                                  "ref": "%s.%s" % (package, function) if package else function})
     return previews, skipped
+
+
+def compose_test_path(module):
+    """Where the generated test goes: a Kotlin Multiplatform module (it has src/androidUnitTest, androidMain, androidDebug
+    or commonMain) keeps its Android unit tests in src/androidUnitTest, because src/test is not a source set of that plugin; an Android-only module uses src/test."""
+    kmp = any(os.path.isdir(os.path.join(module, "src", d)) for d in ("androidUnitTest", "androidMain", "androidDebug", "commonMain"))
+    source_set = "androidUnitTest" if kmp else "test"
+    return os.path.join(module, "src", source_set, "kotlin", "via", "ZzViaShotsTest.kt")
 
 
 def compose_has_rtl(module):
@@ -635,7 +656,7 @@ def capture_compose(project, rel_root, stage, run_dir):
     refuse_existing(run_dir, paths)
     gradlew = find_gradlew(root)
     sdk = find_android_sdk(root)
-    tests = [os.path.join(module, "src", "test", "kotlin", "via", "ZzViaShotsTest.kt") for module, _, _ in jobs]
+    tests = [compose_test_path(module) for module, _, _ in jobs]
     for test_file in tests:
         if os.path.lexists(test_file):
             die("%s already exists. Delete it and run again. Nothing was written." % os.path.relpath(test_file, project))
