@@ -141,7 +141,12 @@ def security_skills(files):
     return skills
 
 
-def is_ui(path):
+COMPOSABLE = re.compile(r"@(?:[\w.]+\.)?Composable\b")
+
+
+def ui_by_path(path):
+    """True or False from the path alone, or None when only the file's text can tell (NFX-154): a .kt file whose
+    only UI folder is `ui` and whose name has no UI ending, such as ui/ask/AskViewModel.kt."""
     p = "/" + norm(path)
     name = p.rsplit("/", 1)[-1]
     stem, dot, ext = name.rpartition(".")
@@ -149,9 +154,20 @@ def is_ui(path):
     if ext in UI_EXTENSIONS or ".xcassets/" in p or UI_RES.search(p):
         return True
     if ext in UI_NATIVE_EXTENSIONS:
-        folders = p.lower().split("/")[:-1]
-        return any(x in UI_FOLDERS for x in folders) or stem.endswith(UI_NAME_ENDINGS)
+        hits = {x for x in p.lower().split("/")[:-1] if x in UI_FOLDERS}
+        if stem.endswith(UI_NAME_ENDINGS) or (hits and (ext != ".kt" or hits != {"ui"})):
+            return True
+        return None if hits else False
     return False
+
+
+def is_ui(path, lines=None):
+    """lines: the file's text (whole file and changed lines) or None. A file ui_by_path cannot settle is UI when
+    its text has @Composable; with no text it fails closed, like NFX-20."""
+    by_path = ui_by_path(path)
+    if by_path is not None:
+        return by_path
+    return not lines or any(COMPOSABLE.search(x) for x in lines)
 
 
 def norm_labels(labels):
@@ -211,7 +227,7 @@ def classify(files, labels=(), project_paths=()):
         tier, reasons = 2, ["Tier 2: %d lines, %d file(s), %d hunk(s)" % (lines, len(code), hunks)]
 
     tier = bump_size_l(tier, reasons, labels)
-    ui_path = next((x["path"] for x in code if is_ui(x["path"])), None)
+    ui_path = next((x["path"] for x in code if is_ui(x["path"], x.get("content", []) + x["added"] + x.get("removed_lines", []))), None)
     if ui_path and tier < 1:
         tier = 1
         reasons.append("Tier 1: UI change (%s)" % ui_path)
@@ -406,7 +422,16 @@ def collect(top, base):
     # The prefixes are fixed because diff.noprefix / diff.mnemonicPrefix change the header parse_diff reads.
     text = git(["diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--text", "--no-renames",
                 "--src-prefix=a/", "--dst-prefix=b/", base, "--"], top, raw=True)
-    return parse_diff(text.decode("utf-8", "replace")) + untracked_files(top)
+    files = parse_diff(text.decode("utf-8", "replace"))
+    for x in files:  # NFX-154: an edit inside a composable body has no @Composable in its changed lines
+        full = os.path.join(top, *x["path"].split("/"))
+        if ui_by_path(x["path"]) is None and os.path.isfile(full) and not os.path.islink(full):
+            try:
+                with open(full, "rb") as fh:
+                    x["content"] = fh.read(MAX_UNTRACKED_BYTES).decode("utf-8", "replace").splitlines()
+            except OSError:
+                pass
+    return files + untracked_files(top)
 
 
 def fallback(reason, labels, base=None):

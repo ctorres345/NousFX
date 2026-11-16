@@ -254,10 +254,51 @@ class Ui(unittest.TestCase):
                      "Sources/Views/Home.swift", "Sources/HomeView.swift", "Base.lproj/Main.storyboard",
                      "web/src/App.tsx", "web/src/App.vue", "web/styles/main.css", "public/index.html",
                      "lib/components/card.dart", "app/src/main/java/x/components/Card.kt",
-                     "Sources/Components/Card.swift"):
+                     "Sources/Components/Card.swift", "app/src/main/java/x/ui/theme/Color.kt"):
             r = tier.classify([code(1, path)])
             self.assertTrue(r["ui"], path)
             self.assertGreaterEqual(r["tier"], 1, path)
+
+    def test_viewmodel_under_ui_is_not_ui(self):
+        r = tier.classify([f("composeApp/src/commonMain/kotlin/x/ui/ask/AskViewModel.kt",
+                             text=["class AskViewModel : ViewModel() {", "    val state = 1", "}"])])
+        self.assertFalse(r["ui"])
+        self.assertEqual(r["tier"], 0)
+        self.assertFalse(any("UI change" in x for x in r["reasons"]), r["reasons"])
+
+    def test_composable_added_under_ui_is_ui(self):
+        r = tier.classify([f("x/ui/ask/AskContent.kt", text=["@Composable", "fun AskContent() {}"])])
+        self.assertTrue(r["ui"])
+        self.assertGreaterEqual(r["tier"], 1)
+        self.assertFalse(tier.classify([f("x/ui/ask/AskState.kt", text=["val a = 1"])])["ui"])
+
+    def test_composable_body_edit_is_ui_by_the_whole_file(self):
+        x = f("x/ui/ask/AskContent.kt", text=["    Modifier.padding(16.dp)"], removed_text=["    Modifier.padding(8.dp)"])
+        self.assertFalse(tier.classify([dict(x)])["ui"])  # the changed lines alone cannot tell
+        x["content"] = ["@Composable", "fun AskContent() {", "    Modifier.padding(16.dp)", "}"]
+        self.assertTrue(tier.classify([x])["ui"])
+
+    def test_viewmodel_file_content_without_composable_is_not_ui(self):
+        x = f("x/ui/ask/AskViewModel.kt", text=["    val state = 2"])
+        x["content"] = ["class AskViewModel : ViewModel() {", "    val state = 2", "}"]
+        self.assertFalse(tier.classify([x])["ui"])
+
+    def test_qualified_composable_annotation_is_ui(self):
+        r = tier.classify([f("x/ui/ask/AskContent.kt", text=["@androidx.compose.runtime.Composable"])])
+        self.assertTrue(r["ui"])
+
+    def test_composable_removed_under_ui_is_ui(self):
+        r = tier.classify([f("x/ui/ask/AskContent.kt", text=["val a = 1"], removed_text=["@Composable"])])
+        self.assertTrue(r["ui"])
+
+    def test_kotlin_ui_folder_with_unknown_lines_fails_closed(self):
+        path = "x/ui/ask/AskViewModel.kt"
+        r = tier.classify([f(path, text=[], removed_text=[])])
+        self.assertTrue(r["ui"])
+        self.assertTrue(tier.is_ui(path))
+
+    def test_kotlin_ui_ending_needs_no_composable(self):
+        self.assertTrue(tier.classify([f("x/ui/HomeScreen.kt", text=["val a = 1"])])["ui"])
 
     def test_non_ui_paths(self):
         for path in ("src/app.py", "server/handler.go", "app/data/Repo.kt", "lib/models/user.dart", "README.md",
@@ -539,6 +580,16 @@ class Cli(GitCase):
         out = self.result()
         self.assertTrue(out["ui"])
         self.assertEqual(out["tier"], 1)
+
+    def test_composable_body_edit_is_ui_through_git(self):
+        self.write("ui/ask/AskContent.kt", "@Composable\nfun AskContent() {\n    Modifier.padding(8.dp)\n}\n")
+        self.commit("add composable")
+        self.branch_with("ui/ask/AskContent.kt", "@Composable\nfun AskContent() {\n    Modifier.padding(16.dp)\n}\n")
+        self.assertTrue(self.result()["ui"])
+
+    def test_viewmodel_under_ui_folder_is_not_ui_through_git(self):
+        self.branch_with("ui/ask/AskViewModel.kt", "class AskViewModel {\n    val a = 1\n}\n")
+        self.assertFalse(self.result()["ui"])
 
     def test_other_git_error_is_tier_2_with_the_reason(self):
         self.branch_with("src/app.py", "x = 1\n")
