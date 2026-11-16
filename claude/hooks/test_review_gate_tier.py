@@ -5,6 +5,7 @@ Run: python3 -B claude/hooks/test_review_gate_tier.py
 Each test copies the gate into a throwaway layout (`hooks/` next to `skills/review-loop/scripts/`), so a fake
 tier.py can stand in for the real one. Exit 0 ok, 2 refused.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -148,6 +149,62 @@ class TierCheck(Base):
         self.assertEqual(r.returncode, 2)
         self.assertIn("Tier 2", r.stderr)
         self.assertEqual(self.mark("--findings", "0", "--tier", "2").returncode, 0)
+
+
+class MarkerHash(Base):
+    """NFX-155: `review-gate.py marker` prints the marker's sha256 or `absent`, and never writes or touches it."""
+
+    def marker(self, *extra, cwd=None):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}  # a git hook's GIT_DIR must not leak
+        return subprocess.run([sys.executable, "-B", GATE, "marker", *extra], cwd=cwd or self.repo,
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env)
+
+    def test_marker_absent(self):
+        r = self.marker()
+        self.assertEqual((r.returncode, r.stdout), (0, "absent\n"))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "claude-review-ok")))
+
+    def test_marker_hash_leaves_content_and_mtime_unchanged(self):
+        self.assertEqual(self.mark("--findings", "0").returncode, 0)
+        path = os.path.join(self.repo, ".git", "claude-review-ok")
+        os.utime(path, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))  # an old, exact mtime
+        with open(path, "rb") as f:
+            before = f.read()
+        r = self.marker()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, hashlib.sha256(before).hexdigest() + "\n")
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(os.stat(path).st_mtime_ns, 1_000_000_000_000_000_000)
+        self.assertEqual(self.marker().stdout, r.stdout)  # stable across runs
+
+    def test_marker_hash_changes_with_a_new_mark(self):
+        self.assertEqual(self.mark("--findings", "0").returncode, 0)
+        first = self.marker().stdout
+        with open(os.path.join(self.repo, "f.txt"), "w", encoding="utf-8") as f:
+            f.write("y")
+        self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "next")
+        self.assertEqual(self.mark("--findings", "0").returncode, 0)
+        self.assertNotEqual(self.marker().stdout, first)
+
+    def test_marker_in_a_worktree_reads_that_worktrees_marker(self):
+        wt = os.path.join(self.tmp, "wt")
+        self.sh("git", "worktree", "add", "-q", "-b", "cesar/DEM-2", wt)
+        self.assertEqual(self.mark("--findings", "0").returncode, 0)  # the main checkout's marker
+        self.assertEqual(self.marker(cwd=wt).stdout, "absent\n")
+
+    def test_marker_with_extra_arguments_fails(self):
+        r = self.marker("--anything")
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("Usage", r.stderr)
+
+    def test_marker_outside_a_repo_fails(self):
+        out = os.path.join(self.tmp, "plain")
+        os.makedirs(out)
+        r = self.marker(cwd=out)
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("git repository", r.stderr)
 
 
 if __name__ == "__main__":

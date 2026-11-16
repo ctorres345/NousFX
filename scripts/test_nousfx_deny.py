@@ -64,6 +64,17 @@ class Rules(unittest.TestCase):
         self.assertIn("PowerShell(*review-gate.py*--allow-branch*)", ASK)
 
 
+    def test_allow_rules_name_only_the_read_only_marker_command(self):
+        """NFX-155: exact text, no wildcard, and the command implementer.md tells the main session to run."""
+        self.assertEqual(list(nousfx_deny.ALLOW_RULES), ["Bash(python3 ~/.claude/hooks/review-gate.py marker)",
+                                                         "Bash(python ~/.claude/hooks/review-gate.py marker)"])
+        self.assertFalse(any("*" in r for r in nousfx_deny.ALLOW_RULES))
+        with open(os.path.join(HERE, "..", "harness", "agents", "implementer.md"), encoding="utf-8") as f:
+            self.assertIn("python3 ~/.claude/hooks/review-gate.py marker", f.read())
+        for r in nousfx_deny.ALLOW_RULES:  # an allow rule must never also match an ask rule's waiver
+            self.assertFalse(any(fnmatch.fnmatchcase(r, a) for a in ASK))
+
+
 class SecretPatterns(unittest.TestCase):
     """NFX-103: one list for the deny rules and the Gemini excludes."""
     MOBILE = ("*.jks", "*.keystore", "*.p12", "*.p8", "key.properties", "google-services.json",
@@ -151,6 +162,13 @@ class Merge(unittest.TestCase):
         self.assertEqual(cfg["permissions"]["ask"], ["Bash(git push *)"] + ASK)
         self.assertEqual(cfg["permissions"]["deny"], ["Read(./x)"])
 
+    def test_allow_section_keeps_the_users_allow_rules(self):
+        """NFX-155: sync adds only its own allow rules; the user's stay, and a second merge changes nothing."""
+        cfg = {"permissions": {"allow": ["Bash(ls)"]}}
+        for _ in range(2):
+            nousfx_deny.merge(cfg, nousfx_deny.ALLOW_RULES, nousfx_sync.SyncError, "settings.json", section="allow")
+            self.assertEqual(cfg["permissions"]["allow"], ["Bash(ls)"] + list(nousfx_deny.ALLOW_RULES))
+
     def test_bad_shapes_stop_the_run(self):
         for cfg in ({"permissions": []}, {"permissions": {"deny": "Read(x)"}}, {"permissions": {"deny": [{"x": 1}]}}):
             with self.assertRaises(nousfx_sync.SyncError):
@@ -170,7 +188,7 @@ class Sync(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         cfg = json.loads(read(self.settings))
         self.assertEqual(cfg["permissions"]["deny"], ["Read(./private/**)"] + RULES)
-        self.assertEqual(cfg["permissions"]["allow"], ["Bash(git status)"])
+        self.assertEqual(cfg["permissions"]["allow"], ["Bash(git status)"] + list(nousfx_deny.ALLOW_RULES))  # NFX-155
         for key in ("model", "env"):
             self.assertEqual(cfg[key], before[key])
         self.assertEqual(cfg["hooks"]["Stop"], before["hooks"]["Stop"])

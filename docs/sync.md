@@ -106,6 +106,8 @@ How the rules read:
 
 Sync also writes `ask` rules to `permissions.ask`, for the Bash and the Windows PowerShell tool: `Bash(*review-gate.py*--skip*)`, `Bash(*review-gate.py*--tier-override*)` and `Bash(*review-gate.py*--allow-branch*)` (no spaces around the flag, so a quoted `'--skip'` matches too), and the same three as `PowerShell(...)`. Each waiver of the review gate then asks you first, also in auto and bypass mode. Best effort: the rules match the command text, so `python3 -c`, a copy of the script, `eval`, a variable holding the flag, quotes inside it (`--sk''ip`) or a glob for the path get past them (docs/review-gate.md). A command that only mentions both strings, such as a commit message or `--body` about the gate, also asks; in an unattended run that counts as a no, so put such text in a file (`-F`, `--body-file`). Your own `ask` rules are kept.
 
+Sync also writes two exact `allow` rules to `permissions.allow` (NFX-155): `Bash(python3 ~/.claude/hooks/review-gate.py marker)` and `Bash(python ~/.claude/hooks/review-gate.py marker)` (Windows' Git Bash). No PowerShell rule: Windows PowerShell 5.1 does not expand `~` for python. `marker` only reads the review marker and prints its sha256 or `absent`, so the main session can note it around an implementer run; auto mode denies hashing the marker file by hand. No wildcard, so only that exact command is allowed. Your own `allow` rules are kept.
+
 What it does not stop (the Bash gap):
 
 | Command | Blocked? |
