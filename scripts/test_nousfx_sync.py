@@ -463,15 +463,15 @@ class RulesBudget(Base):
         lines = self.budget_lines(r)
         self.assertEqual(len(lines), 1, r.stderr)
         body = len(read(self.rules).split(" -->\n\n", 1)[1].encode("utf-8"))
-        self.assertGreater(body, 6144)
+        self.assertGreater(body, nousfx_sync.RULES_BUDGET)
         self.assertIn(f"is {body} bytes", lines[0])
-        self.assertIn("6144 byte budget", lines[0])
+        self.assertIn(f"{nousfx_sync.RULES_BUDGET} byte budget", lines[0])
         self.assertEqual(self.run_sync("--check").returncode, 0)  # in step: no drift, warning or not
         rc, counts = self.summary()
         self.assertEqual(rc, 0)
         self.assertEqual({k: counts["rules"][k] for k in ("bytes", "budget", "repeats")},
-                         {"bytes": body, "budget": 6144, "repeats": 0})
-        self.assertEqual(counts["rules"]["headroom"], 6144 - body)
+                         {"bytes": body, "budget": nousfx_sync.RULES_BUDGET, "repeats": 0})
+        self.assertEqual(counts["rules"]["headroom"], nousfx_sync.RULES_BUDGET - body)
 
     def test_within_budget_prints_no_warning(self):
         r = self.run_sync()
@@ -509,7 +509,7 @@ class RulesBudget(Base):
         rc, counts = self.summary()
         self.assertEqual(rc, 0)
         self.assertEqual((counts["files"], counts["skills"], counts["outside"]), (0, 0, 0))
-        self.assertEqual((counts["rules"]["budget"], counts["rules"]["repeats"]), (6144, 1))
+        self.assertEqual((counts["rules"]["budget"], counts["rules"]["repeats"]), (nousfx_sync.RULES_BUDGET, 1))
 
     def test_a_repeat_in_local_md_counts_once_when_two_tools_load_it(self):
         write(os.path.join(self.repo, "harness", "overlays", "agy.overlay.md"), "## agy overlay\n- agy only line\n")

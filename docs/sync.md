@@ -48,7 +48,7 @@ What it prints: nothing when all is well. Otherwise one line, for example `NousF
 
 What it never does: sync, pull or write a file of mine. The background fetch is the only write, and it only moves `origin/main` in the clone. Any error, a missing clone or more than 2 seconds means it says nothing and exits 0, so it cannot break a session start.
 
-A rules warning is one more line, for example `NousFX rules: 9492 bytes, over the 6144 byte budget. Run python3 -B scripts/nousfx_sync.py --dry-run in <clone> to see which, then trim the local files (docs/sync.md).`
+A rules warning is one more line, for example `NousFX rules: 9492 bytes, over the 6400 byte budget. Run python3 -B scripts/nousfx_sync.py --dry-run in <clone> to see which, then trim the local files (docs/sync.md).`
 
 To turn it off, remove the `SessionStart` entry that names `nousfx-drift.py` from `~/.claude/settings.json`. The next sync puts it back.
 
@@ -58,12 +58,12 @@ agy has no session-start hook (only `PreToolUse` is proven), so its rules carry 
 
 Longer instruction files lower adherence, so the rules a tool loads stay short on every machine, not just in the repo. Every run measures each tool's generated rules without the header, local layers included (`--check --summary` reports the numbers in its `rules` object). Every other run warns on stderr:
 
-- `warning: rules budget: .claude/CLAUDE.md is 9492 bytes without its header, over the 6144 byte budget. ...` when the body is over budget.
+- `warning: rules budget: .claude/CLAUDE.md is 9492 bytes without its header, over the 6400 byte budget. ...` when the body is over budget.
 - `warning: repeated rule: "<sentence>" is in <local file> and <harness file>` for each sentence of 6 words or more that a local layer shares with `harness/AGENTS.md` or the tool's overlay. It uses the same matcher as `scripts/test_rules_single_copy.py`.
 
-The default budget is 6144 bytes. `NOUSFX_RULES_BUDGET=<n>` overrides it for one run; a `rules-budget: <n>` line in `local.md` overrides it for good. That line is a setting, read only from `local.md`, so it stays out of the generated rules. The variable wins over the line.
+The default budget is 6400 bytes (6144 until NFX-158). `NOUSFX_RULES_BUDGET=<n>` overrides it for one run; a `rules-budget: <n>` line in `local.md` overrides it for good. That line is a setting, read only from `local.md`, so it stays out of the generated rules. The variable wins over the line.
 
-It only warns: the exit code stays the same, and `--check` still says `no drift`. The repo's own 4096-byte budget for `AGENTS.md` plus the Claude overlay (`test_rules_single_copy.py`) is separate and still fails the tests.
+It only warns: the exit code stays the same, and `--check` still says `no drift`. The repo's own budget for `AGENTS.md` plus the Claude overlay (`CLAUDE_RULES_BUDGET` in `nousfx_sync.py`) (`test_rules_single_copy.py`) is separate and still fails the tests.
 
 Local files hold only what is personal. A shared rule goes in the harness, once.
 

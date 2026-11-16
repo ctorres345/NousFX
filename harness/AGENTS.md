@@ -14,5 +14,10 @@
 - No runbook: say so and offer to write one from docs and config; no secrets, update it with any step change.
 - Deploys and installs that go live for others are the user's to trigger: give the steps, wait for "deploy it".
 
+## Durable files (NousFX `docs/worktrees.md`)
+- Worktrees get recycled: release artifacts and logs go outside the repo, e.g. `~/Releases/<project>/<version>-code<n>/`.
+- Secrets: `~/.config/nousfx/secrets/<project>/`; check existence, never open or print.
+- From a worktree, the main checkout is read-only: no edits, git writes or builds there.
+
 ## Keep working until done
 - A turn that ends in text ends the work: run a named next step in the same turn. Stop only for a user-only question, a needed approval, or a finished task.

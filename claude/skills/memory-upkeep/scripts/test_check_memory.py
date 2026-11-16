@@ -81,8 +81,9 @@ class Fixture(unittest.TestCase):
     def stale_handoff(self):
         self.handoff(f"# Handoff: demo (2026-11-01, main, {self.first})")
 
-    def handoff(self, header):
-        write(os.path.join(self.repo, ".claude", "handoff.md"), header + "\n\n## Goal\nx\n")
+    def handoff(self, header, legacy=False):
+        folder = os.path.join(self.repo, ".claude") if legacy else self.project_dir  # beside memory/ (NFX-158)
+        write(os.path.join(folder, "handoff.md"), header + "\n\n## Goal\nx\n")
 
     def run_json(self, *extra):
         out = io.StringIO()
@@ -142,9 +143,26 @@ class Findings(Fixture):
         self.memory("- [A](a.md) — a\n", {"a.md": "fine"})
         self.stale_handoff()
         found, data = self.kinds()
-        self.assertIn(("handoff-branch", ".claude/handoff.md"), found)
+        self.assertIn(("handoff-branch", "handoff.md"), found)
+        self.assertIn(("handoff-sha", "handoff.md"), found)
+        self.assertEqual(data["projects"][0]["handoff"], "handoff.md")
+
+    def test_legacy_handoff_is_checked_and_flagged(self):
+        self.memory("- [A](a.md) — a\n", {"a.md": "fine"})
+        self.handoff(f"# Handoff: demo (2026-11-01, main, {self.first})", legacy=True)
+        found, data = self.kinds()
+        self.assertIn(("handoff-legacy", ".claude/handoff.md"), found)
         self.assertIn(("handoff-sha", ".claude/handoff.md"), found)
         self.assertEqual(data["projects"][0]["handoff"], ".claude/handoff.md")
+
+    def test_handoff_beside_memory_wins_over_legacy(self):
+        self.memory("- [A](a.md) — a\n", {"a.md": "fine"})
+        self.handoff("no header in the old copy", legacy=True)
+        self.stale_handoff()
+        found, data = self.kinds()
+        self.assertEqual(data["projects"][0]["handoff"], "handoff.md")
+        self.assertIn(("handoff-legacy", ".claude/handoff.md"), found)  # a leftover copy drifts: flag it
+        self.assertNotIn("handoff-header", {k for k, _ in found})  # but it is not the note that is read
 
     def test_current_handoff_header_is_clean(self):
         head = sh(self.repo, "git", "rev-parse", "--short", "HEAD")
@@ -190,7 +208,7 @@ class Safety(Fixture):
             self.run_json()
         finally:
             RECORD[0] = False
-        handoff = os.path.join(self.repo, ".claude", "handoff.md")
+        handoff = os.path.join(self.project_dir, "handoff.md")
         inside = [p for p in OPENED if p.startswith(self.tmp + os.sep)]
         self.assertTrue(inside, "the audit hook saw no opens")
         bad = [p for p in inside if not p.startswith(self.mem + os.sep) and p != handoff]
@@ -222,6 +240,14 @@ class Safety(Fixture):
         projects = json.loads(out.getvalue())["projects"]
         self.assertEqual([p["project"] for p in projects], [self.repo])
 
+    def test_all_finds_a_project_with_only_a_handoff(self):
+        self.stale_handoff()  # no memory/ folder yet: the handoff skill creates the project folder itself
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            check_memory.main(["--all", "--json", "--home", self.home])
+        projects = json.loads(out.getvalue())["projects"]
+        self.assertEqual([(p["project"], p["handoff"]) for p in projects], [(self.repo, "handoff.md")])
+
     def test_unslug_handles_folder_names_with_mixed_punctuation(self):
         folder = os.path.join(self.tmp, ".odd_name-v2", "x.y")
         os.makedirs(folder)
@@ -245,13 +271,13 @@ class Safety(Fixture):
         self.memory("- [A](a.md) — a\n", {"a.md": "fine"})
         tree = os.path.join(self.tmp, "tree")
         sh(self.repo, "git", "worktree", "add", "-q", "-b", "other", tree)
-        self.stale_handoff()  # the main checkout's note: an old sha, so it has a handoff-sha finding
+        self.stale_handoff()  # the shared note: an old sha, so it has a handoff-sha finding
         write(os.path.join(tree, ".claude", "handoff.md"), "no header in the worktree's stale copy\n")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             check_memory.main([tree, "--json", "--home", self.home])
         kinds = {f["kind"] for f in json.loads(out.getvalue())["projects"][0]["findings"]}
-        self.assertIn("handoff-sha", kinds)  # read from the main checkout (NFX-153)
+        self.assertIn("handoff-sha", kinds)  # the shared note beside memory/ (NFX-153, NFX-158)
         self.assertNotIn("handoff-header", kinds)  # the worktree's copy is never read
 
     def test_note_written_from_a_worktree_is_current(self):
@@ -260,7 +286,7 @@ class Safety(Fixture):
         sh(self.repo, "git", "worktree", "add", "-q", "-b", "other", tree)
         sh(tree, "git", "commit", "-q", "--allow-empty", "-m", "on other")
         head = sh(tree, "git", "rev-parse", "--short", "HEAD")
-        self.handoff(f"# Handoff: demo (2026-11-15, other, {head})")  # in the main checkout, which is on main
+        self.handoff(f"# Handoff: demo (2026-11-15, other, {head})")  # the shared note; the main checkout is on main
         for folder in (tree, self.repo):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):

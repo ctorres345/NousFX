@@ -20,26 +20,31 @@ Contents, in this order:
 Rules:
 - Use facts from this session and git only. Mark anything unverified as "unverified".
 - No secrets, tokens, or credential values. Reference commits, PRs and tickets by link instead of duplicating them.
-- Never `git add` or commit the file; tell the user it is local unless they choose otherwise.
+- The note lives outside the repo, so it is never committed and needs no `.gitignore` line.
 
 ## Where to save
 
-One note per repo, in the main checkout, even from a linked worktree (`.claude/worktrees/<name>`). Find its root with:
+One note per repo, outside it, beside the project's Claude Code memory: `~/.claude/projects/<key>/handoff.md`. In Claude Code that folder is the parent of your auto-memory folder (`.../memory/`). Every session of the repo, in the main checkout or in any worktree, uses this one file. It moved here because the Claude desktop app blocks worktree sessions from editing the main checkout's `.claude/` (NFX-158; NousFX `docs/worktrees.md`).
+
+`<key>` is the main checkout's real path with every character that is not a letter or digit turned into `-` (`/Users/me/Projects/App` gives `-Users-me-Projects-App`). Without the memory path, find it with:
 
 ```bash
-common="$(git rev-parse --path-format=absolute --git-common-dir)"
-sub="$(git -C "$common" config core.worktree)"  # set only in a submodule
-if [ "$(basename "$common")" = .git ]; then root="$(dirname "$common")"
-elif [ -n "$sub" ]; then root="$(cd "$common" && cd "$sub" && pwd)"
+common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+sub="$(git -C "$common" config core.worktree 2>/dev/null)"  # set only in a submodule
+if [ -z "$common" ]; then root="$(pwd -P)"  # not a git repo
+elif [ "$(basename "$common")" = .git ]; then root="$(dirname "$common")"
+elif [ -n "$sub" ]; then root="$(cd "$common" && cd "$sub" && pwd -P)"
 else root="$(git rev-parse --show-toplevel)"  # a bare repo has no main checkout
 fi
+note="$HOME/.claude/projects/$(cd "$root" && pwd -P | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')/handoff.md"
 ```
 
-"The project root" and "the git top level" below mean this folder, and the session-start read of `.claude/handoff.md` uses this same path. A worktree's own `.claude/handoff.md` is a stale copy (the Claude desktop app copies `.claude/` into each new worktree): never read it as current, never update it.
+Prefer the memory folder's parent whenever you know it: the recipe can differ from Claude Code's key on Windows, for non-ASCII paths and for very long paths. If the recipe's folder does not exist but a memory folder does, use the memory folder's parent.
 
-- The project already has `<root>/.claude/handoff.md` (or `<root>/HANDOFF.md`): update that file in place. Keep its structure and replace the stale parts (state, next steps, open risks). Do not create a second copy. Before writing, run `git -C "$root" check-ignore -q --no-index <file>` and `git -C "$root" ls-files --error-unmatch <file>` (no `cd`). If the first exits 1 (no ignore rule) or the second exits 0 (git tracks the file), tell the user before writing.
+- The note exists: update it in place. Keep its structure and replace the stale parts (state, next steps, open risks).
 - Merge, never overwrite: parallel worktree sessions share this one file. Re-read it just before writing, whether or not this session read it before, and keep the Done lines, still-open Next steps and risks that another session wrote; add this session's. The header is this session's; name the other session's branch in its kept lines. Drop another session's lines only once its branch is gone or its ticket is Done; to stay under 30 lines, cut finished items first and shorten, never drop open ones.
-- The project has neither and is a git repo: ask the user once per session (in unattended runs do not ask: use the temp folder): "Create `.claude/handoff.md` and add it to `.gitignore`? A note in the temp folder is not found by the next session." On a yes, create the file in `<root>` (so the next session finds it) and, unless `git -C "$root" check-ignore -q --no-index .claude/handoff.md` already succeeds, add `.claude/handoff.md` to that folder's `.gitignore` (no duplicate line). Leave that edit uncommitted and tell the user. Then write the handoff there.
-- On a no, outside a git repo, or when writing to `<root>` is refused (a permission prompt declined or blocked): write the note to the OS temp directory and do not ask again that session. Never fall back to the worktree's copy.
+- The note is missing but the main checkout (`<root>`) has an older `.claude/handoff.md` or root `HANDOFF.md`: read that as the other sessions' lines, merge as above, and write the result to the new path. Leave the old file alone; tell the user it can be deleted. A worktree's own `.claude/handoff.md` is a stale copy (the app copies `.claude/` into each new worktree): never read it as current, never update it.
+- Neither exists: create the folder if needed and write the note there; no question to ask.
+- Writing there is refused (a permission prompt declined or blocked): write the note to the OS temp directory and do not try again that session. Never fall back to a worktree path.
 
 Finish by printing the full path of the file written; for the temp folder add that a new session will not find it on its own. Then suggest: run `/clear` (or open a new thread) and start the next session with "continue from <the path just printed>".
