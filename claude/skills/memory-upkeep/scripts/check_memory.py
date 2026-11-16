@@ -227,6 +227,19 @@ def parse_header(text):
     return None
 
 
+def checked_out(path):
+    """{branch: worktree path} for every worktree of the repo at path. The main checkout's note is shared, so
+    its header is checked in the worktree that has the header's branch (NFX-153)."""
+    code, text = git(path, "worktree", "list", "--porcelain")
+    found, tree = {}, None
+    for line in text.splitlines() if code == 0 else []:
+        if line.startswith("worktree "):
+            tree = line[len("worktree "):]
+        elif line.startswith("branch refs/heads/") and tree and os.path.isdir(tree):
+            found[line[len("branch refs/heads/"):]] = tree
+    return found
+
+
 def check_handoff(repo):
     for rel in HANDOFFS:
         path = os.path.join(repo.path, *rel.split("/"))
@@ -243,16 +256,17 @@ def check_handoff(repo):
         return rel, [finding("handoff-header", rel, "no \"date, branch, short sha\" in the first lines")]
     date, branch, sha = parsed
     out = []
-    current = git(repo.path, "branch", "--show-current")[1] or "(detached HEAD)"
+    where = checked_out(repo.path).get(branch, repo.path)  # a worktree session's note names its own branch
+    current = git(where, "branch", "--show-current")[1] or "(detached HEAD)"
     if branch != current:
         out.append(finding("handoff-branch", rel, f"header ({date}) says branch {branch}; checkout is on {current}"))
-    code, full = git(repo.path, "rev-parse", "--verify", "--quiet", sha + "^{commit}")
-    head_sha = git(repo.path, "rev-parse", "HEAD")[1]
+    code, full = git(where, "rev-parse", "--verify", "--quiet", sha + "^{commit}")
+    head_sha = git(where, "rev-parse", "HEAD")[1]
     if code != 0:
         out.append(finding("handoff-sha", rel, f"header ({date}) says {sha}, which is not a commit here; HEAD is {head_sha[:7]}"))
     elif full != head_sha:
-        if git(repo.path, "merge-base", "--is-ancestor", full, "HEAD")[0] == 0:
-            later = git(repo.path, "rev-list", "--count", f"{full}..HEAD")[1]
+        if git(where, "merge-base", "--is-ancestor", full, "HEAD")[0] == 0:
+            later = git(where, "rev-list", "--count", f"{full}..HEAD")[1]
             where = f"{later} commit(s) later"
         else:
             where = "and the header's commit is not an ancestor of HEAD"
@@ -260,8 +274,9 @@ def check_handoff(repo):
     return rel, out
 
 
-def check_project(mem, project, ambiguous=None):
-    """Findings for one memory folder. project is the repo path, or None when it cannot be found."""
+def check_project(mem, project, ambiguous=None, handoff_at=None):
+    """Findings for one memory folder. project is the repo path, or None when it cannot be found. handoff_at is
+    the main checkout, which holds the one handoff note a worktree's sessions share (NFX-153); default project."""
     has_mem = os.path.isdir(mem)
     entries = sorted(f for f in os.listdir(mem) if f.endswith(".md") and f != INDEX) if has_mem else []
     links = [f for f in entries if os.path.islink(os.path.join(mem, f))]  # may point outside memory/: never read
@@ -270,7 +285,8 @@ def check_project(mem, project, ambiguous=None):
     found = bool(project) and os.path.isdir(project)
     repo = Repo(project if found else None)
     findings = check_index(mem, notes) + check_refs(repo, notes, texts) + check_duplicates(notes, texts)
-    handoff, more = check_handoff(repo) if found else (None, [])
+    at = handoff_at if found and handoff_at and os.path.isdir(handoff_at) else project
+    handoff, more = check_handoff(repo if at == project else Repo(at)) if found else (None, [])
     findings += more + [finding("note-symlink", f, f"{f} is a link; not read") for f in links]
     if found and not repo.is_git:
         findings.append(finding("project-not-git", "", f"{project} is not a git work tree (or git refused it); "
@@ -294,7 +310,7 @@ def run(home, project=None, all_projects=False):
             results.append(check_project(os.path.join(root, n, "memory"), project and checkouts(project)[0], ambiguous))
         return results
     top, main = checkouts(project)
-    result = check_project(os.path.join(root, slug(main), "memory"), top)
+    result = check_project(os.path.join(root, slug(main), "memory"), top, handoff_at=main)
     if result["memory"] is None:
         result["findings"].insert(0, finding("memory-missing", "", f"no memory folder for {main} "
                                              f"(looked in {os.path.join(root, slug(main))})"))
