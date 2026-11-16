@@ -61,7 +61,7 @@ Only for approved items, one at a time:
 2. Apply the fix:
    - Labels: `editJiraIssue` replaces the whole set, so send the fresh labels plus the change.
    - Links: `createIssueLink` with type `Blocks`, `inwardIssue` = blocker, `outwardIssue` = blocked.
-   - Status: `getTransitionsForJiraIssue`, then `transitionJiraIssue`.
+   - Status: on the claude.ai Atlassian connector, `transitionJiraIssue` with `transitionName: "<transition name>"` (for example `"Done"`); if it is rejected, list the transitions with `executeRead`, `name: "listJiraIssueTransitions"`, and pass `transitionId: "<id>"`. Never pass `transition: {id}` to the connector, which rejects it. Load a deferred tool with `ToolSearch` (`select:<full tool name>`) before its first call. The repo's `docs/agents/issue-tracker.md` names the server and ids when it has them.
 3. Append to `~/.claude/jira-sync/<KEY>.md`: date, finding ID, ticket, field, old value, new value. Write the entry straight after each change, so a failed run still has a full record.
 
 The tools here cannot delete a link. Tell Cesar that a wrong link has to be removed by hand in Jira.
