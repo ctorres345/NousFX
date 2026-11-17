@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.3.1 (unreleased)
+
+### Via assets (NFX-159)
+- `/via assets <KEY>` makes the images and SVGs a ticket declares, then stops at a review gallery (NFX-163). `via_assets_review.py` keeps a static gallery page and a state file in `design/asset-review/<KEY>/`, which ignores itself in git. `add` takes a file that `generate` wrote for a declared name. `approve` copies it to its source, re-encodes a JPEG when the spec names a PNG, and converts that one asset. `reject` needs a note, and adding again regenerates only that asset. Every step appends to `design/asset-log/<KEY>.md`. An unattended run never approves or rejects. A failed approve puts every file back and leaves the asset pending. `shots` hands pending images to Argon through a Via run. `generate --ref` passes up to 4 style reference images. Via never commits; you commit the assets.
+- `via_assets.py generate` makes one image or SVG through agy on the Google AI Pro subscription, with no API key (NFX-162). agy runs in an empty temp folder, in its own process group, with API keys stripped from its environment. Raw output is saved outside the repo.
+- `via_assets.py convert` and `audit` work from `design/assets.toml` (NFX-161). Images go to Android density folders, Flutter scales and web `.webp`. SVGs become a VectorDrawable or a plain copy. `audit` reports missing, extra, wrong-size and stale files, and SVG safety and palette problems, as Via findings.
+- `/via setup` reports, creates and repairs a pinned Pillow environment; every other Via script stays stdlib-only (NFX-160). It works on Windows too, with `Scripts\python.exe` and the `py` launcher (NFX-166). The create command names a Python 3.10 or newer, and `setup.md` notes that pip config applies (NFX-167).
+- Tickets can declare assets: the template has an `## Assets` section and a `needs-assets` label, the ready check needs a real row with the label, and `/via spec` proposes both (NFX-165). The jira-sync audit flags an Assets section with real rows but no label (NFX-168).
+
+### Gemini
+- Argon reviews run through agy on the subscription, with the billed Gemini API key as fallback (NFX-164). This covers `/gemini-review` and Via's second opinion. The billed key answers only when agy is at its limit, missing or signed out, and only if the project also allows `gemini`. Every agy call runs with session settings that deny commands, MCP, writes and reads outside its folder.
+
+### Via
+- Via capture works on Kotlin Multiplatform modules: it scans `androidMain`, `androidDebug` and `commonMain`, and writes its test to `androidUnitTest` (NFX-152).
+
+### Review gate
+- `review-gate.py marker` prints the review marker's hash, so the implementer check no longer hashes it by hand (NFX-155).
+- `tier.py` no longer flags ViewModels under `ui/` as UI, and review-loop settles Via at tier time (NFX-154).
+- review-loop has an "Open the PR" step: commit, `attest`, then a body file written in its own call (ANI-194).
+
+### Harness
+- One handoff note per repo, in the main checkout, which `/handoff` re-reads before it writes (NFX-153).
+- Worktrees and durable files: a doc, rules, a secrets step, and the handoff note beside memory (NFX-158).
+- The Jira Done transition loads the deferred tool, tries `transitionName` first and falls back to `transitionId` (NFX-157).
+
 ## 1.3.0 (2026-11-15)
 
 ### Docs
