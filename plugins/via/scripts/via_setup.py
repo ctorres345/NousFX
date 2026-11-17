@@ -69,7 +69,26 @@ PILLOW_VERSION = "12.3.0"
 PILLOW_MIN_PYTHON = (3, 10)  # the oldest Python this Pillow release ships wheels for
 
 
-PILLOW_CMD = "python3 -I -B %s --create-pillow" % shlex.quote(os.path.realpath(__file__))
+def pillow_command():
+    """The create command, run with a Python that can build Pillow; None when none is found."""
+    script = shlex.quote(os.path.realpath(__file__))
+    if sys.version_info >= PILLOW_MIN_PYTHON:
+        # The plain name when PATH's python3 is this interpreter; else this interpreter's own path.
+        on_path = shutil.which("python3")
+        same = bool(on_path) and os.path.realpath(on_path) == os.path.realpath(sys.executable)
+        return "%s -I -B %s --create-pillow" % ("python3" if same else shlex.quote(sys.executable), script)
+    check = "import sys; sys.exit(0 if sys.version_info >= (%d, %d) else 1)" % PILLOW_MIN_PYTHON
+    for name in ("python3.14", "python3.13", "python3.12", "python3.11", "python3.10"):
+        path = shutil.which(name)
+        if not path:
+            continue
+        try:
+            ok = subprocess.run([path, "-I", "-B", "-c", check], capture_output=True, timeout=20).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if ok:
+            return "%s -I -B %s --create-pillow" % (shlex.quote(path), script)
+    return None
 
 
 def pillow_env(home):
@@ -243,13 +262,20 @@ def main():
 
     pillow = detect_pillow(home)
     create_failed = False
+    probed = None  # (command,) once pillow_command() has run, so the probe runs once
     if args.create_pillow and pillow != "present":
         if create_pillow(home, pillow):
             pillow = "present"
         else:
             pillow = detect_pillow(home)
             create_failed = True
-            print("Pillow environment not ready (see the reason above). Fix it, then run: %s" % PILLOW_CMD, file=sys.stderr)
+            probed = (pillow_command(),)
+            cmd = probed[0]
+            if cmd:
+                print("Pillow environment not ready (see the reason above). Fix it, then run: %s" % cmd, file=sys.stderr)
+            else:
+                print("Pillow environment not ready (see the reason above). Python %s or newer is needed."
+                      % ".".join(map(str, PILLOW_MIN_PYTHON)), file=sys.stderr)
 
     simulators, sim_tools = detect_simulators()
     obsidian, vault = detect_obsidian(home, cfg["obsidian"].get("vault_path"))
@@ -278,7 +304,11 @@ def main():
     if sim_tools:
         report["simulators"]["tools"] = sim_tools
     if pillow != "present":
-        report["pillow"]["create_command"] = PILLOW_CMD
+        cmd = probed[0] if probed else pillow_command()
+        if cmd:
+            report["pillow"]["create_command"] = cmd
+        else:
+            report["pillow"]["needs_python"] = ".".join(map(str, PILLOW_MIN_PYTHON))
     if skills == "partial":
         report["skills"]["missing"] = sorted(WANTED_SKILLS - installed)
 

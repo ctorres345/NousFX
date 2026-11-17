@@ -6,6 +6,7 @@ Each test runs the script as a subprocess with a throwaway HOME and a PATH holdi
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -275,7 +276,8 @@ class ViaSetupTest(unittest.TestCase):
         item = self.report()["integrations"]["pillow"]
         self.assertEqual(item["status"], "missing")
         self.assertIn("--create-pillow", item["create_command"])
-        self.assertTrue(item["create_command"].startswith("python3 -I -B "))
+        # PATH here holds no python3, so the running interpreter is named by its own path
+        self.assertRegex(item["create_command"], r"^(\S+|'[^']*') -I -B .*via_setup\.py'? --create-pillow$")
         self.assertFalse(os.path.exists(self.venv_dir()))
         self.assertIsNone(json.loads(read(self.config))["assets"]["python"])
 
@@ -330,6 +332,77 @@ class ViaSetupTest(unittest.TestCase):
         self.assertIn("needs Python 99.0 or newer", err.getvalue())
         self.assertNotIn("network", err.getvalue())
         self.assertFalse(os.path.exists(self.venv_dir()))
+
+    def load_module(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("via_setup_under_test", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def fake_python(self, name, code, folder=None):
+        """A stand-in interpreter. It exits `code` only when run as the version check (-c ... sys.version_info)."""
+        d = folder or self.tempdir()
+        path = os.path.join(d, name)
+        with open(path, "w") as f:
+            f.write('#!/bin/sh\ncase "$*" in *"-I -B -c"*sys.version_info*) exit %d;; esac\nexit 3\n' % code)
+        os.chmod(path, 0o755)
+        return d, path
+
+    def test_a_too_old_running_python_gets_a_verified_newer_one_in_the_command(self):
+        from unittest import mock
+        mod = self.load_module()
+        mod.PILLOW_MIN_PYTHON = (99, 0)
+        d, path = self.fake_python("python3.12", 0)
+        with mock.patch.dict(os.environ, {"PATH": d}):
+            cmd = mod.pillow_command()
+        self.assertTrue(cmd.startswith("%s -I -B " % shlex.quote(path)), cmd)
+        self.assertTrue(cmd.endswith(" --create-pillow"))
+
+    def test_no_qualifying_python_gives_no_command_and_the_report_asks_for_one(self):
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+        mod = self.load_module()
+        mod.PILLOW_MIN_PYTHON = (99, 0)
+        d, _ = self.fake_python("python3.12", 1)
+        for path_env in (d, ""):
+            with mock.patch.dict(os.environ, {"PATH": path_env}):
+                self.assertIsNone(mod.pillow_command())
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {**th.env(self.home), "PATH": d + os.pathsep + self.bin}), \
+                mock.patch.object(sys, "argv", ["via_setup.py"]), redirect_stdout(out):
+            self.assertEqual(mod.main(), 0)
+        item = json.loads(out.getvalue())["integrations"]["pillow"]
+        self.assertEqual(item["needs_python"], "99.0")
+        self.assertNotIn("create_command", item)
+
+    def test_the_newest_qualifying_python_on_path_wins_and_a_failed_check_is_skipped(self):
+        from unittest import mock
+        mod = self.load_module()
+        mod.PILLOW_MIN_PYTHON = (99, 0)
+        d, _ = self.fake_python("python3.14", 1)  # fails the check: skipped
+        _, p12 = self.fake_python("python3.12", 0, d)
+        _, p11 = self.fake_python("python3.11", 0, d)
+        with mock.patch.dict(os.environ, {"PATH": d}):
+            cmd = mod.pillow_command()
+        self.assertTrue(cmd.startswith("%s -I -B " % shlex.quote(p12)), cmd)  # not 3.14 (failed), not 3.11 (older)
+
+    def test_setup_mode_doc_covers_needs_python_and_the_pip_note(self):
+        doc = read(os.path.join(os.path.dirname(SCRIPT), "..", "skills", "via", "modes", "setup.md"))
+        self.assertIn("`needs_python`", doc)
+        self.assertIn("`PIP_*`", doc)
+
+    def test_a_qualifying_running_python_keeps_the_plain_command(self):
+        from unittest import mock
+        mod = self.load_module()
+        mod.PILLOW_MIN_PYTHON = (3, 0)  # any host: the running Python qualifies
+        with mock.patch.object(mod.shutil, "which", lambda name: sys.executable if name == "python3" else None):
+            cmd = mod.pillow_command()
+        self.assertTrue(cmd.startswith("python3 -I -B "), cmd)
+        self.assertIn(shlex.quote(os.path.realpath(SCRIPT)), cmd)
+        with mock.patch.object(mod.shutil, "which", lambda name: None):  # PATH's python3 is not this interpreter
+            self.assertTrue(mod.pillow_command().startswith(shlex.quote(sys.executable) + " -I -B "))
 
     def test_create_pillow_keeps_the_other_recorded_integrations(self):
         self.run_setup("--atlassian", "present", "--figma", "authorized", "--browser", "chrome")
