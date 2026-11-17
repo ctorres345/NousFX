@@ -12,12 +12,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 import nousfx_testhome as th
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "via_setup.py")
 KEY_LIKE = re.compile(r"(AIza[0-9A-Za-z_-]{35}|AQ\.[0-9A-Za-z_-]{20,}|sk-[0-9A-Za-z_-]{20,})")
-INTEGRATIONS = {"gemini", "atlassian", "figma", "obsidian", "simulators", "browser", "skills"}
+INTEGRATIONS = {"gemini", "atlassian", "figma", "obsidian", "simulators", "browser", "pillow", "skills"}
+PILLOW_VERSION = re.search(r'PILLOW_VERSION = "([^"]+)"', open(SCRIPT).read()).group(1)
 FAKE_KEY = "AQ.FAKEKEYFAKEKEYFAKEKEYFAKEKEY99"
 
 
@@ -246,6 +248,118 @@ class ViaSetupTest(unittest.TestCase):
         r = self.run_setup("--skills", FAKE_KEY)
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse(os.path.exists(self.config))
+
+    # Pillow environment
+
+    def venv_dir(self):
+        return os.path.join(self.home, ".local", "share", "nousfx", "via", "venv")
+
+    def fake_wheels(self):
+        """A tiny local Pillow wheel so the create flag runs offline."""
+        folder = self.tempdir()
+        v = PILLOW_VERSION
+        info = "Pillow-%s.dist-info" % v
+        with zipfile.ZipFile(os.path.join(folder, "Pillow-%s-py3-none-any.whl" % v), "w") as z:
+            z.writestr("PIL/__init__.py", '__version__ = "%s"\n' % v)
+            z.writestr(info + "/METADATA", "Metadata-Version: 2.1\nName: Pillow\nVersion: %s\n" % v)
+            z.writestr(info + "/WHEEL", "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+            z.writestr(info + "/RECORD", "")
+        return {"PIP_NO_INDEX": "1", "PIP_FIND_LINKS": folder}
+
+    def create_pillow(self):
+        r = self.run_setup("--create-pillow", **self.fake_wheels())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_a_missing_pillow_env_is_reported_with_the_create_command_and_not_created(self):
+        item = self.report()["integrations"]["pillow"]
+        self.assertEqual(item["status"], "missing")
+        self.assertIn("--create-pillow", item["create_command"])
+        self.assertTrue(item["create_command"].startswith("python3 -I -B "))
+        self.assertFalse(os.path.exists(self.venv_dir()))
+        self.assertIsNone(json.loads(read(self.config))["assets"]["python"])
+
+    def test_create_pillow_builds_the_env_offline_and_reports_present(self):
+        rep = self.create_pillow()
+        self.assertEqual(rep["integrations"]["pillow"]["status"], "present")
+        self.assertNotIn("create_command", rep["integrations"]["pillow"])
+        py = os.path.join(self.venv_dir(), "bin", "python")
+        r = subprocess.run([py, "-I", "-B", "-c", "import PIL"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.report()["integrations"]["pillow"]["status"], "present")
+
+    def test_a_broken_pillow_env_is_reported_broken_and_create_repairs_it(self):
+        self.create_pillow()
+        py = os.path.join(self.venv_dir(), "bin", "python")
+        os.remove(py)
+        with open(py, "w") as f:
+            f.write("#!/bin/sh\nexit 1\n")
+        os.chmod(py, 0o755)
+        item = self.report()["integrations"]["pillow"]
+        self.assertEqual(item["status"], "broken")
+        self.assertIn("--create-pillow", item["create_command"])
+        self.assertTrue(item["fix_url"].startswith("https://"))
+        self.assertEqual(self.create_pillow()["integrations"]["pillow"]["status"], "present")
+
+    def test_a_failed_create_exits_1_but_a_plain_run_does_not(self):
+        r = self.run_setup("--create-pillow", PIP_NO_INDEX="1", PIP_FIND_LINKS=self.tempdir())
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Pillow environment not ready", r.stderr)
+        self.assertNotEqual(json.loads(r.stdout)["integrations"]["pillow"]["status"], "present")
+        self.assertEqual(self.run_setup().returncode, 0)
+
+    def test_config_records_the_pillow_status_and_python_path_only(self):
+        self.create_pillow()
+        text = read(self.config)
+        cfg = json.loads(text)
+        self.assertEqual(cfg["integrations"]["pillow"], "present")
+        self.assertEqual(cfg["assets"]["python"], os.path.join(os.path.realpath(self.venv_dir()), "bin", "python"))
+        self.assertIsNone(KEY_LIKE.search(text))
+
+    def test_create_pillow_names_an_interpreter_that_is_too_old_and_builds_nothing(self):
+        import importlib.util
+        import io
+        from contextlib import redirect_stderr
+        spec = importlib.util.spec_from_file_location("via_setup_under_test", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.PILLOW_MIN_PYTHON = (99, 0)
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertFalse(mod.create_pillow(self.home, "missing"))
+        self.assertIn("needs Python 99.0 or newer", err.getvalue())
+        self.assertNotIn("network", err.getvalue())
+        self.assertFalse(os.path.exists(self.venv_dir()))
+
+    def test_create_pillow_keeps_the_other_recorded_integrations(self):
+        self.run_setup("--atlassian", "present", "--figma", "authorized", "--browser", "chrome")
+        before = json.loads(read(self.config))
+        self.create_pillow()
+        after = json.loads(read(self.config))
+        self.assertEqual(after["figma"]["state"], "authorized")
+        for key in ("atlassian", "figma", "browser", "skills"):
+            self.assertEqual(after["integrations"][key], before["integrations"][key], key)
+        self.assertEqual(after["integrations"]["pillow"], "present")
+
+    def test_an_env_with_a_dead_interpreter_is_broken_and_create_repairs_it(self):
+        self.create_pillow()
+        py = os.path.join(self.venv_dir(), "bin", "python")
+        os.remove(py)
+        os.symlink(os.path.join(self.home, "gone", "python"), py)
+        self.assertEqual(self.report()["integrations"]["pillow"]["status"], "broken")
+        self.assertEqual(self.create_pillow()["integrations"]["pillow"]["status"], "present")
+
+    def test_no_via_script_imports_pillow_except_assets_scripts(self):
+        here = os.path.dirname(SCRIPT)
+        for folder, dirs, files in os.walk(here):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            for name in sorted(files):
+                if not name.endswith(".py") or name.startswith("test_") or name.startswith("via_assets"):
+                    continue
+                path = os.path.join(folder, name)
+                text = read(path)
+                self.assertIsNone(re.search(r"^\s*(import\s[^#\n]*\bPIL\b|from\s+PIL\b)", text, re.M), path)
+                self.assertIsNone(re.search(r"(import_module|__import__)\(\s*[\"']PIL", text), path)
 
 
 if __name__ == "__main__":
