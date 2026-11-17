@@ -291,7 +291,7 @@ Details of each release are in [CHANGELOG.md](CHANGELOG.md).
 
   | Plugin | Role | Would hold |
   |---|---|---|
-  | **Via** (Octavia) | Designer | `/via` setup, spec, check, audit and export |
+  | **Via** (Octavia) | Designer | `/via` setup, spec, assets, check, audit and export |
   | Cassie (Cassiopeia) | Planner and navigator | Grilling, spec to tickets, wayfinder, roadmap, `jira-sync` |
   | Rosalia | Guardian | Secret checks, git guardrails, skill checksums, outbound rules |
   | Misty | Memory and context | Handoff, compaction, usage report, graphify |

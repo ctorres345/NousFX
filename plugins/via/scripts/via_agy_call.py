@@ -40,6 +40,9 @@ NO_SHELL = ("Do not run shell commands, do not read, write or delete any file, a
             "in plain text.")
 READ_ONLY = ("Do not run shell commands, do not write or delete any file, and do not use any tool except reading "
              "these files in the current folder: %s. Read no other file. Answer in plain text.")
+DRAW_WITH = READ_ONLY.replace("these files in the current folder: %s.", "these style reference images in the "
+                              "current folder: %s, and generate_image (or the image-generator subagent that runs it) "
+                              "when an image is asked for.")
 FILE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}")
 MAX_FILES = 16 * 1024 * 1024  # all files of one call together
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
@@ -101,7 +104,7 @@ def agy_env():
     return {k: v for k, v in os.environ.items() if not SECRET_ENV.search(k) and not CLOUD_ENV.match(k)}
 
 
-def call(prompt, timeout, model=MODEL, files=None, skip=()):
+def call(prompt, timeout, model=MODEL, files=None, skip=(), draw=False):
     """One agy call. Returns {"conversation_id", "response", ...} or raises AgyError with what agy said.
 
     files maps a plain file name to its bytes. They are written into agy's empty folder, and the prompt lets agy
@@ -113,7 +116,7 @@ def call(prompt, timeout, model=MODEL, files=None, skip=()):
         raise AgyError("a file name for agy must be a plain name (letters, digits, '_', '.', '-')")
     if sum(len(d) for d in files.values()) > MAX_FILES:
         raise AgyError("the files for agy are over %d bytes" % MAX_FILES)
-    rules = READ_ONLY % ", ".join(sorted(files)) if files else NO_SHELL
+    rules = (DRAW_WITH if draw else READ_ONLY) % ", ".join(sorted(files)) if files else NO_SHELL
     agy = find_agy(skip)
     if not agy:
         raise AgyUnavailable("agy is not installed or not on PATH. Install the Antigravity CLI and sign in, then try again")
