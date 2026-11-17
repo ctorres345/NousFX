@@ -1,7 +1,13 @@
 """Shared safety stops for review.py and argon_review.py. Import it, then call the functions.
 
 Run the scripts as `python3 -I -B` (`python -I -B` on Windows). Every stop prints "Nothing was sent." and exits:
-3 setup, 4 not allowed, 5 nothing to send, 6 too large, 7 likely secret, 8 bad screenshots, 9 gemini-api failed.
+3 setup, 4 not allowed, 5 nothing to send, 6 too large, 7 likely secret, 8 bad screenshots, 9 the Argon call failed.
+
+Routes (NFX-164). Argon runs through agy (the Antigravity CLI, Google AI Pro subscription) when the project's
+outbound allow-list entry lists `agy`. It uses the billed gemini-api key when the entry lists `gemini` and agy is
+not listed, is not installed, is not signed in, or reached the subscription limit. Any other agy failure (a
+timeout, say) stops with exit 9: it never falls back to the billed key. The reply says which route ran, and why
+when it fell back.
 
 The scripts never read the Gemini key. gemini-api reads it from the OS keyring (macOS keychain, Windows
 Credential Manager). check_key() refuses to run unless gemini-api reports the key's source as the keyring, and
@@ -22,6 +28,9 @@ import secret_patterns  # noqa: E402
 HERE = os.path.dirname(os.path.realpath(__file__))
 CLI_VERSION = "0.4.5"
 MODEL = "gemini-4-argon"
+AGY_MODEL = "gemini-4-argon-medium"
+AGY_TIMEOUT = 600
+VIA_SCRIPTS = os.path.join(HERE, "..", "..", "..", "..", "plugins", "via", "scripts")
 MAX_BYTES = 200000  # the most diff text one call may send
 STRIP_ENV = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 CLI_TIMEOUT = 600
@@ -195,36 +204,42 @@ def git_diff(rng, paths):
     return r.stdout
 
 
-def allowed_paths():
-    """The code paths the outbound allow-list lets Gemini see. Any doubt stops the run.
-
-    via_outbound.py is found next to this repo, never in the plugin cache: a cache copy can be stale or hand-edited.
-    """
-    outbound = os.path.join(HERE, "..", "..", "..", "..", "plugins", "via", "scripts", "via_outbound.py")
-    if not os.path.isfile(outbound):
-        stop(3, "Stopped: via_outbound.py not found (run this from a NousFX checkout). Nothing was sent.")
+def _via(script, *args, timeout=30):
+    """Runs a Via script from this repo, never from the plugin cache: a cache copy can be stale or hand-edited.
+    Started from an empty folder: on Windows its bare `git` calls would otherwise look in the repo first."""
+    path = os.path.join(VIA_SCRIPTS, script)
+    if not os.path.isfile(path):
+        stop(3, "Stopped: %s not found (run this from a NousFX checkout). Nothing was sent." % script)
     if any(_inside(sys.executable, d) for d in (os.getcwd(), _repo_top()) if d):
         stop(3, "Stopped: the Python interpreter is inside the repo being reviewed. Nothing was sent.")
-    base = [sys.executable, "-I", "-B", outbound]
-    where = ["--dest", "gemini", "--project", os.getcwd()]
-    # Started from an empty folder: on Windows its bare `git` calls would otherwise look in the repo first.
     with tempfile.TemporaryDirectory(prefix="argon-") as empty:
-        def run(mode):
-            try:
-                return subprocess.run([*base, mode, *where], stdin=subprocess.DEVNULL, capture_output=True, timeout=30, cwd=empty)
-            except (OSError, subprocess.SubprocessError):
-                return None
-        check = run("check")
-        code = check.returncode if check else -1
-        if code == 20:
-            stop(4, "Stopped: this project is not allow-listed for gemini in ~/.config/nousfx/via.json. Nothing was sent.")
-        if code != 0:
-            stop(3, "Stopped: could not read the outbound allow-list (via_outbound.py exit %d). Nothing was sent." % code)
-        listed = run("paths")
+        try:
+            return subprocess.run([sys.executable, "-I", "-B", path, *args], stdin=subprocess.DEVNULL,
+                                  capture_output=True, timeout=timeout, cwd=empty)
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+
+def _allowed(dest):
+    r = _via("via_outbound.py", "check", "--dest", dest, "--project", os.getcwd())
+    code = r.returncode if r else -1
+    if code not in (0, 20):
+        stop(3, "Stopped: could not read the outbound allow-list (via_outbound.py exit %d). Nothing was sent." % code)
+    return code == 0
+
+
+def plan_route():
+    """Which routes the outbound allow-list opens, and the code paths Gemini may see. Any doubt stops the run."""
+    route = {"agy": _allowed("agy"), "gemini": _allowed("gemini")}
+    if not (route["agy"] or route["gemini"]):
+        stop(4, "Stopped: this project is not allow-listed for agy or gemini in ~/.config/nousfx/via.json. "
+                "Nothing was sent.")
+    listed = _via("via_outbound.py", "paths", "--dest", "agy" if route["agy"] else "gemini", "--project", os.getcwd())
     paths = [os.fsdecode(p) for p in listed.stdout.split(b"\0") if p] if listed and listed.returncode == 0 else []
     if not paths:
         stop(4, "Stopped: the allow-list entry names no gemini_code_paths. Nothing was sent.")
-    return paths
+    route["paths"] = paths
+    return route
 
 
 def new_files(paths, budget):
@@ -266,23 +281,89 @@ def stop_on_secret(data):
         stop(7, "Stopped: the text looks like it contains a secret. Nothing was sent.")
 
 
-def run_analyze(cli, args, stdin_data=None, files=None):
-    """Runs `gemini-api analyze` in an empty temp folder (repo files stay out of reach) and prints its reply."""
+def run_analyze(cli, args, files):
+    """Runs `gemini-api analyze` in an empty temp folder (repo files stay out of reach). Returns its JSON reply."""
     workdir = tempfile.mkdtemp(prefix="gemini-")
     try:
-        for name, data in (files or {}).items():
+        for name, data in files.items():
             with open(os.path.join(workdir, name), "wb") as f:
                 f.write(data)
         try:
             r = subprocess.run([cli, "analyze", *args], cwd=workdir, env=child_env(), stdout=subprocess.PIPE,
-                               input=stdin_data, stdin=None if stdin_data is not None else subprocess.DEVNULL,
-                               timeout=CLI_TIMEOUT)
+                               stdin=subprocess.DEVNULL, timeout=CLI_TIMEOUT)
         except (OSError, subprocess.SubprocessError) as e:
             stop(9, "gemini-api failed (%s)." % type(e).__name__)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     if r.returncode != 0:
         stop(9, "gemini-api failed (exit %d)." % r.returncode)
+    try:
+        reply = json.loads(r.stdout)
+    except ValueError:
+        reply = None
+    if not isinstance(reply, dict) or not isinstance(reply.get("text"), str):
+        stop(9, "gemini-api answered in an unexpected shape.")
+    return reply
+
+
+def run_agy(system, question, files):
+    """One Argon call through via_agy_call.py. Returns (reply, None), or (None, why) when the caller may fall back
+    to the billed key: agy reached the subscription limit (exit 21), or is not installed or not signed in (22).
+    Stops with exit 9 on any other failure."""
+    workdir = tempfile.mkdtemp(prefix="argon-agy-")
+    try:
+        args = []
+        for name, data in files.items():
+            with open(os.path.join(workdir, name), "wb") as f:
+                f.write(data)
+            args += ["--file", os.path.join(workdir, name)]
+        prompt = os.path.join(workdir, ".prompt")
+        with open(prompt, "w", encoding="utf-8") as f:
+            f.write("%s\n\nThe attached files: %s.\n\n%s" % (system, ", ".join(sorted(files)), question))
+        r = _via("via_agy_call.py", "text", "--prompt-file", prompt, "--model", AGY_MODEL, "--project", os.getcwd(),
+                 "--timeout", str(AGY_TIMEOUT), *args, timeout=AGY_TIMEOUT + 120)  # inner wait is +30 s
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    if r is None:
+        stop(9, "Stopped: agy did not answer. Argon did not run.")
+    said = os.fsdecode(r.stderr).strip()
+    if r.returncode in (21, 22):
+        return None, said
+    if r.returncode != 0:
+        stop(9, said or "Stopped: agy failed (exit %d). Argon did not run." % r.returncode)
+    try:
+        reply = json.loads(r.stdout)
+        text, usage = reply["response"], reply.get("usage")
+    except (ValueError, KeyError, TypeError):
+        stop(9, "Stopped: agy answered in an unexpected shape. Argon did not run.")
+    return {"text": text, "usage": usage if isinstance(usage, dict) else {}}, None
+
+
+def ask(route, platform, system, question, files):
+    """Sends the files to Argon on the route plan_route() chose, and prints the JSON reply: {"text", "usage",
+    "route": "agy" or "gemini-api"}, plus "fallback" (why) when agy could not answer and the billed key did."""
+    why = None
+    if route["agy"]:
+        reply, why = run_agy(system, question, files)
+        if reply is not None:
+            return _print(dict(reply, route="agy"))
+        if not route["gemini"]:
+            stop(9, "%s The project does not allow the billed Gemini API (gemini), so Argon did not run." % why)
+        sys.stderr.write("Note: agy could not answer (%s). Trying the billed Gemini API key.\n" % why)
+    cli = find_cli(platform)
+    check_cli(cli)
+    check_key(cli)
+    inputs = []
+    for name in files:
+        inputs += ["-i", name]
+    reply = run_analyze(cli, ["-m", MODEL, *inputs, "--system", system, "--output-format", "json", question], files)
+    reply["route"] = "gemini-api"
+    if why:
+        reply["fallback"] = "agy could not answer, so the billed Gemini API key was used. %s" % why
+        sys.stderr.write("Note: %s\n" % reply["fallback"])
+    _print(reply)
+
+
+def _print(reply):
+    sys.stdout.write(json.dumps(reply) + "\n")
     sys.stdout.flush()
-    sys.stdout.buffer.write(r.stdout)
-    sys.stdout.buffer.flush()

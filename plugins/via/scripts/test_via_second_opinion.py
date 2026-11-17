@@ -29,6 +29,15 @@ ls -A | wc -l | tr -d ' ' > "$HOME/cwd-files.log"
 [ -f "$HOME/fail" ] && exit 3
 echo '{"text": "high | home-light-phone.png | low contrast | use a darker grey", "usage": {"input_tokens": 900, "output_tokens": 120}}'
 """
+AGY = """#!/bin/sh
+printf '%s\\n' "$@" > "$HOME/agy-args.log"
+ls > "$HOME/agy-files.log"
+case "$(cat "$HOME/agy-mode" 2>/dev/null)" in
+  limit) echo "Error: RESOURCE_EXHAUSTED: quota exceeded" >&2; exit 1 ;;
+  fail) echo "Error: model crashed" >&2; exit 3 ;;
+esac
+echo '{"conversation_id": "abcdef12-3456", "status": "SUCCESS", "response": "NO FINDINGS", "usage": {"input_tokens": 7, "output_tokens": 1}}'
+"""
 
 
 class ViaSecondOpinionTest(unittest.TestCase):
@@ -76,6 +85,15 @@ class ViaSecondOpinionTest(unittest.TestCase):
             f.write(STUB)
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
+    def stub_agy(self, mode=""):
+        path = os.path.join(self.home, ".local", "bin", "agy")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(AGY)
+        os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+        with open(os.path.join(self.home, "agy-mode"), "w") as f:
+            f.write(mode)
+
     def shot(self, n):
         return os.path.join(self.run_dir, self.names[n])
 
@@ -118,6 +136,51 @@ class ViaSecondOpinionTest(unittest.TestCase):
         self.assertIn("gemini-4-argon", args)
         for n in (0, 1):
             self.assertIn("-i " + os.path.realpath(self.shot(n)), args)
+
+    def test_a_project_that_lists_agy_gets_argon_through_agy_and_not_the_billed_key(self):
+        self.stub()
+        self.stub_agy()
+        self.allow(("agy", "gemini"))
+        r = self.run_cli([self.shot(0), self.shot(1)])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual((out["status"], out["who"], out["route"]), ("ran", "argon", "agy"))
+        self.assertEqual(out["usage"], {"input_tokens": 7, "output_tokens": 1})
+        self.assertNotIn("fallback", out)
+        self.assertEqual(self.logged("agy-files.log").split(), ["shot0.png", "shot1.png"])
+        self.assertIn("gemini-4-argon-medium", self.logged("agy-args.log"))
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_at_the_agy_limit_the_billed_key_answers_and_the_reply_says_so(self):
+        self.stub()
+        self.stub_agy("limit")
+        self.allow(("agy", "gemini"))
+        r = self.run_cli()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual(out["route"], "gemini-api")
+        self.assertIn("subscription limit", out["fallback"])
+        self.assertIn("billed Gemini API key was used", out["fallback"])
+
+    def test_without_agy_installed_the_billed_key_answers(self):
+        self.stub()
+        self.allow(("agy", "gemini"))
+        out = json.loads(self.run_cli().stdout)
+        self.assertEqual(out["route"], "gemini-api")
+        self.assertIn("not installed", out["fallback"])
+
+    def test_at_the_agy_limit_without_gemini_the_fresh_context_reviewer_takes_over(self):
+        self.stub()
+        self.stub_agy("limit")
+        self.allow(("agy",))
+        out = self.fallback(self.run_cli(), "subscription limit")
+        self.assertIn("does not allow gemini", out["reason"])
+
+    def test_any_other_agy_failure_goes_to_the_fresh_context_reviewer_not_the_billed_key(self):
+        self.stub()
+        self.stub_agy("fail")
+        self.allow(("agy", "gemini"))
+        self.fallback(self.run_cli(), "agy failed (exit 3)")
 
     def test_argon_runs_from_an_empty_folder_so_no_repo_file_is_in_reach(self):
         self.stub()

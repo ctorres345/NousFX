@@ -4,14 +4,19 @@
 Usage: via_second_opinion.py --run-dir RUN_DIR --shot FILE [--shot FILE ...] --brief TEXT
                              [--project DIR] [--config FILE]
 
-Argon (Gemini) runs only when all of these hold. Otherwise the answer is a fallback.
-  - every --shot is a regular file inside RUN_DIR that findings.json marks `review: "kept"`;
-  - the project is on the outbound allow-list for gemini (via_outbound.py);
-  - the personal config reports a Gemini key and the gemini-api CLI is installed.
+Every --shot must be a regular file inside RUN_DIR that findings.json marks `review: "kept"`. Then Argon (Gemini)
+runs on the first route that is open (NFX-164):
+  1. agy (Antigravity CLI, Google AI Pro subscription), when the project's outbound allow-list entry lists agy;
+  2. the billed gemini-api key, when the entry lists gemini, the personal config reports a Gemini key and the CLI
+     is installed. With agy listed too, only when agy reached its subscription limit, is not installed or is not
+     signed in. Any other agy failure (a timeout, say) goes to the fresh-context reviewer, never the billed key.
+Otherwise the answer is a fallback.
 
 The exit code is the contract:
-  0   Argon ran. Stdout is {"status": "ran", "who": "argon", "text": ..., "usage": {"input_tokens": n|null,
-      "output_tokens": n|null}}. Copy usage into the run record's token_cost.second_opinion.
+  0   Argon ran. Stdout is {"status": "ran", "who": "argon", "route": "agy"|"gemini-api", "text": ...,
+      "usage": {"input_tokens": n|null, "output_tokens": n|null}}, plus "fallback" (why the billed key answered)
+      when agy could not. Copy usage into the run record's token_cost.second_opinion, and say a "fallback" in the
+      summary line.
   10  fall back: start a fresh-context reviewer that sees only the screenshots and the brief.
       Stdout is {"status": "fallback", "reason": ..., "shots": [absolute paths]}. Say the reason in the summary line.
   1   the input is invalid or the config is malformed. Nothing was sent.
@@ -32,6 +37,7 @@ MAX_SHOT_BYTES = 12000000
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 FALLBACK = 10
 MODEL = "gemini-4-argon"
+AGY_MODEL = "gemini-4-argon-medium"
 ARGON_TIMEOUT = 300
 
 # Same pattern as via_setup.py and via_run.py. Each script ships alone, so the copies stay.
@@ -106,6 +112,52 @@ def count(usage, *names):
     return None
 
 
+def usage_of(usage):
+    return {"input_tokens": count(usage, "input_tokens", "prompt_tokens", "prompt_token_count"),
+            "output_tokens": count(usage, "output_tokens", "completion_tokens", "candidates_token_count")}
+
+
+def run_agy(shots, brief, project):
+    """(answer, None, False) when Argon answered through agy, else (None, why, may_use_the_billed_key)."""
+    workdir = tempfile.mkdtemp(prefix="via-argon-agy-")
+    try:
+        args = []
+        for i, s in enumerate(shots):
+            name = os.path.join(workdir, "shot%d%s" % (i, os.path.splitext(s)[1].lower()))
+            fd = os.open(s, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+            with os.fdopen(fd, "rb") as src, open(name, "xb") as dst:
+                shutil.copyfileobj(src, dst)
+            args += ["--file", name]
+        prompt = os.path.join(workdir, "prompt.txt")
+        with open(prompt, "w", encoding="utf-8") as f:
+            f.write("%s\n\nThe screenshots: %s.\n\n%s" % (SYSTEM, ", ".join(os.path.basename(a) for a in args[1::2]),
+                                                         QUESTION % brief.strip()))
+        # From the empty folder: agy is never looked up in the project, and a hung call is a fallback, not exit 1.
+        r = subprocess.run([sys.executable, "-I", "-B", os.path.join(HERE, "via_agy_call.py"), "text",
+                            "--prompt-file", prompt, "--model", AGY_MODEL, "--timeout", str(ARGON_TIMEOUT),
+                            "--project", project, *args],
+                           cwd=workdir, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           timeout=ARGON_TIMEOUT + 120)  # inner wait is +30 s
+    except subprocess.TimeoutExpired:
+        return None, "argon through agy did not answer in time", False
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, "argon through agy failed (%s)" % type(e).__name__, False
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    said = r.stderr.strip().removeprefix("Stopped: ").rstrip(".")
+    if r.returncode != 0:
+        return None, "argon through agy failed: %s" % (said or "exit %d" % r.returncode), r.returncode in (21, 22)
+    try:
+        reply = json.loads(r.stdout)
+        text = reply["response"]
+    except (ValueError, KeyError, TypeError):
+        return None, "agy answered in an unexpected shape", False
+    if not isinstance(text, str):
+        return None, "agy answered in an unexpected shape", False
+    return {"status": "ran", "who": "argon", "route": "agy", "text": text, "usage": usage_of(reply.get("usage"))
+            }, None, False
+
+
 def run_argon(cli, shots, brief):
     """The parsed answer, or the reason Argon could not give one."""
     cmd = [cli, "analyze", "-m", MODEL]
@@ -131,10 +183,7 @@ def run_argon(cli, shots, brief):
         return None, "argon answered in an unexpected shape"
     if not isinstance(text, str):
         return None, "argon answered in an unexpected shape"
-    usage = reply.get("usage")
-    return {"status": "ran", "who": "argon", "text": text,
-            "usage": {"input_tokens": count(usage, "input_tokens", "prompt_tokens", "prompt_token_count"),
-                      "output_tokens": count(usage, "output_tokens", "completion_tokens", "candidates_token_count")}
+    return {"status": "ran", "who": "argon", "route": "gemini-api", "text": text, "usage": usage_of(reply.get("usage"))
             }, None
 
 
@@ -168,21 +217,35 @@ def main():
         if path not in kept:
             die("%s is not marked kept in the run record of %s." % (given, run_dir))
 
-    verdict = helper("via_outbound.py", "check", "--dest", "gemini", "--project", project,
-                     *(["--config", opts["--config"]] if opts["--config"] else []))
-    if verdict.returncode == 1:
-        refuse(verdict)
-    answer = json.loads(verdict.stdout)
-    if verdict.returncode != 0:
-        return fallback(answer["reason"], absolute)
+    def check(dest):
+        verdict = helper("via_outbound.py", "check", "--dest", dest, "--project", project,
+                         *(["--config", opts["--config"]] if opts["--config"] else []))
+        if verdict.returncode == 1:
+            refuse(verdict)
+        return verdict.returncode == 0, json.loads(verdict.stdout)
+
+    agy_ok, _ = check("agy")
+    gemini_ok, answer = check("gemini")
+    why = None
+    if agy_ok:
+        reply, why, billed_ok = run_agy(absolute, brief, project)
+        if reply is not None:
+            print(json.dumps(reply))
+            return 0
+        if not billed_ok:
+            return fallback("%s, so use the fresh-context reviewer." % why, absolute)
+    if not gemini_ok:
+        return fallback("; ".join(filter(None, [why, answer["reason"]])), absolute)
 
     cli = find_gemini()
     if not cli or answer["gemini_integration"] != "present":
-        return fallback("no Gemini key (run /via setup to see how to add one), so use the fresh-context reviewer.",
-                        absolute)
-    reply, why = run_argon(cli, absolute, brief)
+        return fallback("; ".join(filter(None, [why, "no Gemini key (run /via setup to see how to add one), so use "
+                                                     "the fresh-context reviewer."])), absolute)
+    reply, failed = run_argon(cli, absolute, brief)
     if reply is None:
-        return fallback("%s, so use the fresh-context reviewer." % why, absolute)
+        return fallback("%s, so use the fresh-context reviewer." % failed, absolute)
+    if why:
+        reply["fallback"] = "%s, so the billed Gemini API key was used." % why
     print(json.dumps(reply))
     return 0
 

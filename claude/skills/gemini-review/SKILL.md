@@ -22,4 +22,5 @@ Fix nothing until Cesar asks.
 ## Rules
 
 - Run `gemini-api` only through the script. It stops on private repos, large diffs and likely secrets, and it works from an empty folder.
+- With no flag, the diff goes to the billed key only. In `--allow-list` mode (review-loop), a project that lists `agy` goes through agy on the subscription, whose terms allow training on prompts (Cesar accepted that, NFX-164); the key is used only when agy is at its limit, missing or signed out, and the reply's `fallback` says so.
 - The key is billed, so Google's paid terms apply: prompts are not used to improve products, though Google logs them for a limited time to detect abuse. The key stays in the OS keyring (macOS keychain or Windows Credential Manager); the script stops if gemini-api reports any other key source. Never print the key or pass it as an argument.

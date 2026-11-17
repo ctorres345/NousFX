@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Sends one git diff to Gemini 4 Argon through gemini-api for a read-only review, and prints the JSON reply.
+"""Sends one git diff to Gemini 4 Argon for a read-only review, and prints the JSON reply.
 
 Usage: python3 -I -B review.py [--private-ok | --allow-list] [git diff range]   (default range: HEAD)
 
---allow-list is the review-loop mode: the project must be on the outbound allow-list in ~/.config/nousfx/via.json,
-public or not, and only the diff inside the entry's gemini_code_paths is sent. It cannot be combined with --private-ok.
+--allow-list is the review-loop mode: the project must be on the outbound allow-list in ~/.config/nousfx/via.json
+for agy or gemini, public or not, and only the diff inside the entry's gemini_code_paths is sent. It goes through
+agy when the entry lists agy, else (or when agy is at its limit, missing or signed out) through the billed
+gemini-api key; see gemini_common.py. It cannot be combined with --private-ok.
+Without --allow-list the diff goes only to the billed gemini-api key.
 """
 import os
 import sys
@@ -29,14 +32,12 @@ def main(argv):
 
     gc.check_range(rng)
     gc.go_to_root()  # first: the CLI is looked up and probed only once we know which repo we are in
-    cli = gc.find_cli(platform)
-    gc.check_cli(cli)
-    gc.check_key(cli)
     if allow_list:
-        paths = gc.allowed_paths()
-        diff = gc.allowed_diff(rng, paths)
+        route = gc.plan_route()
+        diff = gc.allowed_diff(rng, route["paths"])
         empty = "Stopped: no changes inside the allow-listed gemini_code_paths. Nothing was sent."
     else:
+        route = {"agy": False, "gemini": True}
         visibility = gc.read_visibility()
         if visibility != "PUBLIC" and not private_ok:
             gc.stop(4, "Stopped: repo visibility is %s. Nothing was sent." % visibility)
@@ -48,8 +49,7 @@ def main(argv):
         gc.stop(6, "Stopped: the diff is %d bytes, over the %d limit. Nothing was sent." % (len(diff), gc.MAX_BYTES))
     gc.stop_on_secret(diff)
 
-    gc.run_analyze(cli, ["-m", gc.MODEL, "-i", "diff.txt", "--system", SYSTEM, "--output-format", "json", QUESTION],
-                   files={"diff.txt": diff})
+    gc.ask(route, platform, SYSTEM, QUESTION, {"diff.txt": diff})
 
 
 if __name__ == "__main__":

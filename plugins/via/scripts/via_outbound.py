@@ -3,10 +3,11 @@
 
 Usage:
   via_outbound.py check --dest DEST [--project DIR] [--config FILE]
-  via_outbound.py paths --dest gemini [--project DIR] [--config FILE]
+  via_outbound.py paths --dest gemini|agy [--project DIR] [--config FILE]
 
 DEST is one of gemini, agy, jira, figma, artifacts, obsidian. gemini is the billed Gemini API key; agy is
-the Antigravity CLI on the Google AI Pro subscription (prompts and style images for generated assets).
+the Antigravity CLI on the Google AI Pro subscription (prompts and style images for generated assets, and Argon
+reviews of screenshots and diffs).
 The project key is host/owner/repo (lowercase), taken from the `origin` remote of the git repo at --project
 (default: the current folder). An old two-part owner/repo config key is read as github.com/owner/repo. A remote with
 no host (a local path or file:// URL) gives no key. The config is --config, else
@@ -19,7 +20,8 @@ no config is local-only. There is no exemption for public repos.
 
 `check` prints JSON {"allowed": bool, "project": key-or-null, "dest": DEST, "reason": ..., "gemini_integration":
 the status /via setup stored, or null}.
-`paths` prints gemini_code_paths, each followed by a NUL byte, and nothing when gemini is not allowed.
+`paths` prints gemini_code_paths, each followed by a NUL byte, and nothing when DEST is not allowed. They bound the
+code any Gemini model sees, through the API key or through agy.
 
 Exit codes:
   0   allowed.
@@ -165,8 +167,8 @@ def main(argv=None):
     ap.add_argument("--config")
     args = ap.parse_args(argv)
     try:
-        if args.command == "paths" and args.dest != "gemini":
-            raise Bad("paths only applies to --dest gemini")
+        if args.command == "paths" and args.dest not in ("gemini", "agy"):
+            raise Bad("paths only applies to --dest gemini or agy")
         code, result = decide(args.project, args.dest, args.config)
     except Bad as e:
         print("Stopped: %s. Nothing was sent." % e, file=sys.stderr)

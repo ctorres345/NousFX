@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Sends a UI diff and screenshots to Gemini 4 Argon through gemini-api, and prints the JSON reply.
+"""Sends a UI diff and screenshots to Gemini 4 Argon, and prints the JSON reply.
+
+It goes through agy when the outbound allow-list entry lists agy, else (or when agy is at its limit, missing or
+signed out) through the billed gemini-api key; see gemini_common.py.
 
 Usage: python3 -I -B argon_review.py --shot a.png [--shot b.png ...] [--range BASE] [--brief "what changed"]
 Default range: merge base with the default branch, plus uncommitted and new files.
 Exit codes: 3 setup, 4 project not allowed by the via.json outbound allow-list, 5 no UI changes, 6 too large,
-7 likely secret, 8 bad screenshots, 9 gemini-api failed.
+7 likely secret, 8 bad screenshots, 9 the Argon call failed.
 """
 import os
 import stat
@@ -86,13 +89,10 @@ def main(argv):
     gc.check_range(rng)
     loaded = check_shots(shots)  # read before the move to the repo root, so relative paths still resolve
     gc.go_to_root()  # then the CLI is looked up and probed only once we know which repo we are in
-    cli = gc.find_cli(platform)
-    gc.check_cli(cli)
-    gc.check_key(cli)
-    paths = gc.allowed_paths()
+    route = gc.plan_route()
 
     rng = rng or default_range()
-    diff = gc.allowed_diff(rng, paths)
+    diff = gc.allowed_diff(rng, route["paths"])
     if not diff:
         gc.stop(5, "Stopped: no UI changes in the allowed paths. Nothing was sent.")
     if len(diff) > gc.MAX_BYTES:
@@ -100,11 +100,7 @@ def main(argv):
     gc.stop_on_secret(diff)
     gc.stop_on_secret(os.fsencode(brief))
 
-    inputs = []
-    for name, _ in loaded:
-        inputs += ["-i", name]
-    gc.run_analyze(cli, ["-m", gc.MODEL, *inputs, "--stdin", "--system", SYSTEM, "--output-format", "json",
-                         QUESTION % (brief or "not given")], stdin_data=diff, files=dict(loaded))
+    gc.ask(route, platform, SYSTEM, QUESTION % (brief or "not given"), {**dict(loaded), "diff.txt": diff})
 
 
 if __name__ == "__main__":

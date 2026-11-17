@@ -9,11 +9,11 @@ python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_second_opinion.py" --run-dir <r
 
 | Exit | Meaning | What you do |
 |---|---|---|
-| 0 | Argon ran. Stdout has `who: "argon"`, `text` and `usage`. | Turn `text` into findings and verify them (below). Put `usage` in `token_cost.second_opinion`. |
+| 0 | Argon ran. Stdout has `who: "argon"`, `route` (`agy` or `gemini-api`), `text` and `usage`, plus `fallback` when the billed key answered for agy. | Turn `text` into findings and verify them (below). Put `usage` in `token_cost.second_opinion`. Put a `fallback` in the summary line. |
 | 10 | Fall back. Stdout has `reason` and the absolute `shots`. | Start the fresh-context reviewer (below). Put `reason` in the summary line. |
 | 1 | Invalid input, or a config that is malformed or outside `~/.config/nousfx` (or inside a git work tree). Nothing was sent. | Read the message. For input, fix the call: 1 to 8 shots marked `kept` in this run folder, a brief, regular files only. If no shot is kept, skip the second opinion and say why. For a config problem, tell the user to fix `~/.config/nousfx/via.json`, then use the fresh-context reviewer below (it sends nothing out). |
 
-Argon runs only when the project is on the outbound allow-list for `gemini` in `~/.config/nousfx/via.json` and `/via setup` found a Gemini key. Otherwise the wrapper answers 10, and the reason says which: `... is not on the allow-list`, `no Gemini key`, or `argon failed (exit N)`. Run `via_outbound.py check --dest <destination>` before any other outbound step too (Jira, Figma, Artifacts, Obsidian): exit 20 means use the local output instead.
+Argon runs through agy (Google AI Pro subscription, no key) when the project lists `agy` in the outbound allow-list in `~/.config/nousfx/via.json`. It uses the billed Gemini key when the project lists `gemini` and `/via setup` found a key, and either agy is not listed or agy is at its subscription limit, missing or signed out. Any other agy failure, such as a timeout, never moves to the billed key. Otherwise the wrapper answers 10, and the reason says which: `... is not on the allow-list`, `no Gemini key`, `argon through agy failed: ...`, or `argon failed (exit N)`. Run `via_outbound.py check --dest <destination>` before any other outbound step too (Jira, Figma, Artifacts, Obsidian): exit 20 means use the local output instead.
 
 ## Which shots
 At most 8 per call. Per screen take light phone, dark phone, light desktop, dark desktop, in that order, until you have 8.

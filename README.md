@@ -84,7 +84,7 @@ The audit should flag both. You approve once which fixes happen now and which be
 | `figma.state` | `"missing"` | Only `/via export figma` uses it. |
 | `jira.site` | `null` | Your Jira site. |
 | `assets.python` | `null` | Set by `/via setup` to the Pillow environment's Python once it is ready. A path only. |
-| `outbound_allowlist` | `{}` | A project sends nothing out until it is listed here. Key `host/owner/repo` (for example `github.com/acme/app`), value `{"destinations": ["gemini", "agy", "jira", "figma", "artifacts", "obsidian"], "gemini_code_paths": ["src/"]}`. List only the destinations you want (`gemini` is the billed API key, `agy` the Antigravity CLI on your Google AI Pro subscription, used to generate assets); `gemini_code_paths` is the only code Gemini may see. |
+| `outbound_allowlist` | `{}` | A project sends nothing out until it is listed here. Key `host/owner/repo` (for example `github.com/acme/app`), value `{"destinations": ["gemini", "agy", "jira", "figma", "artifacts", "obsidian"], "gemini_code_paths": ["src/"]}`. List only the destinations you want (`gemini` is the billed API key, `agy` the Antigravity CLI on your Google AI Pro subscription, used to generate assets and, when listed, for every Argon call); `gemini_code_paths` is the only code Gemini may see, through either route. |
 | `capture.themes` | `["light", "dark"]` | Themes to shoot. |
 | `capture.font_scale` | `"largest"` | Font scale for native shots. |
 | `capture.max_second_opinion_shots` | `8` | Cap on shots sent for a second opinion. |
@@ -93,7 +93,8 @@ The audit should flag both. You approve once which fixes happen now and which be
 
 | Missing | What Via does |
 |---|---|
-| Gemini key | A fresh-context Claude reviewer gives the second opinion. |
+| agy | Argon uses the Gemini key instead, when the project lists `gemini`. |
+| agy and the Gemini key | A fresh-context Claude reviewer gives the second opinion. |
 | Atlassian (Jira) | Tickets are written as markdown. |
 | Figma | Only `/via export figma` is affected. |
 | Obsidian vault | No note is written. |
@@ -166,7 +167,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `harness/agents/reviewer-deep.md` | Fable second-opinion reviewer for large or risky changes, only after asking |
 | `harness/agents/architect.md` | Fable architecture and performance consultant, read-only, only after asking |
 | `claude/skills/review-loop/` | `/review-loop`: review-fix loop, rounds set by the risk tier (max 5), never commits |
-| `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/argon_review.py` is the Argon UI second opinion that `review-loop` calls; the project must be on the outbound allow-list in `~/.config/nousfx/via.json`. `scripts/gemini_common.py` holds the safety checks both Gemini scripts share; they run on macOS and Windows |
+| `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/argon_review.py` is the Argon UI second opinion that `review-loop` calls; the project must be on the outbound allow-list in `~/.config/nousfx/via.json`. In that allow-list mode, Argon runs through agy when the project lists `agy`, and falls back to the billed key only when agy is at its limit, missing or signed out, and the project lists `gemini`. `scripts/gemini_common.py` holds the safety checks both Gemini scripts share; they run on macOS and Windows |
 | `claude/skills/handoff/` | `/handoff`: session handoff note |
 | `claude/skills/after-merge/` | Runs after a confirmed merge: deletes the branches, moves the Jira ticket to Done, runs `/handoff` |
 | `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list. Applies only approved fixes |
@@ -256,7 +257,8 @@ Read-only. Costs are relative weights at list price, not a bill. It shows:
 - Claude Code 2.1.293 or later (Haiku 5.5). Run `claude update` if older.
 - Anthropic API. On Bedrock or Vertex, the `haiku` alias resolves to Haiku 4.5, so put the full model ID in the agent files.
 - Optional:
-  - `gemini-api` CLI with a key in the keychain, for Argon and `/gemini-review`
+  - `agy` (the Antigravity CLI, signed in with Google AI Pro), for Argon
+  - `gemini-api` CLI with a key in the keychain, for `/gemini-review` and as Argon's billed fallback
   - the Atlassian MCP, for Jira
   - Fable access
 
