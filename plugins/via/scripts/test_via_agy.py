@@ -22,7 +22,7 @@ sys.dont_write_bytecode = True
 
 PLUGIN = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))  # <repo>/plugins/via
 SKILL = os.path.join(PLUGIN, "skills", "via")
-DESTINATIONS = ("gemini", "jira", "figma", "artifacts", "obsidian")
+DESTINATIONS = ("gemini", "agy", "jira", "figma", "artifacts", "obsidian")
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 STUB = '#!/bin/sh\necho "$@" > "$HOME/gemini-called.log"\necho \'{"text": "", "usage": {}}\'\n'
 

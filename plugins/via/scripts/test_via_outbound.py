@@ -16,7 +16,7 @@ import nousfx_testhome as th
 sys.dont_write_bytecode = True
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "via_outbound.py")
-DESTINATIONS = ("gemini", "jira", "figma", "artifacts", "obsidian")
+DESTINATIONS = ("gemini", "agy", "jira", "figma", "artifacts", "obsidian")
 KEY = "acme/app"
 
 
@@ -80,6 +80,16 @@ class ViaOutboundTest(unittest.TestCase):
         for dest in DESTINATIONS:
             expected = 0 if dest in ("jira", "obsidian") else 20
             self.assertEqual(self.check(dest).returncode, expected, dest)
+
+    def test_agy_is_its_own_destination_and_gemini_does_not_imply_it(self):
+        self.remote("git@github.com:%s.git" % KEY)
+        self.write_config({KEY: {"destinations": ["gemini"]}})
+        r = self.check("agy")
+        self.assertEqual(r.returncode, 20, r.stderr)
+        self.assertIn("supply the asset source yourself", json.loads(r.stdout)["reason"])
+        self.write_config({KEY: {"destinations": ["agy"]}})
+        self.assertEqual(self.check("agy").returncode, 0)
+        self.assertEqual(self.check("gemini").returncode, 20)
 
     def test_ssh_and_https_remotes_give_the_same_key(self):
         self.write_config({KEY: {"destinations": ["gemini"]}})

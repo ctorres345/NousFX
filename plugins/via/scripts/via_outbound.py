@@ -5,7 +5,8 @@ Usage:
   via_outbound.py check --dest DEST [--project DIR] [--config FILE]
   via_outbound.py paths --dest gemini [--project DIR] [--config FILE]
 
-DEST is one of gemini, jira, figma, artifacts, obsidian.
+DEST is one of gemini, agy, jira, figma, artifacts, obsidian. gemini is the billed Gemini API key; agy is
+the Antigravity CLI on the Google AI Pro subscription (prompts and style images for generated assets).
 The project key is host/owner/repo (lowercase), taken from the `origin` remote of the git repo at --project
 (default: the current folder). An old two-part owner/repo config key is read as github.com/owner/repo. A remote with
 no host (a local path or file:// URL) gives no key. The config is --config, else
@@ -35,9 +36,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import via_home  # noqa: E402
 
-DESTINATIONS = ("gemini", "jira", "figma", "artifacts", "obsidian")
+DESTINATIONS = ("gemini", "agy", "jira", "figma", "artifacts", "obsidian")
 LOCAL_ONLY = {
     "gemini": "use the fresh-context reviewer",
+    "agy": "generate nothing; supply the asset source yourself",
     "jira": "write local markdown tickets in docs/design/tickets/",
     "figma": "skip the export; the prototype stays a local HTML file",
     "artifacts": "save the prototype as a local HTML file in the run folder",

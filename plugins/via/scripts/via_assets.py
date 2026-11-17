@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """via-assets: export a project's images and SVGs to each platform's sizes, and audit them against design/assets.toml.
 
-Usage: via_assets.py audit   [--project DIR]
-       via_assets.py convert [--project DIR] [--dry-run] [--only NAME ...]
+Usage: via_assets.py audit    [--project DIR]
+       via_assets.py convert  [--project DIR] [--dry-run] [--only NAME ...]
+       via_assets.py generate --kind image|svg --name NAME --key KEY (--prompt TEXT | --prompt-file FILE)
+                              [--project DIR] [--timeout SECONDS]
 
 The spec is design/assets.toml in the project:
 
@@ -35,6 +37,15 @@ stops and says so. --dry-run lists what it would write and writes nothing.
 Stdout is JSON. Exit 0 on success (findings are data, not failure), 1 when the spec or the setup is wrong
 (the reason goes to stderr as "Stopped: ...").
 Needs Python 3.11 or newer (tomllib).
+
+`generate` makes one image or SVG through agy (the Antigravity CLI, Google AI Pro subscription, no API key) and
+saves the raw output outside the repo, in ~/.local/share/nousfx/via/<project folder name>/<KEY>/<name>-<time>-<conversation id, 8 chars>.<ext>.
+It sends the prompt only when the outbound allow-list lets this project use the `agy` destination (exit 20 and
+nothing sent otherwise). agy runs in an empty temp folder and the prompt tells it to run no commands. An image is
+found only from the path named in agy's reply, inside that conversation's folder, written during the call; an SVG
+is the one <svg> document in the reply text, saved as text with its audit findings. An SVG that breaks a safety
+rule (parse, DOCTYPE, script, embedded content) stops with exit 1 and nothing is written. It needs no assets.toml and no
+Pillow. Prints {"path", "kind", "conversation_id", "findings"}; exit 1 with "Stopped: ..." when agy fails.
 """
 import argparse
 import fnmatch
@@ -45,6 +56,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import quoteattr
 
@@ -52,7 +64,9 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 UMASK = os.umask(0)
 os.umask(UMASK)
 sys.path.insert(0, HERE)  # -I leaves the script folder off sys.path
+import via_agy_call  # noqa: E402
 import via_home  # noqa: E402
+import via_outbound  # noqa: E402
 SPEC = os.path.join("design", "assets.toml")
 SCREEN, SOURCE = "assets", "via-assets"
 NAME_RE = re.compile(r"^[a-z0-9]+(_[a-z0-9]+){2,}$")
@@ -368,6 +382,10 @@ def parse_svg(path):
             raw = f.read()
     except OSError as e:
         return None, None, ("svg-parse", "cannot read the file (%s)" % e.strerror)
+    return parse_svg_bytes(raw)
+
+
+def parse_svg_bytes(raw):
     decl = re.match(rb"<\?xml[^>]*encoding\s*=\s*['\"]([^'\"]+)", raw)
     if (raw[:2] in (b"\xff\xfe", b"\xfe\xff") or b"\0" in raw
             or (decl and decl.group(1).lower() not in (b"utf-8", b"utf8", b"us-ascii"))):
@@ -829,6 +847,68 @@ def convert(spec, project, dry_run, only):
     return {"dry_run": dry_run, "written" if not dry_run else "would_write": written, "flags": flags}
 
 
+KEY_RE = re.compile(r"^[A-Z][A-Z0-9]*-[0-9]+$")
+UNSAFE_SVG = {"svg-parse", "svg-doctype", "svg-script", "svg-embedded-image"}
+IMAGE_PROMPT = ("Use generate_image to make exactly one image. Then reply with the absolute path of the image file "
+                "and nothing else. The image: %s")
+SVG_PROMPT = ("Write exactly one standalone SVG document (with a viewBox, drawn with path, rect, circle, ellipse, "
+              "line and polygon only, solid colors, no script, no text, no images, no links). Reply with only the "
+              "SVG markup. The drawing: %s")
+
+
+def raw_dir(project, key):
+    group = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(project)) or "project"
+    return os.path.join(via_home.home_dir(), ".local", "share", "nousfx", "via", group, key)
+
+
+def generate(project, kind, name, key, prompt, timeout):
+    if not NAME_RE.match(name):
+        raise SpecError("--name %r is not <feature>_<what>_<variant> in snake_case" % name)
+    if not KEY_RE.match(key):
+        raise SpecError("--key %r is not a ticket key such as APP-7" % key)
+    if not prompt.strip():
+        raise SpecError("the prompt is empty")
+    try:
+        code, result = via_outbound.decide(project, "agy")
+    except via_outbound.Bad as e:
+        die("%s. Nothing was sent" % e)
+    if code != via_outbound.ALLOWED:
+        die("%s. Nothing was sent" % result["reason"], code)
+    started = via_agy_call.now()
+    try:
+        reply = via_agy_call.call((IMAGE_PROMPT if kind == "image" else SVG_PROMPT) % prompt.strip(), timeout)
+    except via_agy_call.AgyError as e:
+        die("%s. Nothing was written" % e)
+    # The conversation id makes the name unique: two runs in the same second never overwrite each other.
+    stem = "%s-%s-%s" % (name, time.strftime("%Y%m%d-%H%M%S"), reply["conversation_id"][:8])
+    folder = raw_dir(project, key)
+    findings = []
+    if kind == "image":
+        got = via_agy_call.image(reply, started)
+        if not got:
+            die("agy returned no image file. Raw reply: %s. Nothing was written" % reply["response"][:400])
+        data, ext = got
+        path = os.path.join(folder, stem + ext)
+    else:
+        text = via_agy_call.svg(reply)
+        try:
+            data = text.encode("utf-8") if text else None
+        except UnicodeEncodeError:  # JSON lets a lone surrogate through
+            text = data = None
+        root, _, problem = parse_svg_bytes(data) if data else (None, None, None)
+        if text is None or (problem and problem[0] == "svg-parse"):
+            die("agy's reply holds no single <svg> document. Raw reply: %s. Nothing was written"
+                % reply["response"][:400])
+        path = os.path.join(folder, stem + ".svg")
+        findings = ([finding(problem[0], path, "The SVG %s." % problem[1], "Ask for a plain SVG again.")]
+                    if problem else svg_findings(root, path, [], True))
+        unsafe = sorted({f["rule"] for f in findings} & UNSAFE_SVG)
+        if unsafe:  # checked in memory: model output that could run or pull in content never lands as an .svg
+            die("agy's SVG breaks the safety rules (%s). Nothing was written" % ", ".join(unsafe))
+    write_atomic(path, data)
+    return {"path": path, "kind": kind, "conversation_id": reply["conversation_id"], "findings": findings}
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "_resize":  # the Pillow environment's half of convert
         resize(json.loads(sys.stdin.read()))
@@ -841,9 +921,28 @@ def main():
     c.add_argument("--project", default=".")
     c.add_argument("--dry-run", action="store_true")
     c.add_argument("--only", nargs="+")
+    g = sub.add_parser("generate")
+    g.add_argument("--project", default=".")
+    g.add_argument("--kind", choices=["image", "svg"], required=True)
+    g.add_argument("--name", required=True)
+    g.add_argument("--key", required=True)
+    src = g.add_mutually_exclusive_group(required=True)
+    src.add_argument("--prompt")
+    src.add_argument("--prompt-file")
+    g.add_argument("--timeout", type=int, default=300)
     args = ap.parse_args()
     project = os.path.realpath(args.project)
     try:
+        if args.cmd == "generate":
+            prompt = args.prompt
+            if prompt is None:
+                try:
+                    with open(args.prompt_file, encoding="utf-8") as f:
+                        prompt = f.read()
+                except OSError as e:
+                    raise SpecError("cannot read the prompt file (%s)" % e.strerror)
+            emit(generate(project, args.kind, args.name, args.key, prompt, args.timeout))
+            return
         spec = load_spec(project)
         if args.cmd == "audit":
             found = audit(spec, project)
