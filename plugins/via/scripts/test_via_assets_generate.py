@@ -324,6 +324,26 @@ class GenerateTest(unittest.TestCase):
                 self.assertIn("Stopped:", r.stderr)
         self.assertEqual(self.calls(), [])
 
+    def test_style_reference_images_go_into_agys_folder_and_it_may_read_them_and_draw(self):
+        ref = os.path.join(self.root, "style.png")
+        with open(ref, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\nref")
+        self.ok("--kind", "image", "--prompt", "a blue paper plane", "--ref", ref)
+        call = self.calls()[-1]
+        self.assertEqual(call["files"], ["ref0.png"])
+        prompt = call["argv"][call["argv"].index("-p") + 1]
+        self.assertIn("reading these style reference images in the current folder: ref0.png, and generate_image",
+                      prompt)
+        self.assertIn("Match the style of the reference images in the current folder (ref0.png).", prompt)
+
+    def test_too_many_or_non_image_references_send_nothing(self):
+        ref = os.path.join(self.root, "style.png")
+        with open(ref, "wb") as f:
+            f.write(b"x")
+        self.stopped("--kind", "image", "--prompt", "x", *["--ref", ref] * 5)
+        self.stopped("--kind", "image", "--prompt", "x", "--ref", os.path.join(self.root, "notes.txt"))
+        self.assertEqual(self.calls(), [])
+
     def test_a_missing_prompt_file_is_a_clear_error(self):
         err = self.stopped("--kind", "image", "--prompt-file", os.path.join(self.root, "nope.txt"))
         self.assertIn("cannot read the prompt file", err)

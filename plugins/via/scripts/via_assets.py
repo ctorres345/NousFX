@@ -4,7 +4,7 @@
 Usage: via_assets.py audit    [--project DIR]
        via_assets.py convert  [--project DIR] [--dry-run] [--only NAME ...]
        via_assets.py generate --kind image|svg --name NAME --key KEY (--prompt TEXT | --prompt-file FILE)
-                              [--project DIR] [--timeout SECONDS]
+                              [--project DIR] [--timeout SECONDS] [--ref IMAGE ...]
 
 The spec is design/assets.toml in the project:
 
@@ -861,13 +861,34 @@ def raw_dir(project, key):
     return os.path.join(via_home.home_dir(), ".local", "share", "nousfx", "via", group, key)
 
 
-def generate(project, kind, name, key, prompt, timeout):
+MAX_REFS = 4
+REF_NOTE = " Match the style of the reference images in the current folder (%s)."
+
+
+def read_refs(refs):
+    """Style reference images as {refN.ext: bytes}. Only PNG, JPEG and WebP, at most MAX_REFS."""
+    if len(refs) > MAX_REFS:
+        raise SpecError("pass at most %d --ref images" % MAX_REFS)
+    files = {}
+    for i, path in enumerate(refs):
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in RASTER_EXT:
+            raise SpecError("--ref %s is not a PNG, JPEG or WebP image" % path)
+        try:
+            files["ref%d%s" % (i, ext)] = via_agy_call.read_file(path)
+        except (OSError, via_agy_call.AgyError):
+            raise SpecError("--ref %s is not a regular file" % path)
+    return files
+
+
+def generate(project, kind, name, key, prompt, timeout, refs=()):
     if not NAME_RE.match(name):
         raise SpecError("--name %r is not <feature>_<what>_<variant> in snake_case" % name)
     if not KEY_RE.match(key):
         raise SpecError("--key %r is not a ticket key such as APP-7" % key)
     if not prompt.strip():
         raise SpecError("the prompt is empty")
+    files = read_refs(refs)
     try:
         code, result = via_outbound.decide(project, "agy")
     except via_outbound.Bad as e:
@@ -876,7 +897,10 @@ def generate(project, kind, name, key, prompt, timeout):
         die("%s. Nothing was sent" % result["reason"], code)
     started = via_agy_call.now()
     try:
-        reply = via_agy_call.call((IMAGE_PROMPT if kind == "image" else SVG_PROMPT) % prompt.strip(), timeout)
+        text = (IMAGE_PROMPT if kind == "image" else SVG_PROMPT) % prompt.strip()
+        if files:
+            text += REF_NOTE % ", ".join(sorted(files))
+        reply = via_agy_call.call(text, timeout, files=files, skip=(project,), draw=True)
     except via_agy_call.AgyError as e:
         die("%s. Nothing was written" % e)
     # The conversation id makes the name unique: two runs in the same second never overwrite each other.
@@ -930,6 +954,7 @@ def main():
     src.add_argument("--prompt")
     src.add_argument("--prompt-file")
     g.add_argument("--timeout", type=int, default=300)
+    g.add_argument("--ref", action="append", default=[], help="a style reference image (up to %d)" % MAX_REFS)
     args = ap.parse_args()
     project = os.path.realpath(args.project)
     try:
@@ -941,7 +966,7 @@ def main():
                         prompt = f.read()
                 except OSError as e:
                     raise SpecError("cannot read the prompt file (%s)" % e.strerror)
-            emit(generate(project, args.kind, args.name, args.key, prompt, args.timeout))
+            emit(generate(project, args.kind, args.name, args.key, prompt, args.timeout, args.ref))
             return
         spec = load_spec(project)
         if args.cmd == "audit":

@@ -1,7 +1,7 @@
 ---
 name: via
-description: Via, the designer skill. Use for /via setup, spec, check, audit or export, and for any request to review, spec or check UI/UX design.
-argument-hint: "setup | spec <ticket> | check | audit [scope] | export figma"
+description: Via, the designer skill. Use for /via setup, spec, assets, check, audit or export, and for any request to review, spec or check UI/UX design.
+argument-hint: "setup | spec <ticket> | assets <ticket> | check | audit [scope] | export figma"
 ---
 
 Run Via mode: $ARGUMENTS
@@ -13,6 +13,7 @@ Read the first word of the arguments and follow the matching file in this skill'
 |---|---|
 | `setup` | `modes/setup.md` |
 | `spec` | `modes/spec.md` |
+| `assets` | `modes/assets.md` |
 | `check` | `modes/check.md` |
 | `audit` | `modes/audit.md` |
 | `export` | `modes/export.md` |
