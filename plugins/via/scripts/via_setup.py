@@ -79,15 +79,23 @@ def quote_command(args):
     which eats backslashes: paths get forward slashes, which cmd, PowerShell, bash and Python all accept, and
     Windows double-quote quoting. POSIX quoting elsewhere."""
     if windows():
-        return subprocess.list2cmdline([a.replace("\\", "/") for a in args])
+        return " ".join(win_quote(a.replace("\\", "/")) for a in args)
     return " ".join(shlex.quote(a) for a in args)
 
 
-def qualifies(prefix):
+def win_quote(arg):
+    """Plain when only safe characters, else double quotes with bash's specials escaped (an apostrophe,
+    & or ; in a Windows path must not end the word)."""
+    if re.fullmatch(r"[A-Za-z0-9_./:=+-]+", arg):
+        return arg
+    return '"%s"' % re.sub(r'(["$`\\])', r"\\\1", arg)
+
+
+def qualifies(prefix, timeout=20):
     """True when `prefix` (an interpreter, or the Windows launcher with a version flag) is new enough for Pillow."""
     check = "import sys; sys.exit(0 if sys.version_info >= (%d, %d) else 1)" % PILLOW_MIN_PYTHON
     try:
-        return subprocess.run(prefix + ["-I", "-B", "-c", check], capture_output=True, timeout=20).returncode == 0
+        return subprocess.run(prefix + ["-I", "-B", "-c", check], capture_output=True, timeout=timeout).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -102,10 +110,10 @@ def pillow_command():
         if sys.version_info >= PILLOW_MIN_PYTHON:
             exact = "-%d.%d" % sys.version_info[:2]
             # The launcher may not know this interpreter (a venv, a Store build): then use its own path.
-            this = ["py", exact] if launcher and qualifies([launcher, exact]) else [sys.executable]
+            this = ["py", exact] if launcher and qualifies([launcher, exact], 10) else [sys.executable]
             return quote_command(this + tail)
         for flag in ("-3.14", "-3.13", "-3.12", "-3.11", "-3.10", "-3"):  # -3: the launcher's newest 3.x
-            if launcher and qualifies([launcher, flag]):
+            if launcher and qualifies([launcher, flag], 10):  # short: up to six probes on every setup run
                 return quote_command(["py", flag] + tail)
         return None
     if sys.version_info >= PILLOW_MIN_PYTHON:

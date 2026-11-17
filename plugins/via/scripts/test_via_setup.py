@@ -471,27 +471,37 @@ class ViaSetupTest(unittest.TestCase):
         script = os.path.realpath(SCRIPT)
         exact = "-%d.%d" % sys.version_info[:2]
         with mock.patch.object(mod.shutil, "which", lambda name: r"C:\Windows\py.exe" if name == "py" else None):
-            with mock.patch.object(mod, "qualifies", lambda prefix: prefix[1] == exact):
-                self.assertEqual(mod.pillow_command(), subprocess.list2cmdline(
-                    ["py", exact, "-I", "-B", script, "--create-pillow"]))
-            with mock.patch.object(mod, "qualifies", lambda prefix: False):  # the launcher lacks this Python
-                self.assertEqual(mod.pillow_command().split(" -I -B ")[0],
-                                 subprocess.list2cmdline([sys.executable.replace("\\", "/")]))
+            with mock.patch.object(mod, "qualifies", lambda prefix, timeout=20: prefix[1] == exact):
+                self.assertEqual(mod.pillow_command(), " ".join(["py", exact, "-I", "-B", script, "--create-pillow"]))
+            with mock.patch.object(mod, "qualifies", lambda prefix, timeout=20: False):  # launcher lacks this Python
+                self.assertEqual(mod.pillow_command().split(" -I -B ")[0], mod.win_quote(sys.executable))
             mod.PILLOW_MIN_PYTHON = (99, 0)  # this Python is too old: probe the launcher, newest first
             asked = []
-            with mock.patch.object(mod, "qualifies", lambda prefix: asked.append(prefix[1]) or prefix[1] == "-3.12"):
+            with mock.patch.object(mod, "qualifies",
+                                   lambda prefix, timeout=20: asked.append((prefix[1], timeout)) or prefix[1] == "-3.12"):
                 self.assertTrue(mod.pillow_command().startswith("py -3.12 -I -B "))
-            self.assertEqual(asked, ["-3.14", "-3.13", "-3.12"])
-            with mock.patch.object(mod, "qualifies", lambda prefix: prefix[1] == "-3"):
+            self.assertEqual(asked, [("-3.14", 10), ("-3.13", 10), ("-3.12", 10)])  # short probes, newest first
+            with mock.patch.object(mod, "qualifies", lambda prefix, timeout=20: prefix[1] == "-3"):
                 self.assertTrue(mod.pillow_command().startswith("py -3 -I -B "))
-            with mock.patch.object(mod, "qualifies", lambda prefix: False):
+            with mock.patch.object(mod, "qualifies", lambda prefix, timeout=20: False):
                 self.assertIsNone(mod.pillow_command())
         mod.PILLOW_MIN_PYTHON = (3, 0)
         with mock.patch.object(mod.shutil, "which", lambda name: None):  # no launcher: this interpreter's path
-            self.assertEqual(mod.pillow_command().split(" -I -B ")[0], subprocess.list2cmdline([sys.executable]))
+            self.assertEqual(mod.pillow_command().split(" -I -B ")[0], mod.win_quote(sys.executable))
         # Git Bash eats backslashes: forward slashes, and double quotes (not POSIX single quotes) around spaces.
         self.assertEqual(mod.quote_command(["py", r"C:\Program Files\via_setup.py", r"C:\x\y.py"]),
                          'py "C:/Program Files/via_setup.py" C:/x/y.py')
+        # An apostrophe, &, ;, $ or backtick in a path stays inside one bash word, taken literally.
+        line = mod.quote_command(["py", "C:\\Users\\O'Neil\\a&b;c\\$x`y.py"])
+        self.assertEqual(line, 'py "C:/Users/O\'Neil/a&b;c/\\$x\\`y.py"')
+        bash = shutil.which("bash")
+        if bash:
+            r = subprocess.run([bash, "-c", "printf '%s\\n' " + line.split(" ", 1)[1]], capture_output=True, text=True)
+            self.assertEqual(r.stdout, "C:/Users/O'Neil/a&b;c/$x`y.py\n")
+
+    def test_the_platform_is_read_in_one_place(self):
+        """The Windows tests fake windows(); any other os.name check would escape them."""
+        self.assertEqual(read(SCRIPT).count("os.name"), 1, "use windows(), not os.name")
 
     def test_create_pillow_keeps_the_other_recorded_integrations(self):
         self.run_setup("--atlassian", "present", "--figma", "authorized", "--browser", "chrome")
