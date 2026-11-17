@@ -96,6 +96,25 @@ class Checks(unittest.TestCase):
             self.assertIn("ready-check:DEM-1", ids([issue("DEM-1", labels=ready, text=text)]))
         self.assertEqual(ids([issue("DEM-1", labels=("env-none", "ready-for-agent"), text=READY + "## Assets\nNone\n")]), set())
 
+    def test_assets_rows_without_needs_assets_label(self):
+        """NFX-168: a filled Assets section with no needs-assets label is a low finding, never a ready-check."""
+        head = "| name | svg/image | platforms | size | usage |\n| --- | --- | --- | --- | --- |\n"
+        real = "| home_icon_default | svg | android, web | 24x24 | tab bar |\n"
+        placeholder = "| `<feature>_<what>_<variant>` (snake_case) | svg or image | android | 24x24 | where |\n"
+        half = "| home_icon_default | svg or image | android, flutter, web | e.g. 24x24 or 1024x1024 | where it appears |\n"
+        filled = READY + "## Assets\n" + head + real
+        plain, ready = ("env-none",), ("env-none", "ready-for-agent")
+        self.assertIn("assets-no-label:DEM-1", ids([issue("DEM-1", labels=plain, text=filled)]))
+        self.assertEqual(ids([issue("DEM-1", labels=ready, text=filled)]), {"assets-no-label:DEM-1"})  # ready check unchanged
+        found = audit("DEM", dict([issue("DEM-1", labels=ready, text=filled)]), evidence())
+        self.assertEqual([f["confidence"] for f in found], ["low"])
+        for labels, text, cat in ((plain + ("needs-assets",), filled, "new"),
+                                  (plain, READY + "## Assets\nNone\n", "new"),
+                                  (plain, READY + "## Assets\n" + head + placeholder, "new"),
+                                  (plain, READY + "## Assets\n" + head + half, "new"),
+                                  (plain, filled, "done")):
+            self.assertEqual(ids([issue("DEM-1", cat, labels=labels, text=text)]), set())
+
     def test_ready_check_needs_proofs_and_failure_modes(self):
         ready = ("env-none", "ready-for-agent")
         no_modes = READY.replace("## Failure modes\nx\n", "")

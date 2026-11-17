@@ -314,6 +314,11 @@ def audit(project, issues, evidence):
                 add("ready-check", key, "high", "ready-for-agent fails the ready check", "; ".join(problems),
                     "Fix the ticket, or replace ready-for-agent with needs-info")
 
+        rows = asset_rows(parts.get("assets", ""))
+        if rows and "needs-assets" not in labels:  # NFX-168: /via assets works from the label, so these would never be made
+            add("assets-no-label", key, "low", "Assets section has rows, no needs-assets label", f"{len(rows)} row(s)",
+                "Add needs-assets, or set the Assets section to None")
+
         linked = set(blockers)
         named = {k for k in re.findall(rf"\b{project}-\d+\b", parts.get("blocked by", "")) if k != key}
         for other in sorted(named - linked):

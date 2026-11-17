@@ -46,6 +46,7 @@ class AssetsDeclaration(unittest.TestCase):
         labels = read(os.path.join(ROOT, "claude", "skills", "project-setup", "assets", "work-labels.md"))
         self.assertRegex(labels, r"(?m)^\| `needs-assets` \|")
         self.assertIn("`needs-assets`", read(os.path.join(ROOT, "docs", "agents", "issue-tracker.md")))
+        self.assertIn("`assets-no-label`", labels)  # NFX-168: the audit's reverse check is documented
 
     def test_via_spec_mode_adds_the_declaration(self):
         spec = read(os.path.join(ROOT, "plugins", "via", "skills", "via", "modes", "spec.md"))
