@@ -370,7 +370,10 @@ class ViaSetupTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {"PATH": path_env}):
                 self.assertIsNone(mod.pillow_command())
         out = io.StringIO()
+        # main() runs in this process, where the home comes from the real user record: fake that record too,
+        # or it reads and rewrites the real ~/.config/nousfx/via.json.
         with mock.patch.dict(os.environ, {**th.env(self.home), "PATH": d + os.pathsep + self.bin}), \
+                th.patched_home(self.home), \
                 mock.patch.object(sys, "argv", ["via_setup.py"]), redirect_stdout(out):
             self.assertEqual(mod.main(), 0)
         item = json.loads(out.getvalue())["integrations"]["pillow"]

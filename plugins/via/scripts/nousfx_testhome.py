@@ -8,6 +8,7 @@ script as __main__. The wrapper also points sys.executable at the stand-in, so a
 script gets the same fake home. Nothing here is reachable from the environment in production.
 """
 import atexit
+import contextlib
 import os
 import shutil
 import stat
@@ -47,6 +48,22 @@ def python(home):
         os.chmod(shim, os.stat(shim).st_mode | stat.S_IXUSR)
         _cache[home] = shim
     return _cache[home]
+
+
+@contextlib.contextmanager
+def patched_home(home):
+    """For code run in this process: the user record reports `home`, as the subprocess stand-in does."""
+    import pwd  # POSIX only; imported here so this helper still imports on Windows
+    real = pwd.getpwuid
+
+    def fake(uid):
+        r = real(uid)
+        return pwd.struct_passwd((r.pw_name, r.pw_passwd, r.pw_uid, r.pw_gid, r.pw_gecos, home, r.pw_shell))
+    pwd.getpwuid = fake
+    try:
+        yield
+    finally:
+        pwd.getpwuid = real
 
 
 def bin_dir(home):

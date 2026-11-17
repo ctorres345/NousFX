@@ -43,6 +43,13 @@ Then put the screenshots next to the spec's `target.html` (light and dark) and `
 ## 6. Design skills and second opinion
 Follow `/via audit` steps 5 and 6 for the screens in scope.
 
+## 6b. Assets audit
+If the project has `design/assets.toml`, run the assets audit (stdlib only, writes nothing):
+```
+python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets.py" audit --project "<project root>"
+```
+It prints `findings` (screen `assets`, source `via-assets`): missing, extra and wrong-size assets, upscaling, cropping, names, and the SVG rules. Hand-written drawables in the same folders show as `extra`; list them under `ignore` in `design/assets.toml`. Add them to the record as they are and add `assets` to `scope`. Exit 1 means the spec file is wrong or Python is older than 3.11: say so in the report and go on.
+
 ## 7. Write and merge the record
 Complete `findings.json`: `mode` `check`, `scope` the screens in scope, `platforms`, the spec findings from step 5 and the rest. Never write `id`, `status`, `held` or `merged_at`. Then:
 ```
