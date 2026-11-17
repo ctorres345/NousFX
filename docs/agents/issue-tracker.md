@@ -7,7 +7,7 @@ Tickets live in Jira project `NFX` on cjthdev.atlassian.net (cloudId `3b0b1388-2
 - **Issue types**: Epic, Story, Bug, Task, Subtask. Epics are milestones (M1 Via core, M2 gate and exports, M3 share-ready), features are Stories, defects are Bugs, chores and spikes are Tasks.
 - **Blocking edges**: native `Blocks` links (`inwardIssue` = blocker, `outwardIssue` = blocked).
 - **Parent/child**: set the Epic as parent. Use Subtask only for slices of one ticket.
-- **Labels**: `size-S/M/L`, exactly one of `env-none`/`env-emulator`/`env-device`, `fable-review` where a Fable pass is required, plus topic labels (`via`, `ui`). Triage labels are in `triage-labels.md`.
+- **Labels**: `size-S/M/L`, exactly one of `env-none`/`env-emulator`/`env-device`, `fable-review` where a Fable pass is required, `needs-assets` where the ticket needs images or SVGs (it must have a filled `## Assets` section before `ready-for-agent`), plus topic labels (`via`, `ui`). Triage labels are in `triage-labels.md`.
 
 ## Tools per action
 

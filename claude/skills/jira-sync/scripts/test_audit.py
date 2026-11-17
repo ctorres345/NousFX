@@ -77,6 +77,25 @@ class Checks(unittest.TestCase):
         gated = READY.replace("Human gates\nNone", "Human gates\nCesar signs off")
         self.assertIn("ready-check:DEM-1", ids([issue("DEM-1", labels=ready, text=gated)]))
 
+    def test_needs_assets_ticket_needs_a_filled_assets_section(self):
+        ready = ("env-none", "ready-for-agent", "needs-assets")
+        head = "| name | svg/image | platforms | size | usage |\n| --- | --- | --- | --- | --- |\n"
+        real = "| home_icon_default | svg | android, web | 24x24 | tab bar |\n"
+        bracket = "| home_icon_default | svg | web | 24x24 | inside `<AppBar>` |\n"  # a usage cell may name a component
+        shared = "| app_logo_full | svg | android, flutter, web | vector | splash |\n"  # all three platforms is a real value
+        for body in (head + real, real, "One row per image.\n" + head + real, head + bracket, head + shared):  # a headerless row counts too
+            self.assertEqual(ids([issue("DEM-1", labels=ready, text=READY + "## Assets (needs-assets only)\n" + body)]), set())
+        placeholder = "| `<feature>_<what>_<variant>` (snake_case) | svg or image | android | 24x24 | where |\n"
+        half = ("| home_<what>_<variant> | svg or image | android | 24x24 | where |\n"
+                "| home_icon_default | svg or image | android, flutter, web | e.g. 24x24 or 1024x1024 | where it appears |\n")
+        escaped = "| `\\<feature\\>_icon` | svg | android | 24x24 | where |\n| &lt;x&gt; | svg | android | 24x24 | where |\n"
+        for text in (READY, READY + "## Assets\nNone\n", READY + "## Assets\nN/A\n", READY + "## Assets\nTBD\n",
+                     READY + "## Assets\n" + head, READY + "## Assets\nOne row per image.\n" + head + placeholder,
+                     READY + "## Assets\n" + head + half, READY + "## Assets\n" + head + escaped,
+                     READY + "## Assets\n" + head + "| None | | | | |\n", READY + "## Assets\n" + head + "| TBD |\n"):
+            self.assertIn("ready-check:DEM-1", ids([issue("DEM-1", labels=ready, text=text)]))
+        self.assertEqual(ids([issue("DEM-1", labels=("env-none", "ready-for-agent"), text=READY + "## Assets\nNone\n")]), set())
+
     def test_ready_check_needs_proofs_and_failure_modes(self):
         ready = ("env-none", "ready-for-agent")
         no_modes = READY.replace("## Failure modes\nx\n", "")

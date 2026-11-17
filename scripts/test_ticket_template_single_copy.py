@@ -33,5 +33,25 @@ class TicketTemplate(unittest.TestCase):
         self.assertIn("Proof: manual:", text)
 
 
+class AssetsDeclaration(unittest.TestCase):
+    """NFX-165: tickets declare asset needs with a section and the needs-assets label."""
+
+    def test_template_has_the_assets_section_and_the_ready_rule(self):
+        text = read(SOURCE)
+        self.assertIn("## Assets (needs-assets only)", text)
+        self.assertIn("| name | svg/image | platforms | size | usage |", text)
+        self.assertRegex(text, r"(?m)^- A ticket with the `needs-assets` label has a filled `## Assets` section")
+
+    def test_label_is_in_the_label_docs_and_the_tracker_conventions(self):
+        labels = read(os.path.join(ROOT, "claude", "skills", "project-setup", "assets", "work-labels.md"))
+        self.assertRegex(labels, r"(?m)^\| `needs-assets` \|")
+        self.assertIn("`needs-assets`", read(os.path.join(ROOT, "docs", "agents", "issue-tracker.md")))
+
+    def test_via_spec_mode_adds_the_declaration(self):
+        spec = read(os.path.join(ROOT, "plugins", "via", "skills", "via", "modes", "spec.md"))
+        self.assertIn("`## Assets`", spec)
+        self.assertIn("`needs-assets` label", spec)
+
+
 if __name__ == "__main__":
     unittest.main()

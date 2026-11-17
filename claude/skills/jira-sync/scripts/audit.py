@@ -59,6 +59,32 @@ def description(issue):
     return text if isinstance(text, str) else json.dumps(text)
 
 
+TEMPLATE_CELLS = {"svg or image", "where it appears"}  # the template's example row (not its platforms: a shared asset lists all three)
+
+
+def asset_rows(text):
+    """Real rows of the Assets table: five filled cells, no None/N/A/TBD name, no <placeholder> left from the template.
+
+    The header is the first row when a --- separator follows it. This is a guard against careless tickets, not a parser.
+    """
+    rows = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("|")]
+    is_separator = lambda r: re.fullmatch(r"\|[\s|:-]*", r) is not None
+    if len(rows) > 1 and is_separator(rows[1]):
+        rows = rows[2:]
+    real = []
+    for row in rows:
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        if is_separator(row) or len(cells) < 5 or not all(cells):
+            continue
+        name = cells[0]
+        if re.fullmatch(r"(none|n/a|tbd)", name.strip("`*_ "), re.I) or re.search(r"<[^>]*>|&lt;|\\<", name):
+            continue  # <placeholders> are checked in the name cell only: a usage cell may name a `<Component>`
+        if any(c.lower() in TEMPLATE_CELLS or c.lower().startswith("e.g.") for c in cells[1:]):
+            continue  # a template cell left as it was
+        real.append(row)
+    return real
+
+
 def sections(text):
     found, current = {}, None
     for line in text.splitlines():
@@ -278,6 +304,8 @@ def audit(project, issues, evidence):
                 problems.append("human gates is not None")
             if open_blockers:
                 problems.append("open blockers " + ", ".join(open_blockers))
+            if "needs-assets" in labels and not asset_rows(parts.get("assets", "")):
+                problems.append("needs-assets without a filled Assets section")
             if "env-device" in labels:
                 problems.append("env-device stays ready-for-human")
             if len(env) != 1:
