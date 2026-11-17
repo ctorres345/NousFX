@@ -83,6 +83,7 @@ The audit should flag both. You approve once which fixes happen now and which be
 | `obsidian.argon_log` | `"Argon UI review log.md"` | Note name for the second-opinion log. |
 | `figma.state` | `"missing"` | Only `/via export figma` uses it. |
 | `jira.site` | `null` | Your Jira site. |
+| `assets.python` | `null` | Set by `/via setup` to the Pillow environment's Python once it is ready. A path only. |
 | `outbound_allowlist` | `{}` | A project sends nothing out until it is listed here. Key `host/owner/repo` (for example `github.com/acme/app`), value `{"destinations": ["gemini", "jira", "figma", "artifacts", "obsidian"], "gemini_code_paths": ["src/"]}`. List only the destinations you want; `gemini_code_paths` is the only code Gemini may see. |
 | `capture.themes` | `["light", "dark"]` | Themes to shoot. |
 | `capture.font_scale` | `"largest"` | Font scale for native shots. |

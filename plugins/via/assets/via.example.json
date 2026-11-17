@@ -11,6 +11,9 @@
   "jira": {
     "site": null
   },
+  "assets": {
+    "python": null
+  },
   "outbound_allowlist": {},
   "capture": {
     "themes": ["light", "dark"],

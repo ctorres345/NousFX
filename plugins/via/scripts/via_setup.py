@@ -6,19 +6,23 @@ skills) as flags; this script detects the rest from the shell.
 
 Usage: via_setup.py [--config PATH] [--atlassian present|missing]
                     [--figma authorized|needs-auth|missing] [--browser chrome|builtin|none]
-                    [--skills a,b,c]
+                    [--skills a,b,c] [--create-pillow]
 
 The config (default ~/.config/nousfx/via.json; an old ~/.claude/via.json is copied there once) holds statuses and paths only, never keys.
-Exit 0 on success, 1 when the config is unsafe or cannot be written, 2 on a secret-shaped argument.
+Plain runs never create or install anything. Only --create-pillow builds the Pillow environment.
+With --create-pillow only the pillow status and assets.python change; the other recorded integrations are kept.
+Exit 0 on success, 1 when the config is unsafe or cannot be written or when --create-pillow failed (the report is still printed), 2 on a secret-shaped argument.
 """
 import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import venv
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)  # run under `python3 -I`, which adds no script folder to sys.path
@@ -53,9 +57,72 @@ FIX = {
                    "https://developer.android.com/studio/run/managing-avds"),
     "browser": ("Web screenshots need a browser Claude can drive.",
                 "https://code.claude.com/docs/en/chrome"),
+    "pillow": ("Image conversion for /via assets runs in a private Python environment with Pillow. Without it /via assets cannot convert images.",
+               "https://pillow.readthedocs.io/en/stable/installation/"),
     "skills": ("Via runs the design skills installed here and reports the ones it skipped.",
                "https://code.claude.com/docs/en/skills"),
 }
+
+
+# Pinned so every machine gets the same converter.
+PILLOW_VERSION = "12.3.0"
+PILLOW_MIN_PYTHON = (3, 10)  # the oldest Python this Pillow release ships wheels for
+
+
+PILLOW_CMD = "python3 -I -B %s --create-pillow" % shlex.quote(os.path.realpath(__file__))
+
+
+def pillow_env(home):
+    return os.path.join(home, ".local", "share", "nousfx", "via", "venv")
+
+
+def pillow_python(home):
+    # POSIX layout only. Follow-up: Windows keeps the interpreter at Scripts\\python.exe.
+    return os.path.join(pillow_env(home), "bin", "python")
+
+
+def detect_pillow(home):
+    """present: imports with the pinned version. missing: no environment. broken: anything else."""
+    py = pillow_python(home)
+    if not os.path.isdir(pillow_env(home)):
+        return "missing"  # an env folder with a dead or absent interpreter is broken, not missing
+    try:
+        out = subprocess.run([py, "-I", "-B", "-c", "import PIL; print(PIL.__version__)"],
+                             capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return "broken"
+    if out.returncode == 0 and out.stdout.strip() == PILLOW_VERSION:
+        return "present"
+    return "broken"
+
+
+def create_pillow(home, state):
+    """Build the environment. Returns True when Pillow checks out afterwards."""
+    env = pillow_env(home)
+    if os.name == "nt":
+        print("Creating the Pillow environment is not supported on Windows yet.", file=sys.stderr)
+        return False
+    if sys.version_info < PILLOW_MIN_PYTHON:
+        print("Pillow %s needs Python %s or newer; this is %s (%s). Run the create command with a newer python3."
+              % (PILLOW_VERSION, ".".join(map(str, PILLOW_MIN_PYTHON)), ".".join(map(str, sys.version_info[:3])),
+                 sys.executable), file=sys.stderr)
+        return False
+    try:
+        os.makedirs(os.path.dirname(env), exist_ok=True)
+        # In-process venv.create with the CLI's POSIX defaults (symlinked interpreter): sys.executable may be a launcher stand-in in tests.
+        venv.create(env, clear=(state == "broken"), with_pip=True, symlinks=(os.name != "nt"))
+        # -I and cwd=env: a pip.py or pip/ folder in the caller's project must not run in place of pip.
+        # Wheels only: a missing wheel must not fall back to running an sdist's build code.
+        r = subprocess.run([pillow_python(home), "-I", "-m", "pip", "install", "--disable-pip-version-check",
+                            "--only-binary=:all:", "Pillow==" + PILLOW_VERSION],
+                           capture_output=True, text=True, timeout=600, cwd=env)
+        if r.returncode != 0:
+            print((r.stderr or r.stdout).strip()[-600:], file=sys.stderr)
+            return False
+    except (OSError, subprocess.SubprocessError, ImportError) as e:
+        print(str(e), file=sys.stderr)
+        return False
+    return detect_pillow(home) == "present"
 
 
 # Status shown in the summary line. Anything unlisted (needs-auth, no-key, partial) prints as is.
@@ -146,6 +213,7 @@ def main():
     ap.add_argument("--figma", choices=["authorized", "needs-auth", "missing"], default="missing")
     ap.add_argument("--browser", choices=["chrome", "builtin", "none"], default="none")
     ap.add_argument("--skills", nargs="?", const="", default="")
+    ap.add_argument("--create-pillow", action="store_true")
     args = ap.parse_args()
 
     for value in (args.config or "", args.skills):
@@ -173,6 +241,16 @@ def main():
                   file=sys.stderr)
             return 1
 
+    pillow = detect_pillow(home)
+    create_failed = False
+    if args.create_pillow and pillow != "present":
+        if create_pillow(home, pillow):
+            pillow = "present"
+        else:
+            pillow = detect_pillow(home)
+            create_failed = True
+            print("Pillow environment not ready (see the reason above). Fix it, then run: %s" % PILLOW_CMD, file=sys.stderr)
+
     simulators, sim_tools = detect_simulators()
     obsidian, vault = detect_obsidian(home, cfg["obsidian"].get("vault_path"))
     installed = {s for s in args.skills.split(",") if s}
@@ -184,8 +262,14 @@ def main():
         "obsidian": obsidian,
         "simulators": simulators,
         "browser": "missing" if args.browser == "none" else "present",
+        "pillow": pillow,
         "skills": skills,
     }
+    if args.create_pillow and isinstance(cfg["integrations"], dict):
+        # A create-only run gets none of the caller's flags: keep what the full setup run recorded.
+        for key in ("atlassian", "figma", "browser", "skills"):
+            if key in cfg["integrations"]:
+                status[key] = cfg["integrations"][key]
 
     report = {name: {"status": st, "why": FIX[name][0], "fix_url": FIX[name][1]}
               for name, st in status.items()}
@@ -193,11 +277,17 @@ def main():
         report["obsidian"]["path"] = vault
     if sim_tools:
         report["simulators"]["tools"] = sim_tools
+    if pillow != "present":
+        report["pillow"]["create_command"] = PILLOW_CMD
     if skills == "partial":
         report["skills"]["missing"] = sorted(WANTED_SKILLS - installed)
 
     cfg["integrations"] = status
-    cfg["figma"]["state"] = args.figma
+    if not isinstance(cfg["assets"], dict):
+        cfg["assets"] = {}
+    cfg["assets"]["python"] = pillow_python(home) if pillow == "present" else None
+    if not args.create_pillow:
+        cfg["figma"]["state"] = args.figma
 
     text = json.dumps(cfg, indent=2) + "\n"
     if has_secret(text):
@@ -219,7 +309,7 @@ def main():
     json.dump({"integrations": report, "config": outcome, "config_path": path, "migration": migration, "summary": summary},
               sys.stdout, indent=2, ensure_ascii=False)
     print()
-    return 0
+    return 1 if create_failed else 0
 
 
 if __name__ == "__main__":
