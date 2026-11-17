@@ -30,7 +30,8 @@ here = os.path.dirname(os.path.realpath(__file__))
 with open(os.path.join(here, "mode")) as f:
     mode = f.read().strip()
 with open(os.path.join(here, "calls.jsonl"), "a") as f:
-    f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "env": sorted(os.environ)}) + "\n")
+    f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "env": sorted(os.environ),
+                        "files": sorted(os.listdir(os.getcwd()))}) + "\n")
 conv = "%(conv)s"
 brain = os.path.join(os.environ["HOME"], ".gemini", "antigravity-cli", "brain", conv)
 os.makedirs(brain, exist_ok=True)
@@ -98,6 +99,21 @@ elif mode == "fail":
     sys.exit(3)
 elif mode == "signed-out":
     print("Error: not authenticated. Please sign in.", file=sys.stderr)
+    sys.exit(1)
+elif mode == "network":
+    print("failed to refresh credentials: dial tcp: i/o timeout", file=sys.stderr)
+    sys.exit(1)
+elif mode == "time-limit":
+    print("print time limit exceeded at main.go:429 while logging in", file=sys.stderr)
+    sys.exit(1)
+elif mode == "denied":
+    print(json.dumps({"conversation_id": conv, "status": "SUCCESS", "response": "",
+                      "denied_actions": [{"action": "read_file"}]}))
+elif mode == "denied-but-answered":
+    print(json.dumps({"conversation_id": conv, "status": "SUCCESS", "response": "NO FINDINGS",
+                      "denied_actions": [{"action": "read_file"}]}))
+elif mode == "memory-limit":
+    print("worker crashed: memory usage limit hit", file=sys.stderr)
     sys.exit(1)
 elif mode == "limit":
     print("Error: quota exceeded for this plan", file=sys.stderr)
@@ -311,6 +327,86 @@ class GenerateTest(unittest.TestCase):
     def test_a_missing_prompt_file_is_a_clear_error(self):
         err = self.stopped("--kind", "image", "--prompt-file", os.path.join(self.root, "nope.txt"))
         self.assertIn("cannot read the prompt file", err)
+        self.assertEqual(self.calls(), [])
+
+
+class TextCallTest(unittest.TestCase):
+    """via_agy_call.py text, the entry point Argon uses (NFX-164). Same stub agy, not the generate tests again."""
+    setUp, allow, mode, calls = GenerateTest.setUp, GenerateTest.allow, GenerateTest.mode, GenerateTest.calls
+
+    def text(self, *args, path=None):
+        prompt = os.path.join(self.root, "prompt.txt")
+        with open(prompt, "w") as f:
+            f.write("Review the files.")
+        env = th.env(self.home, PATH=path if path is not None else self.bin + os.pathsep + "/usr/bin:/bin")
+        return subprocess.run([th.python(self.home), "-I", "-B", os.path.join(HERE, "via_agy_call.py"), "text",
+                               "--prompt-file", prompt, *args], capture_output=True, text=True, env=env, timeout=60)
+
+    def write(self, name, data=b"x"):
+        path = os.path.join(self.root, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def test_files_land_in_agys_folder_and_the_prompt_lets_it_read_only_them(self):
+        self.mode("svg")
+        r = self.text("--model", "gemini-4-argon-medium", "--file", self.write("shot0.png"),
+                      "--file", self.write("diff.txt"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["usage"], {})
+        call = self.calls()[-1]
+        self.assertEqual(call["files"], ["diff.txt", "shot0.png"])
+        prompt = call["argv"][call["argv"].index("-p") + 1]
+        self.assertTrue(prompt.startswith("Do not run shell commands"))
+        self.assertIn("reading these files in the current folder: diff.txt, shot0.png", prompt)
+        self.assertEqual(call["argv"][call["argv"].index("--model") + 1], "gemini-4-argon-medium")
+
+    def test_the_exit_code_tells_the_limit_and_a_missing_or_signed_out_agy_apart(self):
+        for mode, code in (("limit", 21), ("signed-out", 22), ("fail", 1), ("network", 1), ("time-limit", 1),
+                           ("denied", 1), ("memory-limit", 1)):
+            with self.subTest(mode=mode):
+                self.mode(mode)
+                self.assertEqual(self.text().returncode, code)
+        self.assertEqual(self.text(path="/usr/bin:/bin").returncode, 22)
+
+    def test_agy_is_locked_to_its_folder_and_never_taken_from_the_current_folder(self):
+        self.mode("svg")
+        self.assertEqual(self.text().returncode, 0)
+        argv = self.calls()[-1]["argv"]
+        self.assertIn("--disable-slash-commands", argv)
+        self.assertEqual(json.loads(argv[argv.index("--settings") + 1]),
+                         {"allowNonWorkspaceAccess": False, "permissions": {
+                             "allow": [], "deny": ["command(*)", "mcp(*)", "write_file(*)", "edit_file(*)"]}})
+        prompt = os.path.join(self.root, "p.txt")
+        with open(prompt, "w") as f:
+            f.write("x")
+        r = subprocess.run([th.python(self.home), "-I", "-B", os.path.join(HERE, "via_agy_call.py"), "text",
+                            "--prompt-file", prompt], capture_output=True, text=True, cwd=self.bin,
+                           env=th.env(self.home, PATH=self.bin + os.pathsep + "/usr/bin:/bin"), timeout=60)
+        self.assertEqual(r.returncode, 22, r.stderr)  # the agy in the current folder is skipped
+        r = self.text("--project", os.path.dirname(self.bin))
+        self.assertEqual(r.returncode, 22, r.stderr)  # and so is one inside the project folder
+
+    def test_a_denied_read_of_the_given_files_fails_even_with_an_answer(self):
+        self.mode("denied-but-answered")
+        self.assertEqual(self.text().returncode, 0)  # no files given: the answer stands
+        r = self.text("--file", self.write("diff.txt"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("denied a file read", r.stderr)
+
+    def test_a_bad_model_a_symlink_or_two_files_with_one_name_send_nothing(self):
+        target = self.write("real.png")
+        link = os.path.join(self.root, "link.png")
+        os.symlink(target, link)
+        os.makedirs(os.path.join(self.root, "sub"))
+        other = os.path.join(self.root, "sub", "real.png")
+        with open(other, "wb") as f:
+            f.write(b"y")
+        for args in (["--model", "claude-opus-5-5-high"], ["--file", link], ["--file", target, "--file", other]):
+            with self.subTest(args=args):
+                r = self.text(*args)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn("Stopped:", r.stderr)
         self.assertEqual(self.calls(), [])
 
 

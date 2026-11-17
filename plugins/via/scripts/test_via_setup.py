@@ -19,7 +19,7 @@ import nousfx_testhome as th
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "via_setup.py")
 KEY_LIKE = re.compile(r"(AIza[0-9A-Za-z_-]{35}|AQ\.[0-9A-Za-z_-]{20,}|sk-[0-9A-Za-z_-]{20,})")
-INTEGRATIONS = {"gemini", "atlassian", "figma", "obsidian", "simulators", "browser", "pillow", "skills"}
+INTEGRATIONS = {"agy", "gemini", "atlassian", "figma", "obsidian", "simulators", "browser", "pillow", "skills"}
 PILLOW_VERSION = re.search(r'PILLOW_VERSION = "([^"]+)"', open(SCRIPT).read()).group(1)
 FAKE_KEY = "AQ.FAKEKEYFAKEKEYFAKEKEYFAKEKEY99"
 
@@ -71,6 +71,24 @@ class ViaSetupTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         rep = json.loads(r.stdout)
         self.assertEqual(rep["integrations"]["gemini"]["status"], "present")
+
+    def test_agy_installed_is_reported_present_without_starting_it(self):
+        path = os.path.join(self.home, ".local", "bin", "agy")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        marker = os.path.join(self.home, "agy-ran")
+        with open(path, "w") as f:
+            f.write('#!/bin/sh\ntouch "%s"\n' % marker)
+        os.chmod(path, 0o755)
+        rep = self.report()
+        self.assertEqual(rep["integrations"]["agy"]["status"], "present")
+        self.assertFalse(os.path.exists(marker), "setup must not start agy")
+
+    def test_argon_fix_text_names_agy_and_no_longer_requires_the_gemini_key(self):
+        rep = self.report()["integrations"]
+        self.assertIn("agy", rep["agy"]["why"])
+        self.assertIn("no API key", rep["agy"]["why"])
+        self.assertTrue(rep["gemini"]["why"].startswith("Optional"))
+        self.assertIn("agy", rep["gemini"]["why"])
 
     def test_a_config_outside_the_anchor_is_refused(self):
         elsewhere = os.path.join(self.tempdir(), "via.json")

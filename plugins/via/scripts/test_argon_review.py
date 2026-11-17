@@ -2,7 +2,8 @@
 """Tests for claude/skills/gemini-review/scripts/argon_review.py. Run: python3 -B plugins/via/scripts/test_argon_review.py
 
 It must read the outbound allow-list in ~/.claude/via.json (through via_outbound.py) instead of a separate text file.
-Each test runs the script as a subprocess in a throwaway git repo, with a throwaway HOME and a stub gemini-api.
+Each test runs the script as a subprocess in a throwaway git repo, with a throwaway HOME, a stub gemini-api and,
+for the agy route (NFX-164), a stub agy in ~/.local/bin whose behavior ~/agy-mode picks.
 """
 import json
 import os
@@ -26,8 +27,19 @@ STUB = """#!/bin/sh
 case "$1" in
   version) echo "gemini-api 0.4.5" ;;
   whoami) echo '{"credentials": {"api-key": {"source": "keyring", "value": "AI******99"}}}' ;;
-  analyze) echo "$@" > "$HOME/args.log"; cat > "$HOME/stdin.log"; echo '{"text": "NO FINDINGS", "usage": {}}' ;;
+  analyze) echo "$@" > "$HOME/args.log"; cat diff.txt > "$HOME/stdin.log"; echo '{"text": "NO FINDINGS", "usage": {}}' ;;
 esac
+"""
+AGY = """#!/bin/sh
+printf '%s\\n' "$@" > "$HOME/agy-args.log"
+ls > "$HOME/agy-files.log"
+cat diff.txt > "$HOME/agy-sent.log"
+case "$(cat "$HOME/agy-mode" 2>/dev/null)" in
+  limit) echo "Error: RESOURCE_EXHAUSTED: quota exceeded" >&2; exit 1 ;;
+  signed-out) echo "Error: not authenticated, please sign in" >&2; exit 1 ;;
+  fail) echo "Error: model crashed" >&2; exit 3 ;;
+esac
+echo '{"conversation_id": "abcdef12-3456", "status": "SUCCESS", "response": "NO FINDINGS", "usage": {"input_tokens": 5, "output_tokens": 2}}'
 """
 
 
@@ -156,6 +168,91 @@ class ArgonReviewTest(unittest.TestCase):
         r = self.run_script()
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertIsNone(self.logged("args.log"))
+
+    def stub_agy(self, mode=""):
+        path = os.path.join(self.home, ".local", "bin", "agy")
+        with open(path, "w") as f:
+            f.write(AGY)
+        os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+        with open(os.path.join(self.home, "agy-mode"), "w") as f:
+            f.write(mode)
+
+    def test_a_project_that_lists_agy_reviews_through_agy_and_never_calls_the_billed_key(self):
+        self.stub_agy()
+        self.config({KEY: {"destinations": ["agy", "gemini"], "gemini_code_paths": ["ui/"]}})
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        reply = json.loads(r.stdout)
+        self.assertEqual((reply["route"], reply["text"]), ("agy", "NO FINDINGS"))
+        self.assertEqual(reply["usage"], {"input_tokens": 5, "output_tokens": 2})
+        self.assertNotIn("fallback", reply)
+        self.assertIsNone(self.logged("args.log"))
+        self.assertEqual(self.logged("agy-files.log").split(), ["diff.txt", "shot0.png"])
+        sent = self.logged("agy-sent.log")
+        self.assertIn("ui/Seen.kt", sent)
+        self.assertNotIn("other/Private.kt", sent)
+        args = self.logged("agy-args.log")
+        self.assertIn("gemini-4-argon-medium", args)
+        self.assertIn("read no other file", args.lower())
+
+    def test_agy_alone_is_enough_without_a_gemini_key(self):
+        self.stub_agy()
+        self.config({KEY: {"destinations": ["agy"], "gemini_code_paths": ["ui/"]}})
+        os.remove(os.path.join(self.home, ".local", "bin", self.CLI_NAME))
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["route"], "agy")
+
+    def test_at_the_agy_limit_the_billed_key_answers_and_says_so(self):
+        for mode in ("limit", "signed-out"):
+            with self.subTest(mode=mode):
+                self.stub_agy(mode)
+                self.config({KEY: {"destinations": ["agy", "gemini"], "gemini_code_paths": ["ui/"]}})
+                r = self.run_script()
+                self.assertEqual(r.returncode, 0, r.stderr)
+                reply = json.loads(r.stdout)
+                self.assertEqual(reply["route"], "gemini-api")
+                self.assertIn("billed Gemini API key was used", reply["fallback"])
+                self.assertIn("billed Gemini API key was used", r.stderr)
+                self.assertIn("ui/Seen.kt", self.logged("stdin.log"))
+
+    def test_without_agy_installed_the_billed_key_answers(self):
+        self.config({KEY: {"destinations": ["agy", "gemini"], "gemini_code_paths": ["ui/"]}})
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        reply = json.loads(r.stdout)
+        self.assertEqual(reply["route"], "gemini-api")
+        self.assertIn("not installed", reply["fallback"])
+
+    def test_at_the_agy_limit_a_project_without_gemini_stops_and_never_calls_the_billed_key(self):
+        self.stub_agy("limit")
+        self.config({KEY: {"destinations": ["agy"], "gemini_code_paths": ["ui/"]}})
+        r = self.run_script()
+        self.assertEqual(r.returncode, 9, r.stderr)
+        self.assertIn("subscription limit", r.stderr)
+        self.assertIn("does not allow the billed Gemini API", r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_any_other_agy_failure_stops_without_falling_back(self):
+        self.stub_agy("fail")
+        self.config({KEY: {"destinations": ["agy", "gemini"], "gemini_code_paths": ["ui/"]}})
+        r = self.run_script()
+        self.assertEqual(r.returncode, 9, r.stderr)
+        self.assertIn("agy failed (exit 3)", r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_the_code_review_goes_through_agy_too(self):
+        self.stub_agy()
+        self.config({KEY: {"destinations": ["agy"], "gemini_code_paths": ["ui/"]}})
+        env = {"PATH": os.pathsep.join([th.bin_dir(self.home), os.path.dirname(sys.executable), "/usr/bin", "/bin"]),
+               **th.env(self.home)}
+        r = subprocess.run([th.python(self.home), "-I", "-B", os.path.join(SKILLS, "gemini-review", "scripts",
+                            "review.py"), *self.PLATFORM_ARGS, "--allow-list", "HEAD"],
+                           cwd=self.repo, capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["route"], "agy")
+        self.assertEqual(self.logged("agy-files.log").split(), ["diff.txt"])
+        self.assertNotIn("other/Private.kt", self.logged("agy-sent.log"))
 
     def test_no_reference_to_the_old_allow_list_file_remains_in_the_script(self):
         with open(SCRIPT) as f:

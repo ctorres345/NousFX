@@ -154,6 +154,14 @@ class ViaOutboundTest(unittest.TestCase):
         self.assertEqual(r.returncode, 20)
         self.assertEqual(r.stdout, "")
 
+    def test_paths_answers_for_agy_too_and_only_when_agy_is_allowed(self):
+        self.remote("git@github.com:%s.git" % KEY)
+        self.write_config({KEY: {"destinations": ["agy"], "gemini_code_paths": ["ui/"]}})
+        r = self.run_cli("paths", "--dest", "agy")
+        self.assertEqual((r.returncode, r.stdout), (0, "ui/\0"), r.stderr)
+        self.assertEqual(self.run_cli("paths", "--dest", "gemini").returncode, 20)
+        self.assertEqual(self.run_cli("paths", "--dest", "jira").returncode, 1)
+
     def test_a_config_outside_the_anchor_is_refused_so_a_repo_cannot_allow_list_itself(self):
         self.remote("git@github.com:%s.git" % KEY)
         planted = os.path.join(self.project, "via.json")

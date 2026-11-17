@@ -45,7 +45,9 @@ WANTED_SKILLS = {
 }
 
 FIX = {
-    "gemini": ("The Argon second opinion needs the gemini-api CLI and a key in the OS keychain. Without it Via falls back to a fresh-context reviewer.",
+    "agy": ("Argon (the Gemini second opinion and reviews) runs through agy, the Antigravity CLI, on your Google AI Pro subscription, with no API key. Install it, run agy once to sign in, and list agy for the project in the outbound allow-list. Without it Via uses the gemini-api key if you have one, else a fresh-context reviewer.",
+            "https://antigravity.google/"),
+    "gemini": ("Optional. The billed gemini-api key answers for Argon only when agy is missing, signed out or at its subscription limit, and the project also lists gemini. It needs the gemini-api CLI and a key in the OS keychain.",
                "https://ai.google.dev/gemini-api/docs/api-key"),
     "atlassian": ("Files findings as Jira tickets with inline screenshots. Without it Via writes markdown tickets.",
                   "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/"),
@@ -196,6 +198,12 @@ def find_gemini(home):
     return shutil.which("gemini-api")
 
 
+def detect_agy(home):
+    """Installed or not. Only the program is looked for: agy is never started here."""
+    local = os.path.join(home, ".local", "bin", "agy.exe" if windows() else "agy")
+    return "present" if os.access(local, os.X_OK) or shutil.which("agy") else "missing"
+
+
 def detect_gemini(home):
     cli = find_gemini(home)
     if not cli:
@@ -319,6 +327,7 @@ def main():
     installed = {s for s in args.skills.split(",") if s}
     skills = "present" if WANTED_SKILLS <= installed else "partial" if installed & WANTED_SKILLS else "missing"
     status = {
+        "agy": detect_agy(home),
         "gemini": detect_gemini(home),
         "atlassian": args.atlassian,
         "figma": "present" if args.figma == "authorized" else args.figma,
