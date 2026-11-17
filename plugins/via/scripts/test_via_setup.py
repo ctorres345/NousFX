@@ -407,6 +407,102 @@ class ViaSetupTest(unittest.TestCase):
         with mock.patch.object(mod.shutil, "which", lambda name: None):  # PATH's python3 is not this interpreter
             self.assertTrue(mod.pillow_command().startswith(shlex.quote(sys.executable) + " -I -B "))
 
+    # Windows layout (NFX-166): the platform is faked through via_setup.windows(), so no Windows is needed.
+
+    def windows_module(self):
+        from unittest import mock
+        mod = self.load_module()
+        patcher = mock.patch.object(mod, "windows", lambda: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return mod
+
+    def test_windows_detect_and_config_use_scripts_python_exe(self):
+        import io
+        from contextlib import redirect_stdout
+        from unittest import mock
+        mod = self.windows_module()
+        exe = os.path.join(self.venv_dir(), "Scripts", "python.exe")
+        self.assertEqual(mod.pillow_python(self.home), exe)
+        self.assertEqual(mod.detect_pillow(self.home), "missing")
+        os.makedirs(os.path.dirname(exe))
+        with open(exe, "w") as f:  # a stand-in interpreter that answers the Pillow version check
+            f.write("#!/bin/sh\necho %s\n" % PILLOW_VERSION)
+        os.chmod(exe, 0o755)
+        self.assertEqual(mod.detect_pillow(self.home), "present")
+        os.makedirs(os.path.join(self.venv_dir(), "bin"))
+        with open(os.path.join(self.venv_dir(), "bin", "python"), "w") as f:  # a POSIX interpreter is not looked at
+            f.write("#!/bin/sh\nexit 1\n")
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {**th.env(self.home), "PATH": self.bin}), th.patched_home(self.home), \
+                mock.patch.object(sys, "argv", ["via_setup.py"]), redirect_stdout(out):
+            self.assertEqual(mod.main(), 0)
+        self.assertEqual(json.loads(out.getvalue())["integrations"]["pillow"]["status"], "present")
+        self.assertEqual(json.loads(read(self.config))["assets"]["python"],
+                         os.path.join(os.path.realpath(self.venv_dir()), "Scripts", "python.exe"))
+
+    def test_windows_create_builds_the_env_with_copies_and_installs_the_pin(self):
+        import io
+        from contextlib import redirect_stderr
+        from unittest import mock
+        mod = self.windows_module()
+        real_create, seen = mod.venv.create, {}
+
+        def create(env, **kw):
+            # This host lays out bin/python; Windows lays out Scripts\python.exe. Add the Windows name.
+            seen.update(kw)
+            real_create(env, **{**kw, "symlinks": True})
+            os.makedirs(os.path.join(env, "Scripts"), exist_ok=True)
+            os.symlink(os.path.join(env, "bin", "python"), os.path.join(env, "Scripts", "python.exe"))
+
+        err = io.StringIO()
+        with mock.patch.object(mod.venv, "create", create), mock.patch.dict(os.environ, self.fake_wheels()), \
+                redirect_stderr(err):
+            self.assertTrue(mod.create_pillow(self.home, "missing"), err.getvalue())
+        self.assertIs(seen["symlinks"], False)  # Windows venvs copy the interpreter
+        self.assertNotIn("not supported", err.getvalue())
+        r = subprocess.run([mod.pillow_python(self.home), "-I", "-B", "-c", "import PIL; print(PIL.__version__)"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), PILLOW_VERSION, r.stderr)
+
+    def test_windows_create_command_uses_the_py_launcher_and_windows_quoting(self):
+        from unittest import mock
+        mod = self.windows_module()
+        script = os.path.realpath(SCRIPT)
+        exact = "-%d.%d" % sys.version_info[:2]
+        with mock.patch.object(mod.shutil, "which", lambda name: r"C:\Windows\py.exe" if name == "py" else None):
+            with mock.patch.object(mod, "qualifies", lambda prefix, timeout=20: prefix[1] == exact):
+                self.assertEqual(mod.pillow_command(), " ".join(["py", exact, "-I", "-B", script, "--create-pillow"]))
+            with mock.patch.object(mod, "qualifies", lambda prefix, timeout=20: False):  # launcher lacks this Python
+                self.assertEqual(mod.pillow_command().split(" -I -B ")[0], mod.win_quote(sys.executable))
+            mod.PILLOW_MIN_PYTHON = (99, 0)  # this Python is too old: probe the launcher, newest first
+            asked = []
+            with mock.patch.object(mod, "qualifies",
+                                   lambda prefix, timeout=20: asked.append((prefix[1], timeout)) or prefix[1] == "-3.12"):
+                self.assertTrue(mod.pillow_command().startswith("py -3.12 -I -B "))
+            self.assertEqual(asked, [("-3.14", 10), ("-3.13", 10), ("-3.12", 10)])  # short probes, newest first
+            with mock.patch.object(mod, "qualifies", lambda prefix, timeout=20: prefix[1] == "-3"):
+                self.assertTrue(mod.pillow_command().startswith("py -3 -I -B "))
+            with mock.patch.object(mod, "qualifies", lambda prefix, timeout=20: False):
+                self.assertIsNone(mod.pillow_command())
+        mod.PILLOW_MIN_PYTHON = (3, 0)
+        with mock.patch.object(mod.shutil, "which", lambda name: None):  # no launcher: this interpreter's path
+            self.assertEqual(mod.pillow_command().split(" -I -B ")[0], mod.win_quote(sys.executable))
+        # Git Bash eats backslashes: forward slashes, and double quotes (not POSIX single quotes) around spaces.
+        self.assertEqual(mod.quote_command(["py", r"C:\Program Files\via_setup.py", r"C:\x\y.py"]),
+                         'py "C:/Program Files/via_setup.py" C:/x/y.py')
+        # An apostrophe, &, ;, $ or backtick in a path stays inside one bash word, taken literally.
+        line = mod.quote_command(["py", "C:\\Users\\O'Neil\\a&b;c\\$x`y.py"])
+        self.assertEqual(line, 'py "C:/Users/O\'Neil/a&b;c/\\$x\\`y.py"')
+        bash = shutil.which("bash")
+        if bash:
+            r = subprocess.run([bash, "-c", "printf '%s\\n' " + line.split(" ", 1)[1]], capture_output=True, text=True)
+            self.assertEqual(r.stdout, "C:/Users/O'Neil/a&b;c/$x`y.py\n")
+
+    def test_the_platform_is_read_in_one_place(self):
+        """The Windows tests fake windows(); any other os.name check would escape them."""
+        self.assertEqual(read(SCRIPT).count("os.name"), 1, "use windows(), not os.name")
+
     def test_create_pillow_keeps_the_other_recorded_integrations(self):
         self.run_setup("--atlassian", "present", "--figma", "authorized", "--browser", "chrome")
         before = json.loads(read(self.config))

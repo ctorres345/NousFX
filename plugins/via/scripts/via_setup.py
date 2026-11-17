@@ -69,25 +69,62 @@ PILLOW_VERSION = "12.3.0"
 PILLOW_MIN_PYTHON = (3, 10)  # the oldest Python this Pillow release ships wheels for
 
 
+def windows():
+    """The one platform switch for the Pillow environment (tests fake it here)."""
+    return os.name == "nt"
+
+
+def quote_command(args):
+    """A command line the agent's shell runs as is. On Windows that shell is Git Bash (Claude Code's Bash tool),
+    which eats backslashes: paths get forward slashes, which cmd, PowerShell, bash and Python all accept, and
+    Windows double-quote quoting. POSIX quoting elsewhere."""
+    if windows():
+        return " ".join(win_quote(a.replace("\\", "/")) for a in args)
+    return " ".join(shlex.quote(a) for a in args)
+
+
+def win_quote(arg):
+    """Plain when only safe characters, else double quotes with bash's specials escaped (an apostrophe,
+    & or ; in a Windows path must not end the word)."""
+    if re.fullmatch(r"[A-Za-z0-9_./:=+-]+", arg):
+        return arg
+    return '"%s"' % re.sub(r'(["$`\\])', r"\\\1", arg)
+
+
+def qualifies(prefix, timeout=20):
+    """True when `prefix` (an interpreter, or the Windows launcher with a version flag) is new enough for Pillow."""
+    check = "import sys; sys.exit(0 if sys.version_info >= (%d, %d) else 1)" % PILLOW_MIN_PYTHON
+    try:
+        return subprocess.run(prefix + ["-I", "-B", "-c", check], capture_output=True, timeout=timeout).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def pillow_command():
-    """The create command, run with a Python that can build Pillow; None when none is found."""
-    script = shlex.quote(os.path.realpath(__file__))
+    """The create command, run with a Python that can build Pillow; None when none is found.
+    On Windows it uses the py launcher with an exact version (py -3.12), so the user's default Python does not
+    matter; elsewhere python3, or an interpreter's full path."""
+    tail = ["-I", "-B", os.path.realpath(__file__), "--create-pillow"]
+    if windows():
+        launcher = shutil.which("py")
+        if sys.version_info >= PILLOW_MIN_PYTHON:
+            exact = "-%d.%d" % sys.version_info[:2]
+            # The launcher may not know this interpreter (a venv, a Store build): then use its own path.
+            this = ["py", exact] if launcher and qualifies([launcher, exact], 10) else [sys.executable]
+            return quote_command(this + tail)
+        for flag in ("-3.14", "-3.13", "-3.12", "-3.11", "-3.10", "-3"):  # -3: the launcher's newest 3.x
+            if launcher and qualifies([launcher, flag], 10):  # short: up to six probes on every setup run
+                return quote_command(["py", flag] + tail)
+        return None
     if sys.version_info >= PILLOW_MIN_PYTHON:
         # The plain name when PATH's python3 is this interpreter; else this interpreter's own path.
         on_path = shutil.which("python3")
         same = bool(on_path) and os.path.realpath(on_path) == os.path.realpath(sys.executable)
-        return "%s -I -B %s --create-pillow" % ("python3" if same else shlex.quote(sys.executable), script)
-    check = "import sys; sys.exit(0 if sys.version_info >= (%d, %d) else 1)" % PILLOW_MIN_PYTHON
+        return quote_command(["python3" if same else sys.executable] + tail)
     for name in ("python3.14", "python3.13", "python3.12", "python3.11", "python3.10"):
         path = shutil.which(name)
-        if not path:
-            continue
-        try:
-            ok = subprocess.run([path, "-I", "-B", "-c", check], capture_output=True, timeout=20).returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            ok = False
-        if ok:
-            return "%s -I -B %s --create-pillow" % (shlex.quote(path), script)
+        if path and qualifies([path]):
+            return quote_command([path] + tail)
     return None
 
 
@@ -96,7 +133,9 @@ def pillow_env(home):
 
 
 def pillow_python(home):
-    # POSIX layout only. Follow-up: Windows keeps the interpreter at Scripts\\python.exe.
+    """The environment's interpreter: Scripts\\python.exe on Windows, bin/python elsewhere."""
+    if windows():
+        return os.path.join(pillow_env(home), "Scripts", "python.exe")
     return os.path.join(pillow_env(home), "bin", "python")
 
 
@@ -118,9 +157,6 @@ def detect_pillow(home):
 def create_pillow(home, state):
     """Build the environment. Returns True when Pillow checks out afterwards."""
     env = pillow_env(home)
-    if os.name == "nt":
-        print("Creating the Pillow environment is not supported on Windows yet.", file=sys.stderr)
-        return False
     if sys.version_info < PILLOW_MIN_PYTHON:
         print("Pillow %s needs Python %s or newer; this is %s (%s). Run the create command with a newer python3."
               % (PILLOW_VERSION, ".".join(map(str, PILLOW_MIN_PYTHON)), ".".join(map(str, sys.version_info[:3])),
@@ -128,8 +164,9 @@ def create_pillow(home, state):
         return False
     try:
         os.makedirs(os.path.dirname(env), exist_ok=True)
-        # In-process venv.create with the CLI's POSIX defaults (symlinked interpreter): sys.executable may be a launcher stand-in in tests.
-        venv.create(env, clear=(state == "broken"), with_pip=True, symlinks=(os.name != "nt"))
+        # In-process venv.create with the CLI's defaults (a symlinked interpreter on POSIX, copies on Windows):
+        # sys.executable may be a launcher stand-in in tests.
+        venv.create(env, clear=(state == "broken"), with_pip=True, symlinks=not windows())
         # -I and cwd=env: a pip.py or pip/ folder in the caller's project must not run in place of pip.
         # Wheels only: a missing wheel must not fall back to running an sdist's build code.
         r = subprocess.run([pillow_python(home), "-I", "-m", "pip", "install", "--disable-pip-version-check",
