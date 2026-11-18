@@ -863,7 +863,8 @@ class ComposeFallbackTest(FallbackBase, ComposeBase):
         del env["VIA_FAKE_FAIL"]
         r = self.capture(env={**env, "VIA_GRADLEW": self.p("no-such-gradlew")})
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(json.loads(r.stdout)["screenshots"][0]["source"], "device")
+        shot = json.loads(r.stdout)["screenshots"][0]
+        self.assertEqual((shot["source"], shot["emulator"]), ("device", True))
 
     def test_a_device_showing_another_app_is_never_shot(self):
         env = self.start_adb(dumpsys="  topResumedActivity=ActivityRecord{1a2b u0 com.google.android.gm/.ConversationList t9}\n")
@@ -918,6 +919,7 @@ class ComposeFallbackTest(FallbackBase, ComposeBase):
             with self.subTest(extra=extra):
                 r = self.capture(env=self.start_adb(devices=("R5CT123ABC",)) | extra)
                 self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual({s["emulator"] for s in json.loads(r.stdout)["screenshots"]}, {False})
                 for name in os.listdir(self.run_dir):
                     os.remove(os.path.join(self.run_dir, name))
 

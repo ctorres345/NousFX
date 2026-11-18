@@ -975,7 +975,8 @@ def capture_emulator(platform, stage, run_dir, root, why, code):
             signal.signal(sig, handler)
         if held:
             sys.exit(143)
-    shots = [{**e, "platform": platform, "redacted": False, "source": "device"} for e in plan]
+    shots = [{**e, "platform": platform, "redacted": False, "source": "device",
+              "emulator": serial.startswith("emulator-")} for e in plan]
     reason = "the emulator fallback shoots only the screen now on the device"
     taken = ("phone-light", "phone-dark", "font-largest")
     coverage = [{"platform": platform, "screen": screen, "entry": name, "kind": "matrix", "captured": name in taken,

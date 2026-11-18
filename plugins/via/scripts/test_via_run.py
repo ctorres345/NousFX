@@ -751,6 +751,14 @@ class ViaRunTest(unittest.TestCase):
                            ("platform", ""), ("platform", 3)):
             with self.subTest(field=field, bad=bad):
                 self.rejected(record([], screenshots=[self.shot(**{field: bad})]), "screenshots[0]." + field)
+        for extra in ({"emulator": "yes", "source": "device"}, {"emulator": True}, {"emulator": True, "source": "preview"}):
+            with self.subTest(extra=extra):
+                self.rejected(record([], screenshots=[self.shot(**extra)]), "screenshots[0].emulator")
+        self.merge(record([], screenshots=[self.shot(source="device", emulator=True, redacted=False)]))
+        for extra in ({"public": "yes", "review": "kept"}, {"public": True}, {"public": True, "review": "dropped"}):
+            with self.subTest(extra=extra):
+                self.rejected(record([], screenshots=[self.shot(**extra)]), "screenshots[0].public")
+        self.merge(record([], screenshots=[self.shot(review="kept", public=True), self.shot("b.png", public=False)]))
 
     def test_a_list_or_object_where_a_word_belongs_is_refused_not_a_crash(self):
         for field in ("state", "font_scale", "direction", "source"):
@@ -835,6 +843,8 @@ class ViaRunTest(unittest.TestCase):
         out = self.ok("outbound-shots", run_dir)
         self.assertEqual(out["shots"], [os.path.join(os.path.realpath(run_dir), "a.png")])
         self.assertEqual((out["dropped"], out["unreviewed"]), (1, 1))
+        self.assertEqual(out["kept"], [{"path": out["shots"][0], "redacted": True, "source": None, "emulator": None,
+                                        "public": None}])
 
     def test_outbound_shots_refuses_a_kept_shot_outside_the_run_folder_or_missing(self):
         for name in ("../escape.png", "/etc/hosts", "missing.png"):

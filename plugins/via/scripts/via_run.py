@@ -299,6 +299,10 @@ def check_record(rec):
                 return "screenshots[%d].%s must be one of %s or left out." % (i, key, ", ".join(sorted(allowed)))
         if "platform" in s and not is_text(s["platform"]):
             return "screenshots[%d].platform must be non-empty text or left out." % i
+        if "public" in s and not (isinstance(s["public"], bool) and (s["public"] is False or s.get("review") == "kept")):
+            return "screenshots[%d].public must be true or false, and true only on a kept shot." % i
+        if "emulator" in s and not (isinstance(s["emulator"], bool) and s.get("source") == "device"):
+            return "screenshots[%d].emulator must be true or false, and only on a source: device shot." % i
     if "coverage" in rec:
         problem = check_coverage(rec["coverage"])
         if problem:
@@ -991,7 +995,10 @@ def cmd_outbound_shots(project, args):
     The per-call cap of 8 is enforced by via_second_opinion.py."""
     run_dir, record_path = resolve_run(project, args.run_dir)
     shots = load_record(record_path).get("screenshots", [])
-    emit({"shots": [path for _, path in kept_shots(run_dir, shots)],
+    kept = kept_shots(run_dir, shots)
+    emit({"shots": [path for _, path in kept],
+          "kept": [{"path": path, "redacted": s.get("redacted"), "source": s.get("source"), "emulator": s.get("emulator"),
+                   "public": s.get("public")} for s, path in kept],
           "dropped": sum(1 for s in shots if s.get("review") == "dropped"),
           "unreviewed": sum(1 for s in shots if s.get("review") is None)})
 
