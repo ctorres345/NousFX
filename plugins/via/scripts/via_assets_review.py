@@ -8,6 +8,7 @@ Usage: via_assets_review.py add     --key KEY --name NAME --file RAW [--conversa
        via_assets_review.py reject  --key KEY --name NAME --note TEXT [--project DIR]
        via_assets_review.py status  --key KEY [--project DIR]
        via_assets_review.py shots   --key KEY --run-dir RUN_DIR [--project DIR]
+       via_assets_review.py serve   --key KEY [--project DIR] [--port N] [--minutes N]
 
 Everything for one ticket lives in design/asset-review/<KEY>/ in the project: state.json, gallery.html and one
 copy of each candidate (<name>-<attempt>.<ext>). The folder holds its own .gitignore ("*"), so none of it is
@@ -31,16 +32,25 @@ the run's findings.json draft (mode check, scope assets) with no `review` yet, s
 kept and send it to `via_second_opinion.py`. SVG candidates are listed under `capture`: shoot the gallery page with
 `via_capture.py` for those.
 
+`serve` serves the review folder on 127.0.0.1 for a browser that cannot load the gallery's images from a file://
+page, such as the Claude app's browser pane (it shows a local file outside the open folder as a static snapshot).
+It serves gallery.html and the candidate images only (no listing, no state.json, no symlinks, no subfolders),
+with the gallery's own CSP as a header. It prints {"url", "minutes", "pid"} as its first line, then serves until it is stopped or
+--minutes (default 60) pass, so a forgotten server stops by itself.
+
 Stdout is JSON. Exit 0 on success, 1 when the input is wrong or the step is refused (the reason goes to stderr as
 "Stopped: ..."; nothing was changed), 2 on a secret-shaped note, prompt or origin.
 """
 import argparse
 import html
+import http.server
 import io
 import json
 import os
 import re
+import stat
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -57,6 +67,10 @@ MAX_FILE = 16 * 1024 * 1024
 MAX_NOTE = 500
 MAX_PROMPT_IN_LOG = 600
 MAX_ORIGIN = 200
+CSP = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+IMAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'"  # an SVG opened on its own runs no script
+SERVED = {".html": "text/html; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+          ".webp": "image/webp", ".svg": "image/svg+xml"}
 MAX_PIXELS = 89478485  # Pillow's decompression-bomb limit, so approve never trips it
 MAGIC = {".png": b"\x89PNG\r\n\x1a\n", ".jpg": b"\xff\xd8\xff", ".webp": b"RIFF"}
 CANDIDATE_RE = re.compile(r"[a-z0-9_]+-[0-9]+\.(svg|png|jpg|jpeg|webp)")  # <name>-<attempt>.<ext>, as add writes
@@ -523,13 +537,93 @@ def gallery(state, rows):
             '<div class="empty">No assets yet. Run <code>/via assets %s</code> to generate them.</div>' % e(state["key"]))
     return ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-            "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self'; "
-            "style-src 'unsafe-inline'; script-src 'unsafe-inline'\">"
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"%s\">"
             "<title>Assets %s</title><style>%s</style></head><body><main>"
             "<h1>Assets for %s</h1><p class=\"summary\">%s</p>%s"
             "<p class=\"hint\">Tell Claude what to do: copy a phrase, or write your own. Rejecting needs a note.</p>"
             "</main><script>%s</script></body></html>\n"
-            % (e(state["key"]), STYLE, e(state["key"]), e(summary), body, SCRIPT))
+            % (CSP, e(state["key"]), STYLE, e(state["key"]), e(summary), body, SCRIPT))
+
+
+def served_file(base, path):
+    """The file a request path names in the review folder, or None: one plain file name (no folder, no dot
+    file), gallery.html or a candidate image, a regular file and not a symlink."""
+    name = path.split("?", 1)[0].split("#", 1)[0].lstrip("/") or "gallery.html"
+    ext = os.path.splitext(name)[1].lower()
+    if "/" in name or "\\" in name or "%" in name or name.startswith(".") or ext not in SERVED:
+        return None
+    if name != "gallery.html" and not (CANDIDATE_RE.fullmatch(name) or PREVIEW_RE.fullmatch(name)):
+        return None  # only the page and the candidates and previews add/import write
+    full = os.path.join(base, name)
+    if os.path.islink(full) or not os.path.isfile(full):
+        return None
+    return full
+
+
+def cmd_serve(project, args):
+    base = folder(project, args.key)
+    if not os.path.isfile(os.path.join(base, "gallery.html")):
+        die("there is no gallery for %s yet: add or import a candidate first. Nothing was started." % args.key)
+    if not 0 < args.minutes <= 24 * 60:
+        die("--minutes must be 1 to 1440. Nothing was started.")
+    if not (args.port == 0 or 1024 <= args.port <= 65535):
+        die("--port must be 1024 to 65535, or 0 to pick a free one. Nothing was started.")
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        timeout = 10  # an idle socket (a browser's preconnect) is dropped, never held open
+
+        def do_GET(self, head=False):
+            # Only a request for 127.0.0.1 itself, so a DNS-rebinding page cannot read the folder (as via_capture).
+            ok = self.headers.get("Host") == "127.0.0.1:%d" % self.server.server_address[1]
+            full = ok and served_file(base, self.path)
+            if not full:
+                self.send_error(404)
+                return
+            try:  # O_NOFOLLOW: a symlink swapped in after the check is still not followed; O_NONBLOCK: nor a FIFO
+                fd = os.open(full, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            except OSError:
+                self.send_error(404)
+                return
+            with os.fdopen(fd, "rb") as f:
+                if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                    self.send_error(404)
+                    return
+                data = f.read()
+            ext = os.path.splitext(full)[1].lower()
+            self.send_response(200)
+            self.send_header("Content-Type", SERVED[ext])
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Security-Policy", CSP if ext == ".html" else IMAGE_CSP)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if not head:
+                self.wfile.write(data)
+
+        def do_HEAD(self):
+            self.do_GET(head=True)
+
+        def log_message(self, *a):
+            pass  # stdout carries the one JSON line; stderr stays quiet
+
+    try:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    except OSError as err:
+        die("could not listen on 127.0.0.1:%d (%s). Nothing was started." % (args.port, err.strerror or err))
+    url = "http://127.0.0.1:%d/gallery.html" % server.server_address[1]
+    print(json.dumps({"url": url, "minutes": args.minutes, "pid": os.getpid()}), flush=True)
+    server.daemon_threads = True
+    timer = threading.Timer(args.minutes * 60, server.shutdown)  # stops even while a request is open
+    timer.daemon = True
+    timer.start()
+    try:
+        server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        timer.cancel()
+        server.server_close()
+    return None
 
 
 def main():
@@ -555,10 +649,16 @@ def main():
     sub.add_parser("status", parents=[common])
     s = sub.add_parser("shots", parents=[common])
     s.add_argument("--run-dir", required=True)
+    v = sub.add_parser("serve", parents=[common])
+    v.add_argument("--port", type=int, default=0, help="0 picks a free port")
+    v.add_argument("--minutes", type=int, default=60, help="stop after this long")
     args = ap.parse_args()
     if not via_assets.KEY_RE.match(args.key):
         die("--key %r is not a ticket key such as APP-7. Nothing was changed." % args.key)
     project = os.path.realpath(args.project)
+    if args.cmd == "serve":
+        cmd_serve(project, args)
+        return
     via_assets.emit({"add": cmd_add, "import": cmd_import, "approve": cmd_approve, "reject": cmd_reject, "status": cmd_status,
                      "shots": cmd_shots}[args.cmd](project, args))
 

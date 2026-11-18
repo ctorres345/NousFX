@@ -164,6 +164,73 @@ class GalleryTest(unittest.TestCase):
         log = self.read(os.path.join(self.project, "design", "asset-log", "APP-7.md"))
         self.assertIn("`home_logo_main` attempt 1 (svg), agy conversation abcdef12: pending.", log)
 
+    # --- serve: the gallery over 127.0.0.1, for a browser pane that snapshots file:// pages ---
+
+    CSP = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+
+    def get(self, url):
+        import urllib.error
+        import urllib.request
+        try:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as err:
+            with err:
+                return err.code, dict(err.headers), b""
+
+    def test_serve_loads_the_gallery_and_its_images_with_the_csp_unchanged(self):
+        self.add_logo()
+        self.write(self.review("notes.txt"), b"x")
+        self.write(self.review("other.png"), b"x")  # a stray image, not a candidate
+        self.write(self.review("sub", "gallery.html"), b"<p>sub</p>")
+        self.write(os.path.join(self.project, "design", "asset-review", "APP-8", "x-1.svg"), SVG)
+        os.symlink(self.review("home_logo_main-1.svg"), self.review("link.svg"))
+        p = subprocess.Popen([th.python(self.home), "-I", "-B", SCRIPT, "serve", "--project", self.project, "--key",
+                              "APP-7", "--minutes", "1"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             env=th.env(self.home))
+        try:
+            first = json.loads(p.stdout.readline())
+            self.assertEqual(first["pid"], p.pid)
+            url = first["url"]
+            self.assertRegex(url, r"^http://127\.0\.0\.1:\d+/gallery\.html$")
+            status, headers, page = self.get(url)
+            self.assertEqual(status, 200)
+            self.assertEqual(headers["Content-Security-Policy"], self.CSP)  # the same policy the page carries
+            self.assertIn(('content="%s"' % self.CSP).encode(), page)
+            src = re.search(rb'<img src="([^"]+)"', page).group(1).decode()
+            status, headers, data = self.get(url.rsplit("/", 1)[0] + "/" + src)  # the way the page loads it
+            self.assertEqual((status, headers["Content-Type"]), (200, "image/svg+xml"))
+            self.assertEqual(data, SVG)
+            self.assertNotIn("script-src", headers["Content-Security-Policy"])  # an SVG opened alone runs nothing
+            root = url.rsplit("/", 1)[0]
+            idle = __import__("socket").create_connection(("127.0.0.1", int(url.split(":")[2].split("/")[0])))
+            try:  # a browser's idle preconnect must not hold the server
+                self.assertEqual(self.get(url)[0], 200)
+            finally:
+                idle.close()
+            for path in ("/state.json", "/notes.txt", "/other.png", "/.gitignore", "/link.svg", "/sub/gallery.html",
+                         "/../APP-8/x-1.svg", "/%2e%2e/APP-8/x-1.svg", "/..%2fAPP-8%2fx-1.svg",
+                         "/..\\APP-8\\x-1.svg"):
+                self.assertEqual(self.get(root + path)[0], 404, path)
+            import urllib.request
+            rebound = urllib.request.Request(url, headers={"Host": "evil.example:80"})
+            self.assertEqual(self.get(rebound)[0], 404)  # a DNS-rebinding Host gets nothing
+        finally:
+            p.kill()
+            p.wait()
+            p.stdout.close()
+            p.stderr.close()
+
+    def test_serve_refuses_without_a_gallery_or_with_a_bad_port(self):
+        self.assertIn("no gallery", self.refused("serve"))
+        self.add_logo()
+        self.assertIn("--port must be", self.refused("serve", "--port", "70000"))
+        self.assertIn("--port must be", self.refused("serve", "--port", "80"))  # Host would lack the port
+
+    def test_the_gallery_csp_is_unchanged(self):
+        self.add_logo()
+        self.assertIn('content="%s"' % self.CSP, self.read(self.review("gallery.html")))
+
     def test_reject_needs_a_note_and_regenerate_changes_only_that_asset(self):
         self.add_logo()
         self.ok("add", "--name", "home_hero_main", "--file", self.raw_file("hero.jpg", JPEG))
@@ -552,7 +619,7 @@ class GalleryTest(unittest.TestCase):
         self.assertTrue(doc.startswith("# /via assets <ticket>\n"))
         used = set(re.findall(r"via_assets_review\.py\" (\w+)", doc)) | set(
             re.findall(r"`via_assets_review\.py (\w+)", doc))
-        self.assertEqual(used, {"add", "import", "approve", "reject", "shots", "status"})
+        self.assertEqual(used, {"add", "import", "approve", "reject", "shots", "status", "serve"})
         self.assertIn("## 3b. Images from elsewhere", doc)
         self.assertIn("--ref", doc)
         for phrase in ("never approves", "Never commit"):
