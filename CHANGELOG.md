@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.2 (unreleased)
+## 1.3.2 (2026-11-17)
 
 ### Via assets
 - `via_assets_review.py import` brings art made outside Via (the Gemini app, by hand) into the review gallery (NFX-170). It runs the same checks as `add`, also checks the file is a real PNG, JPEG or WebP, and records `--origin` in the state, the gallery card and the log. `/via assets` has an "Images from elsewhere" step for when agy is blocked.
