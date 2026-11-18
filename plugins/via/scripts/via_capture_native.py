@@ -43,7 +43,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import struct
 import time
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from via_capture import check_run_dir, die  # noqa: E402
@@ -736,6 +738,100 @@ def pick_device(tool):
     return devices[0], None
 
 
+DEMO = ("am", "broadcast", "-a", "com.android.systemui.demo", "-e", "command")
+DEMO_STATUS = (("clock", "-e", "hhmm", "1200"), ("notifications", "-e", "visible", "false"),
+               ("battery", "-e", "level", "100", "-e", "plugged", "false"),
+               ("network", "-e", "wifi", "show", "-e", "level", "4"), ("network", "-e", "mobile", "hide"),
+               ("status", "-e", "alarm", "hide", "-e", "bluetooth", "hide", "-e", "location", "hide",
+                "-e", "volume", "hide", "-e", "mute", "hide", "-e", "speakerphone", "hide"))
+FOCUS_TRIES, FOCUS_WAIT = 20, 0.5
+FOCUS_RE = re.compile(r"mCurrentFocus=Window\{(\w+) u\d+ ([^}\s]+)\}")
+FRAME_RE = re.compile(r"(?:\bframe|mFrame)=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
+
+
+def window_frame(dump, ids):
+    """(left, top, right, bottom) of the focused window, which must be the app's. RouteFailed when it is another app's
+    window or its frame cannot be read: a shot is never kept uncropped on a guess."""
+    focus = FOCUS_RE.search(dump)
+    if not focus:
+        fail("The focused window could not be read from `dumpsys window`, so the shot cannot be cropped to the app.")
+    window_id, name = focus.groups()
+    package = name.split("/")[0]
+    if not any(package == i or package.startswith(i + ".") for i in ids):
+        fail("The focused window is %s, not the app's window, so nothing is shot." % package)
+    block = re.search(r"Window #\d+ Window\{%s [^\n]*\n((?:    [^\n]*\n)*)" % re.escape(window_id), dump)
+    frame = FRAME_RE.search(block.group(1)) if block else None
+    if not frame:
+        fail("The app window's frame could not be read from `dumpsys window`, so the shot cannot be cropped.")
+    return tuple(int(n) for n in frame.groups())
+
+
+PNG_CHANNELS = {0: 1, 2: 3, 4: 2, 6: 4}  # colour type -> samples per pixel, for 8-bit images
+
+
+def png_chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+
+def unfilter(raw, width, height, bpp):
+    """The pixel rows of a non-interlaced PNG's decompressed IDAT data, filters undone."""
+    stride, rows, prior = width * bpp, [], bytearray(width * bpp)
+    for y in range(height):
+        start = y * (stride + 1)
+        kind, line = raw[start], bytearray(raw[start + 1:start + 1 + stride])
+        for i in range(stride):
+            a = line[i - bpp] if i >= bpp else 0
+            b = prior[i]
+            c = prior[i - bpp] if i >= bpp else 0
+            if kind == 1:
+                line[i] = (line[i] + a) & 0xFF
+            elif kind == 2:
+                line[i] = (line[i] + b) & 0xFF
+            elif kind == 3:
+                line[i] = (line[i] + ((a + b) >> 1)) & 0xFF
+            elif kind == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 0xFF
+            elif kind != 0:
+                raise ValueError("unknown PNG filter %d" % kind)
+        rows.append(line)
+        prior = line
+    return rows
+
+
+def crop_png(data, box):
+    """The PNG cropped to box (left, top, right, bottom), clipped to the image, with only IHDR, IDAT and IEND kept:
+    any text, EXIF or other metadata chunk is dropped. Reads 8-bit, non-interlaced, non-palette PNGs (what screencap
+    writes); raises ValueError for anything else."""
+    pos, header, idat = 8, None, b""
+    while pos + 8 <= len(data):
+        size = struct.unpack(">I", data[pos:pos + 4])[0]
+        kind, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + size]
+        if kind == b"IHDR":
+            header = body
+        elif kind == b"IDAT":
+            idat += body
+        elif kind == b"IEND":
+            break
+        pos += 12 + size
+    if not header or not idat:
+        raise ValueError("no image data")
+    width, height, depth, colour, _, _, interlace = struct.unpack(">IIBBBBB", header)
+    if depth != 8 or colour not in PNG_CHANNELS or interlace:
+        raise ValueError("unsupported PNG (bit depth %d, colour type %d, interlace %d)" % (depth, colour, interlace))
+    bpp = PNG_CHANNELS[colour]
+    left, top = max(0, box[0]), max(0, box[1])
+    right, bottom = min(width, box[2]), min(height, box[3])
+    if right <= left or bottom <= top:
+        raise ValueError("the app window [%d,%d][%d,%d] is outside the %dx%d shot" % (*box, width, height))
+    rows = unfilter(zlib.decompress(idat), width, height, bpp)
+    body = b"".join(b"\x00" + bytes(row[left * bpp:right * bpp]) for row in rows[top:bottom])
+    return (b"\x89PNG\r\n\x1a\n"
+            + png_chunk(b"IHDR", struct.pack(">IIBBBBB", right - left, bottom - top, 8, colour, 0, 0, 0))
+            + png_chunk(b"IDAT", zlib.compress(body, 6)) + png_chunk(b"IEND", b""))
+
+
 APP_ID_RE = re.compile(r"""(?:applicationId|namespace)\s*(?:=\s*)?["']([\w.]+)["']""")
 RESUMED_RE = re.compile(r"(?:topResumedActivity|mResumedActivity)[=:]\s*\S+ \S+ ([\w.]+)/\.?([\w.$]+)")
 
@@ -792,10 +888,23 @@ def capture_emulator(platform, stage, run_dir, root, why, code):
                  % (why, package or "unknown", ", ".join(sorted(ids))), exit_code)
         return package, name
 
+    def read_windows():
+        """`displays` names the focused window and `windows` has each window's frame (the full dump leaves frames out).
+        Right after night mode or the font changes the app is relaunched and nothing has focus for a moment: wait."""
+        for _ in range(FOCUS_TRIES):
+            displays = adb(tool, serial, "shell", "dumpsys", "window", "displays")
+            if "mCurrentFocus=null" not in displays:
+                break
+            time.sleep(FOCUS_WAIT)
+        return displays + adb(tool, serial, "shell", "dumpsys", "window", "windows")
+
     try:
         package, screen = foreground(code)
         night = adb(tool, serial, "shell", "cmd", "uimode", "night").split(":")[-1].strip() or "auto"
         font_was = adb(tool, serial, "shell", "settings", "get", "system", "font_scale").strip()
+        demo_allowed = adb(tool, serial, "shell", "settings", "get", "global", "sysui_demo_allowed").strip()
+        demo_was_on = adb(tool, serial, "shell", "settings", "get", "global", "sysui_tuner_demo_on").strip() == "1"
+        dnd_was_off = adb(tool, serial, "shell", "settings", "get", "global", "zen_mode").strip() in ("0", "", "null")
     except RouteFailed as e:  # nothing on the device has changed yet
         fail(str(e) if why in str(e) else "%s %s" % (why, e), code)
     plan = [{"path": platform + "-" + shot_path(screen, "default", theme, "phone", font, "ltr"), "screen": screen,
@@ -803,21 +912,39 @@ def capture_emulator(platform, stage, run_dir, root, why, code):
              "theme": theme, "size": "phone", "font_scale": font, "direction": "ltr"} for theme, font in FALLBACK_MATRIX]
     refuse_existing(run_dir, [e["path"] for e in plan])
     try:
+        # Public shots must not show notifications or the real status bar: demo mode fixes the clock and hides
+        # notification icons, and Do Not Disturb stops a notification popping up over the app.
+        adb(tool, serial, "shell", "settings", "put", "global", "sysui_demo_allowed", "1")
+        adb(tool, serial, "shell", *DEMO, "enter")
+        for status in DEMO_STATUS:
+            adb(tool, serial, "shell", *DEMO, *status)
+        if dnd_was_off:
+            adb(tool, serial, "shell", "cmd", "notification", "set_dnd", "on")
         for entry in plan:
             adb(tool, serial, "shell", "cmd", "uimode", "night", "yes" if entry["theme"] == "dark" else "no")
             adb(tool, serial, "shell", "settings", "put", "system", "font_scale",
                 FONT_LARGEST if entry["font_scale"] == "largest" else "1.0")
             time.sleep(settle)
             foreground(4)  # a changed setting can restart the app, and another app may have come forward
+            frame = window_frame(read_windows(), ids)
             png = adb(tool, serial, "exec-out", "screencap", "-p", binary=True)
             if not png.startswith(b"\x89PNG"):
                 fail("adb screencap did not return a PNG for %s." % entry["path"])
+            try:
+                png = crop_png(png, frame)
+            except (ValueError, zlib.error, struct.error) as e:
+                fail("The shot for %s could not be cropped to the app window (%s)." % (entry["path"], e))
             with open(os.path.join(stage, entry["path"]), "wb") as f:
                 f.write(png)
     finally:
         restore = (("settings", "delete", "system", "font_scale") if font_was in ("", "null")
                    else ("settings", "put", "system", "font_scale", font_was))
-        for command in (("cmd", "uimode", "night", night), restore):
+        allowed = (("settings", "delete", "global", "sysui_demo_allowed") if demo_allowed in ("", "null")
+                   else ("settings", "put", "global", "sysui_demo_allowed", demo_allowed))
+        # Leave demo mode before demo commands are disallowed again; keep what the user had turned on.
+        commands = ([] if demo_was_on else [DEMO + ("exit",)]) + [allowed]
+        commands += [("cmd", "notification", "set_dnd", "off")] if dnd_was_off else []
+        for command in commands + [("cmd", "uimode", "night", night), restore]:
             try:
                 adb(tool, serial, "shell", *command)
             except RouteFailed:
