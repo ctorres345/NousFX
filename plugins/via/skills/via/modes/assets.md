@@ -18,6 +18,12 @@ python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_outbound.py" check --dest agy -
 ```
 Exit 20: the project does not allow agy. Stop, say so, and name the fix (`/via setup`, outbound allow-list). If `/via setup` reports agy missing or signed out, stop and say which.
 
+When any row is an image, check agy's image model once before generating (it costs one small image, deleted after):
+```
+python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets.py" probe-image --project "<project root>"
+```
+Exit 21 (`"image": "quota"`): generate no images; say when it resets (`reset`) and offer step 3b. SVG rows can still go ahead. Exit 22: agy is not installed or not signed in; stop and name the fix (`/via setup`). `"unknown"` (exit 0, an answer it does not know or a failed call): say what agy answered, make the first image alone, and stop the batch if that one fails too.
+
 Add one `[[asset]]` table per row to `design/assets.toml` (the format is at the top of `via_assets.py`), with `source` `design/assets/<name>.svg` or `design/assets/<name>.png`. Keep rows that are already there. An image that needs a see-through background gets `transparent = "#00FF00"` (a key color the art never uses) and a `.png` source: generate asks for that flat background and approve keys it out into real alpha, enclosed openings in that color included. The gallery tiles show the cut-out; a card with a "Key-out:" note will be refused at approve, so reject and regenerate it (images over 4096x4096 are refused too). After changing a row's key color, add the candidate again for a new cut-out. Assets that must match each other (frames, a badge family) share a `set` name and one `layout` line with the numbers (margins, line weight, opening); every prompt in the set gets it. Write or update `design/brief.md`: the style in two or three lines (palette from `assets.toml`, line weight, mood), and the reference images if the user gave any. Both files stay in the working tree for the user to commit.
 
 ## 3. Generate
