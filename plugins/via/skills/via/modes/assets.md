@@ -25,13 +25,20 @@ For each row, one prompt: the usage, the brief's style, the size, and for SVG th
 ```
 python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets.py" generate --project "<project root>" --key <KEY> --kind <svg|image> --name <name> --prompt-file <file> [--ref <image> ...]
 ```
-Write the prompt to a file in the scratchpad. `--ref` passes up to 4 style reference images (PNG, JPEG or WebP). A call can take minutes: run it in the background. Exit 1: say which asset failed and why, and go on with the rest, except when the error says agy is not installed or not signed in: then stop the whole run, say which, and name the fix (`/via setup`).
+Write the prompt to a file in the scratchpad. `--ref` passes up to 4 style reference images (PNG, JPEG or WebP). A call can take minutes: run it in the background. Exit 1: say which asset failed and why, and go on with the rest, except when the error says agy is not installed or not signed in: then stop the whole run, say which, and name the fix (`/via setup`). When agy is blocked (not set up, or out of image quota), offer step 3b for the images the user can make elsewhere.
 
 Then put each result in the gallery, one `add` at a time (each rewrites the state file):
 ```
 python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets_review.py" add --project "<project root>" --key <KEY> --name <name> --file <path from generate> --conversation-id <id> --prompt-file <file>
 ```
 It prints the gallery path, `design/asset-review/<KEY>/gallery.html`. That folder ignores itself in git.
+
+## 3b. Images from elsewhere
+When the user has art made outside Via (the Gemini app, a designer, by hand), or agy is blocked, import it instead of generating. Ask for the file path and where it came from, in a few words.
+```
+python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets_review.py" import --project "<project root>" --key <KEY> --name <name> --file <path> --origin "<where it came from>"
+```
+It runs the same checks as `add` (the name is in `assets.toml`, kind and extension match the row, size, no symlinks, SVG safety) and also checks the file is a real PNG, JPEG or WebP. The origin goes in the state, the gallery card and the log; never put a URL with a token or any secret in it. The import is the pending candidate: steps 4 and 5 treat it like a generated one, and a rejected import can be regenerated with `add` or imported again. Never fetch from a URL or read the clipboard: the user saves the file first.
 
 ## 4. Second opinion (Argon)
 One call for the whole batch.

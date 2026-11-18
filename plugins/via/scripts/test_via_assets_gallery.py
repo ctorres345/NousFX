@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import struct
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import nousfx_testhome as th  # noqa: E402
@@ -35,6 +37,16 @@ JPEG = bytes.fromhex(  # a 2x2 baseline JPEG
     "535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6"
     "b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f00fbd3ff"
     "d9")
+
+
+def png(w=2, h=2):
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+    rows = b"".join(b"\x00" + b"\xff\x00\x00" * w for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
 AGY = """#!/bin/sh
 ls > "$HOME/agy-files.log"
 echo '{"conversation_id": "abcdef12-3456", "status": "SUCCESS", "response": "NO FINDINGS", "usage": {}}'
@@ -255,6 +267,70 @@ class GalleryTest(unittest.TestCase):
         self.add_logo()
         self.refused("reject", "--name", "home_logo_main", "--note", "key AKIAABCDEFGHIJKLMNOP", code=2)
 
+    # --- images made outside Via (NFX-170) ---
+
+    def outside(self, name, data):
+        return self.write(os.path.join(self.root, "downloads", name), data)
+
+    def test_an_imported_image_is_the_pending_candidate_and_shows_its_origin(self):
+        for ext, data in ((".png", png()), (".jpg", JPEG)):
+            with self.subTest(ext=ext):
+                self.setUp()
+                out = self.ok("import", "--name", "home_hero_main", "--file", self.outside("frame" + ext, data),
+                              "--origin", "Gemini app <script>x</script>")
+                self.assertEqual(out["assets"]["home_hero_main"], {"kind": "image", "state": "pending",
+                                                                   "note": None, "attempt": 1})
+                with open(self.review("home_hero_main-1" + ext), "rb") as f:
+                    self.assertEqual(f.read(), data)
+                state = json.loads(self.read(self.review("state.json")))
+                self.assertEqual(state["assets"]["home_hero_main"]["origin"], "Gemini app <script>x</script>")
+                page = self.read(self.review("gallery.html"))
+                self.assertIn("From: Gemini app &lt;script&gt;x&lt;/script&gt;", page)
+                self.assertNotIn("<script>x", page)
+                log = self.read(os.path.join(self.project, "design", "asset-log", "APP-7.md"))
+                self.assertIn("`home_hero_main` attempt 1 (image), imported from Gemini app <script>x</script>: "
+                              "pending.", log)
+
+    def test_an_imported_candidate_rejects_regenerates_and_approves_like_a_generated_one(self):
+        self.ok("import", "--name", "home_logo_main", "--file", self.outside("logo.svg", SVG), "--origin", "by hand")
+        self.ok("reject", "--name", "home_logo_main", "--note", "Too round")
+        out = self.ok("add", "--name", "home_logo_main", "--file", self.raw_file("logo2.svg", SVG2))  # agy is back
+        self.assertEqual(out["assets"]["home_logo_main"]["attempt"], 2)
+        state = json.loads(self.read(self.review("state.json")))
+        self.assertIsNone(state["assets"]["home_logo_main"]["origin"])
+        self.assertEqual(state["assets"]["home_logo_main"]["history"][0]["origin"], "by hand")
+        self.ok("reject", "--name", "home_logo_main", "--note", "Still round")
+        out = self.ok("import", "--name", "home_logo_main", "--file", self.outside("logo3.svg", SVG2),
+                      "--origin", "Gemini app")
+        self.assertEqual(out["assets"]["home_logo_main"]["attempt"], 3)
+        out = self.ok("approve", "--name", "home_logo_main")
+        self.assertEqual(out["assets"]["home_logo_main"]["state"], "approved")
+        with open(os.path.join(self.project, "design", "assets", "home_logo_main.svg"), "rb") as f:
+            self.assertEqual(f.read(), SVG2)
+
+    def test_import_refuses_the_same_files_add_does_and_non_images(self):
+        good = self.outside("frame.png", png())
+        link = os.path.join(self.root, "downloads", "link.png")
+        os.symlink(good, link)
+        big = self.outside("big.png", png())
+        with open(big, "r+b") as f:
+            f.truncate(16 * 1024 * 1024 + 1)
+        for name, path in (("home_other_main", good),                          # not in assets.toml
+                           ("home_logo_main", good),                           # an svg row
+                           ("home_hero_main", self.outside("x.svg", SVG)),     # an image row
+                           ("home_hero_main", link),                           # a symlink
+                           ("home_hero_main", big),                            # oversized
+                           ("home_hero_main", self.outside("fake.png", b"not an image at all")),
+                           ("home_hero_main", self.outside("fake.jpg", png())),  # a PNG named .jpg
+                           ("home_hero_main", os.path.join(self.root, "missing.png")),
+                           ("home_logo_main", self.outside("bad.svg", BAD_SVG))):
+            with self.subTest(name=name, path=os.path.basename(path)):
+                self.refused("import", "--name", name, "--file", path, "--origin", "Gemini app")
+        self.refused("import", "--name", "home_hero_main", "--file", good, "--origin", "  ")
+        self.refused("import", "--name", "home_hero_main", "--file", good, "--origin",
+                     "key AKIAABCDEFGHIJKLMNOP", code=2)
+        self.assertFalse(os.path.exists(self.review("state.json")))
+
     # --- Argon through a Via run ---
 
     def test_the_argon_step_reaches_the_second_opinion_through_a_run_with_the_assets_as_kept_shots(self):
@@ -300,7 +376,8 @@ class GalleryTest(unittest.TestCase):
         self.assertTrue(doc.startswith("# /via assets <ticket>\n"))
         used = set(re.findall(r"via_assets_review\.py\" (\w+)", doc)) | set(
             re.findall(r"`via_assets_review\.py (\w+)", doc))
-        self.assertEqual(used, {"add", "approve", "reject", "shots", "status"})
+        self.assertEqual(used, {"add", "import", "approve", "reject", "shots", "status"})
+        self.assertIn("## 3b. Images from elsewhere", doc)
         self.assertIn("--ref", doc)
         for phrase in ("never approves", "Never commit"):
             self.assertIn(phrase.lower(), doc.lower())
