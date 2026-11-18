@@ -353,6 +353,33 @@ class GalleryTest(unittest.TestCase):
                 self.assertEqual((green, magenta), (0, 0))
 
     @unittest.skipUnless(PILLOW, "needs the Pillow environment from /via setup")
+    def test_key_spill_three_pixels_deep_is_taken_out_and_art_further_in_is_unchanged(self):
+        # A JPEG blurs the key color about 3 px into the art (PAP-43's frame kept a dark-green rim at 3 px).
+        for key, rim in (("#00FF00", (19, 69, 0)), ("#FF00FF", (69, 19, 69))):
+            with self.subTest(key):
+                spill, center, inner, corner = json.loads(self.pillow(
+                    "import sys, json\nsys.path.insert(0, sys.argv[1])\nimport via_assets\n"
+                    "from PIL import Image, ImageDraw\nkey = tuple(int(sys.argv[2][i:i + 2], 16) for i in (1, 3, 5))\n"
+                    "im = Image.new('RGB', (128, 128), key)\nd = ImageDraw.Draw(im)\n"
+                    "d.rectangle((20, 20, 107, 107), fill=(150, 100, 50), outline=(30, 20, 15), width=2)\n"
+                    "d.rectangle((22, 22, 105, 105), outline=%r)\n"  # the third ring in: spill
+                    "d.rectangle((26, 26, 101, 101), outline=(40, 160, 40))\n"  # green art, 7 px in
+                    "d.ellipse((50, 50, 78, 78), fill=(40, 160, 40))\n"
+                    "src, dst = sys.argv[3] + '/in.png', sys.argv[3] + '/out.png'\nim.save(src)\n"
+                    "via_assets.keyout({'src': src, 'dst': dst, 'key': sys.argv[2]})\n"
+                    "out = Image.open(dst).convert('RGBA')\n"
+                    "hot = [i for i in range(3) if key[i] == 255]\ncold = [i for i in range(3) if key[i] != 255]\n"
+                    "rim = [out.getpixel((x, y)) for y in range(128) for x in range(128)"
+                    " if not (26 <= x <= 101 and 26 <= y <= 101)]\n"
+                    "spill = sum(1 for p in rim if p[3] > 40 and all(p[h] > max(p[c] for c in cold) + 30 for h in hot))\n"
+                    "print(json.dumps([spill, out.getpixel((64, 64)), out.getpixel((26, 64)), out.getpixel((0, 0))[3]]))"
+                    % (rim,), os.path.dirname(os.path.abspath(__file__)), key, self.root))
+                self.assertEqual(corner, 0)
+                self.assertEqual(spill, 0)  # no key-colored rim left
+                self.assertEqual(center, [40, 160, 40, 255])  # green art in the middle is untouched
+                self.assertEqual(inner, [40, 160, 40, 255])  # and 7 px from the background too
+
+    @unittest.skipUnless(PILLOW, "needs the Pillow environment from /via setup")
     def test_an_imported_png_that_is_already_cut_out_keeps_its_alpha(self):
         self.keyed_candidate(background=(0, 0, 0, 0), name="frame.png")
         self.ok("approve", "--name", "home_frame_main")

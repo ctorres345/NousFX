@@ -795,6 +795,7 @@ def resize(jobs):
 KEY_LO, KEY_HI = 48, 140  # max channel distance from the key color: at or under LO is background, from HI on is art
 MAX_INNER = 0.02  # small enclosed key-colored spots, as a share of the art, before approve refuses
 MIN_UNMIX = 64  # the lowest alpha keyout unmixes the key color from
+SPILL_PX = 4  # how far into the art the key's spill is taken out: a JPEG blurs color about 3 px
 MAX_PARTS = 200  # enclosed key-colored areas key_holes looks at before it calls the key color scattered
 MAX_KEY_PIXELS = 4096 * 4096  # the edge fill is pure Python: about 11 s and 730 MB at this size
 KEY_REFUSED = 3   # _keyout's exit code for a refusal (its message is the last stderr line)
@@ -845,7 +846,7 @@ def keyout(job):
     Background: the key-colored pixels (within KEY_LO) joined to the image edge, plus enclosed key-colored
     openings of at least 0.1% of the image (a frame's opening). A soft edge ramps the alpha from KEY_LO to KEY_HI
     in a 2 px band around it. De-spill: the key color is unmixed from the half-transparent pixels, then its spill
-    is taken out of every pixel in that band. A candidate that already has transparency is written as is.
+    is taken out of every pixel up to SPILL_PX into the art. A candidate that already has transparency is written as is.
     Refuses, writing nothing, when the image is over MAX_KEY_PIXELS, when no background touches the edge, when key-colored specks cover more than
     MAX_INNER of the art, or when nothing but background is left."""
     from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageMath
@@ -892,6 +893,7 @@ def keyout(job):
         raise KeyRefused("%s also covers %d%% of the art in small spots; keying it out would cut holes. Ask for "
                          "art without that color, or pick another key color" % (color, round(100 * specks / art)))
     band = background.filter(ImageFilter.MaxFilter(5))  # the background and 2 px around it
+    spill = background.filter(ImageFilter.MaxFilter(2 * SPILL_PX + 1))  # and SPILL_PX px around it
     ramp = dist.point(lambda v: 0 if v <= KEY_LO else 255 if v >= KEY_HI else
                       int((v - KEY_LO) * 255 / (KEY_HI - KEY_LO) + 0.5))
     alpha = Image.composite(Image.composite(Image.new("L", im.size, 0), ramp, background),
@@ -903,7 +905,7 @@ def keyout(job):
         lambda e, k=k: e["convert"](e["min"](e["max"]((e["float"](e["b"]) - (255.0 - e["float"](e["a"])) * (k / 255.0))
                                                      * 255.0 / e["max"](e["float"](e["a"]), 1.0), 0.0), 255.0), "L"),
         b=b, a=alpha), b, edge) for b, k in zip(bands, key)]
-    # Then in the band: the key's strongest channels go no higher than the others (spill). On the unmixed edge
+    # Then up to SPILL_PX in: the key's strongest channels go no higher than the others (spill). On the unmixed edge
     # they also go no lower than the others, since JPEG color blur leaves them too low there (a magenta rim).
     hot = [i for i in range(3) if key[i] == max(key)]
     cold = [i for i in range(3) if key[i] != max(key)]
@@ -913,7 +915,7 @@ def keyout(job):
             high_cold = ImageChops.lighter(high_cold, bands[i])
             low_cold = ImageChops.darker(low_cold, bands[i])
         for i in hot:
-            capped = Image.composite(ImageChops.darker(bands[i], high_cold), bands[i], band)
+            capped = Image.composite(ImageChops.darker(bands[i], high_cold), bands[i], spill)
             bands[i] = Image.composite(ImageChops.lighter(capped, low_cold), capped, edge)
     clear = alpha.point(lambda v: 255 if v == 0 else 0)
     black = Image.new("L", im.size, 0)
