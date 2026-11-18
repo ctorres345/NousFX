@@ -526,6 +526,15 @@ class AssetsModeDocTest(unittest.TestCase):
                         plan[:plan.index("\n")]):
             self.assertIn("3c", earlier)  # steps 3 and 3b point to it
 
+    def test_a_phrase_with_several_names_is_one_approval_per_name(self):  # NFX-181
+        path = os.path.join(os.path.dirname(SCRIPT), "..", "skills", "via", "modes", "assets.md")
+        with open(path, encoding="utf-8") as f:
+            doc = f.read()
+        step = doc[doc.index("via_assets_review.py\" approve"):doc.index("Reject, then regenerate")]
+        for phrase in ("`approve a, b, c`", "Copy approve selected", "one approval for each name",
+                       "once per name"):
+            self.assertIn(phrase, step)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -80,7 +80,7 @@ Open the gallery page for the user. In the Claude app's browser pane, serve it f
 python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets_review.py" approve --project "<project root>" --key <KEY> --name <name>
 python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets_review.py" reject --project "<project root>" --key <KEY> --name <name> --note "<the user's note>"
 ```
-Approve copies the candidate to its `source` (re-encoded to that format when needed) and converts that one asset into the platform folders. It needs the Pillow environment for images (`/via setup`). Report `written` and any `flags`.
+A phrase with several names (`approve a, b, c`, which the gallery's "Copy approve selected" makes) is one approval for each name: run approve once per name, in that order, and report each. Approve copies the candidate to its `source` (re-encoded to that format when needed) and converts that one asset into the platform folders. It needs the Pillow environment for images (`/via setup`). Report `written` and any `flags`.
 
 Reject, then regenerate only that asset: steps 3 and 4 for that name, with the note added to its prompt. `add` raises its attempt count and leaves the others as they are. Back to the gallery until every asset is approved or the user stops.
 

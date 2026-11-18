@@ -512,13 +512,29 @@ flex-direction:column}
 button{font:inherit;font-size:13px;min-height:36px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);
 background:transparent;color:var(--text);cursor:pointer}
 button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+button:disabled{opacity:.5;cursor:default}
+.bulk{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:0 0 16px}
+.pick{display:inline-flex;align-items:center;gap:8px;min-height:36px;font-size:13px;cursor:pointer}
+.pick input{width:18px;height:18px;margin:0;accent-color:var(--focus)}
 .empty{border:1px dashed var(--line);border-radius:12px;padding:40px 16px;text-align:center;color:var(--muted)}
 .hint{color:var(--muted);font-size:13px;margin:16px 0 0}
 """
 
-SCRIPT = """document.addEventListener("click",function(e){var b=e.target.closest("button[data-copy]");if(!b)return;
-var t=b.getAttribute("data-copy"),l=b.textContent;function done(){b.textContent="Copied";
-setTimeout(function(){b.textContent=l},1500)}if(navigator.clipboard){navigator.clipboard.writeText(t).then(done)}});"""
+# Copy buttons only write a phrase to the clipboard: the user pastes it to Claude, who runs approve or reject.
+# The bulk bar ticks pending cards and copies one "approve a, b" phrase, in page order.
+SCRIPT = """function copy(b,t){if(!b.hasAttribute("data-label"))b.setAttribute("data-label",b.textContent);
+function done(){b.textContent="Copied";setTimeout(function(){b.textContent=b.getAttribute("data-label")},1500)}
+if(navigator.clipboard){navigator.clipboard.writeText(t).then(done,function(){})}}
+function picks(){return Array.prototype.slice.call(document.querySelectorAll("input[data-pick]"))}
+function sync(){var p=picks(),on=p.filter(function(i){return i.checked}),all=document.getElementById("pick-all"),
+s=document.getElementById("copy-selected");if(!all||!s)return;all.checked=on.length>0&&on.length===p.length;
+all.indeterminate=on.length>0&&on.length<p.length;s.disabled=!on.length;
+var t=on.length?"Copy approve selected ("+on.length+")":"Copy approve selected";s.textContent=t;s.setAttribute("data-label",t)}
+document.addEventListener("change",function(e){if(e.target.id==="pick-all"){var c=e.target.checked;
+picks().forEach(function(i){i.checked=c})}if(e.target.id==="pick-all"||e.target.hasAttribute("data-pick"))sync()});
+document.addEventListener("click",function(e){var b=e.target.closest("button[data-copy]");if(b){copy(b,b.getAttribute("data-copy"));return}
+b=e.target.closest("#copy-selected");if(!b||b.disabled)return;var n=picks().filter(function(i){return i.checked})
+.map(function(i){return i.getAttribute("data-pick")});if(n.length)copy(b,"approve "+n.join(", "))});sync();"""
 
 
 def gallery(state, rows):
@@ -552,21 +568,26 @@ def gallery(state, rows):
         if a["state"] == "rejected" and a.get("note"):
             parts.append('<p class="note">%s</p>' % e(a["note"]))
         if a["state"] == "pending":
-            parts.append('<div class="actions"><button type="button" data-copy="%s">Copy approve</button>'
+            parts.append('<label class="pick"><input type="checkbox" data-pick="%s"> Select</label>'
+                         '<div class="actions"><button type="button" data-copy="%s">Copy approve</button>'
                          '<button type="button" data-copy="%s">Copy reject</button></div>'
-                         % (e("approve %s" % name), e("reject %s: " % name)))
+                         % (e(name), e("approve %s" % name), e("reject %s: " % name)))
         parts.append("</div></article>")
         cards.append("".join(parts))
     n = counts(state)
     summary = "%d pending, %d approved, %d rejected" % (n["pending"], n["approved"], n["rejected"])
-    body = ('<div class="grid">%s</div>' % "".join(cards) if cards else
+    bulk = ('<div class="bulk"><label class="pick"><input type="checkbox" id="pick-all"> Select all pending</label>'
+            '<button type="button" id="copy-selected" disabled>Copy approve selected</button></div>'
+            if n["pending"] else "")
+    body = (bulk + '<div class="grid">%s</div>' % "".join(cards) if cards else
             '<div class="empty">No assets yet. Run <code>/via assets %s</code> to generate them.</div>' % e(state["key"]))
     return ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             "<meta http-equiv=\"Content-Security-Policy\" content=\"%s\">"
             "<title>Assets %s</title><style>%s</style></head><body><main>"
             "<h1>Assets for %s</h1><p class=\"summary\">%s</p>%s"
-            "<p class=\"hint\">Tell Claude what to do: copy a phrase, or write your own. Rejecting needs a note.</p>"
+            "<p class=\"hint\">Tell Claude what to do: copy a phrase (tick several to approve them in one), or write "
+            "your own. Rejecting needs a note.</p>"
             "</main><script>%s</script></body></html>\n"
             % (CSP, e(state["key"]), STYLE, e(state["key"]), e(summary), body, SCRIPT))
 
