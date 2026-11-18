@@ -27,6 +27,12 @@ $VIA_ROBORAZZI and $VIA_ROBOLECTRIC pick other library versions (an app on a muc
 Emulator fallback: when a route fails (tool missing, build failed) and exactly one device is running ($ANDROID_SERIAL
 picks one of several), Via shoots the screen now on it with `adb`: default state, phone light and dark, and at the
 largest font. It never starts an emulator. Night mode and font scale are read first and put back, also after a failure.
+Each shot is taken in SystemUI demo mode (clock 12:00, full battery and signal, no notification icons) with Do Not
+Disturb on, so a real notification or the time never shows; both are put back as found (demo mode left on when it was
+on, though its clock and icons are now Via's; the demo setting removed when it was unset), also after a failure or
+SIGTERM/SIGHUP. Each shot is cropped to the
+app's focused window (from `dumpsys window`), PNG metadata dropped; a full-screen app keeps the whole screen. It stops
+when the focused window is not the app's or its frame cannot be read.
 Shots get source "device", and the output gets a "warnings" list. It shoots only when the foreground package matches an
 applicationId or namespace of the project. A physical phone needs $VIA_ADB_ALLOW_DEVICE=1 or $ANDROID_SERIAL. Claude must
 still look at each shot. A Flutter project with no android/ folder, no adb ($VIA_ADB, PATH or the SDK's platform-tools)
@@ -40,10 +46,10 @@ import os
 import re
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
-import struct
 import time
 import zlib
 
@@ -741,7 +747,7 @@ def pick_device(tool):
 DEMO = ("am", "broadcast", "-a", "com.android.systemui.demo", "-e", "command")
 DEMO_STATUS = (("clock", "-e", "hhmm", "1200"), ("notifications", "-e", "visible", "false"),
                ("battery", "-e", "level", "100", "-e", "plugged", "false"),
-               ("network", "-e", "wifi", "show", "-e", "level", "4"), ("network", "-e", "mobile", "hide"),
+               ("network", "-e", "wifi", "show", "-e", "level", "4", "-e", "fully", "true"), ("network", "-e", "mobile", "hide"),
                ("status", "-e", "alarm", "hide", "-e", "bluetooth", "hide", "-e", "location", "hide",
                 "-e", "volume", "hide", "-e", "mute", "hide", "-e", "speakerphone", "hide"))
 FOCUS_TRIES, FOCUS_WAIT = 20, 0.5
@@ -770,7 +776,7 @@ PNG_CHANNELS = {0: 1, 2: 3, 4: 2, 6: 4}  # colour type -> samples per pixel, for
 
 
 def png_chunk(kind, data):
-    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
 
 def unfilter(raw, width, height, bpp):
@@ -779,6 +785,10 @@ def unfilter(raw, width, height, bpp):
     for y in range(height):
         start = y * (stride + 1)
         kind, line = raw[start], bytearray(raw[start + 1:start + 1 + stride])
+        if kind == 0:  # no filter: the row is already the pixels
+            rows.append(line)
+            prior = line
+            continue
         for i in range(stride):
             a = line[i - bpp] if i >= bpp else 0
             b = prior[i]
@@ -793,7 +803,7 @@ def unfilter(raw, width, height, bpp):
                 p = a + b - c
                 pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
                 line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 0xFF
-            elif kind != 0:
+            else:
                 raise ValueError("unknown PNG filter %d" % kind)
         rows.append(line)
         prior = line
@@ -804,14 +814,14 @@ def crop_png(data, box):
     """The PNG cropped to box (left, top, right, bottom), clipped to the image, with only IHDR, IDAT and IEND kept:
     any text, EXIF or other metadata chunk is dropped. Reads 8-bit, non-interlaced, non-palette PNGs (what screencap
     writes); raises ValueError for anything else."""
-    pos, header, idat = 8, None, b""
+    pos, header, idat = 8, None, []
     while pos + 8 <= len(data):
         size = struct.unpack(">I", data[pos:pos + 4])[0]
         kind, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + size]
         if kind == b"IHDR":
             header = body
         elif kind == b"IDAT":
-            idat += body
+            idat.append(body)
         elif kind == b"IEND":
             break
         pos += 12 + size
@@ -825,7 +835,10 @@ def crop_png(data, box):
     right, bottom = min(width, box[2]), min(height, box[3])
     if right <= left or bottom <= top:
         raise ValueError("the app window [%d,%d][%d,%d] is outside the %dx%d shot" % (*box, width, height))
-    rows = unfilter(zlib.decompress(idat), width, height, bpp)
+    raw = zlib.decompress(b"".join(idat))
+    if len(raw) < bottom * (width * bpp + 1):
+        raise ValueError("the image data is shorter than its header says")
+    rows = unfilter(raw, width, bottom, bpp)  # rows below the crop are never needed
     body = b"".join(b"\x00" + bytes(row[left * bpp:right * bpp]) for row in rows[top:bottom])
     return (b"\x89PNG\r\n\x1a\n"
             + png_chunk(b"IHDR", struct.pack(">IIBBBBB", right - left, bottom - top, 8, colour, 0, 0, 0))
@@ -901,10 +914,12 @@ def capture_emulator(platform, stage, run_dir, root, why, code):
     try:
         package, screen = foreground(code)
         night = adb(tool, serial, "shell", "cmd", "uimode", "night").split(":")[-1].strip() or "auto"
-        font_was = adb(tool, serial, "shell", "settings", "get", "system", "font_scale").strip()
-        demo_allowed = adb(tool, serial, "shell", "settings", "get", "global", "sysui_demo_allowed").strip()
-        demo_was_on = adb(tool, serial, "shell", "settings", "get", "global", "sysui_tuner_demo_on").strip() == "1"
-        dnd_was_off = adb(tool, serial, "shell", "settings", "get", "global", "zen_mode").strip() in ("0", "", "null")
+        def setting(space, key):
+            return adb(tool, serial, "shell", "settings", "get", space, key).strip()
+        font_was = setting("system", "font_scale")
+        demo_allowed = setting("global", "sysui_demo_allowed")
+        demo_was_on = setting("global", "sysui_tuner_demo_on") == "1"
+        dnd_was_off = setting("global", "zen_mode") in ("0", "", "null")
     except RouteFailed as e:  # nothing on the device has changed yet
         fail(str(e) if why in str(e) else "%s %s" % (why, e), code)
     plan = [{"path": platform + "-" + shot_path(screen, "default", theme, "phone", font, "ltr"), "screen": screen,
@@ -937,19 +952,29 @@ def capture_emulator(platform, stage, run_dir, root, why, code):
             with open(os.path.join(stage, entry["path"]), "wb") as f:
                 f.write(png)
     finally:
-        restore = (("settings", "delete", "system", "font_scale") if font_was in ("", "null")
-                   else ("settings", "put", "system", "font_scale", font_was))
-        allowed = (("settings", "delete", "global", "sysui_demo_allowed") if demo_allowed in ("", "null")
-                   else ("settings", "put", "global", "sysui_demo_allowed", demo_allowed))
+        def put_back(space, key, was):  # a setting that was unset is deleted again, not written as "null"
+            return (("settings", "delete", space, key) if was in ("", "null")
+                    else ("settings", "put", space, key, was))
         # Leave demo mode before demo commands are disallowed again; keep what the user had turned on.
-        commands = ([] if demo_was_on else [DEMO + ("exit",)]) + [allowed]
-        commands += [("cmd", "notification", "set_dnd", "off")] if dnd_was_off else []
-        for command in commands + [("cmd", "uimode", "night", night), restore]:
+        commands = [command for keep, command in (
+            (not demo_was_on, DEMO + ("exit",)),
+            (True, put_back("global", "sysui_demo_allowed", demo_allowed)),
+            (dnd_was_off, ("cmd", "notification", "set_dnd", "off")),
+            (True, ("cmd", "uimode", "night", night)),
+            (True, put_back("system", "font_scale", font_was))) if keep]
+        # A second SIGTERM or SIGHUP waits until every setting is back, so it cannot cut the restores short.
+        held = []
+        handlers = {sig: signal.signal(sig, lambda sig, _: held.append(sig)) for sig in (signal.SIGTERM, signal.SIGHUP)}
+        for command in commands:
             try:
                 adb(tool, serial, "shell", *command)
             except RouteFailed:
                 print("Warning: could not restore the device setting `%s`. Check the device." % " ".join(command),
                       file=sys.stderr)
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+        if held:
+            sys.exit(143)
     shots = [{**e, "platform": platform, "redacted": False, "source": "device"} for e in plan]
     reason = "the emulator fallback shoots only the screen now on the device"
     taken = ("phone-light", "phone-dark", "font-largest")

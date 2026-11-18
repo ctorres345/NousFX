@@ -120,7 +120,7 @@ def read_png(path):
     return width, height, kinds, rows
 
 
-SCREEN = make_png(6, 10, b"Author\x00/Users/someone on Pixel serial R5CT123ABC")
+SCREEN = make_png(6, 10, b"Author\x00/Users/me on Pixel serial R5CT123ABC")
 
 # A stand-in for `flutter`: logs its call, then writes one PNG per entry of the plan it finds in the generated test.
 FAKE_FLUTTER = '''#!%(python)s
@@ -607,6 +607,10 @@ elif args[:1] == ["shell"]:
             state["demo"] = []
         elif cmd[5:7] == ["command", "exit"]:
             state["demo"] = None
+            if state.get("exit_pauses"):  # the first restore is slow, so a test can signal again during it
+                open(state_path + ".restoring", "w").close()
+                import time
+                time.sleep(2)
         elif state.get("demo") is not None:
             state["demo"].append(" ".join(w for w in cmd[6:] if w != "-e"))
     elif cmd[:3] == ["cmd", "notification", "set_dnd"]:
@@ -741,6 +745,27 @@ class ComposeFallbackTest(FallbackBase, ComposeBase):
                 self.assertEqual((dev["night"], dev["font_scale"]), ("no", "1.15"))
                 self.assertEqual(os.listdir(self.run_dir), [])
 
+    def test_a_second_signal_during_the_restores_waits_until_they_finish(self):
+        import signal
+        import time
+        env = {**os.environ, **self.start_adb(screencap_hangs=True, exit_pauses=True),
+               "VIA_GRADLEW": self.p("no-such-gradlew")}
+        proc = subprocess.Popen([sys.executable, "-I", "-B", SCRIPT, "capture", "--run-dir", self.run_dir,
+                                 "--project", self.project, "--platform", "compose"], env=env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(proc.kill)
+        for marker in (".hanging", ".restoring"):
+            for _ in range(200):
+                if os.path.exists(self.adb_state + marker):
+                    break
+                time.sleep(0.05)
+            self.assertTrue(os.path.exists(self.adb_state + marker), marker)
+            proc.send_signal(signal.SIGTERM)
+        self.assertEqual(proc.wait(timeout=20), 143)
+        dev = self.device()
+        self.assertEqual(dev["global"], {"sysui_demo_allowed": "0", "zen_mode": "0"})
+        self.assertEqual((dev["night"], dev["font_scale"]), ("no", "1.15"))
+
     def test_settings_that_were_never_set_are_deleted_again(self):
         self.capture(env=self.start_adb(**{"global": {"zen_mode": "0"}}))
         self.assertEqual(self.device()["global"], {"zen_mode": "0"})
@@ -787,11 +812,15 @@ class ComposeFallbackTest(FallbackBase, ComposeBase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(os.listdir(self.run_dir)), 3)
 
-    def test_an_unreadable_window_frame_is_never_shot_uncropped(self):
-        r = self.capture(env=self.start_adb(windows="no windows here\n"))
-        self.assertEqual(r.returncode, 4)
-        self.assertIn("window", r.stderr)
-        self.assertEqual(os.listdir(self.run_dir), [])
+    def test_an_unreadable_focus_or_window_frame_is_never_shot_uncropped(self):
+        for dump, message in (("no windows here\n", "focused window could not be read"),
+                              (windows(form="Frames: parent=%s"), "frame could not be read")):
+            with self.subTest(message=message):
+                r = self.capture(env=self.start_adb(windows=dump))
+                self.assertEqual(r.returncode, 4)
+                self.assertIn(message, r.stderr)
+                self.assertEqual(os.listdir(self.run_dir), [])
+                self.assertIsNone(self.device().get("demo"))
 
     def test_a_font_scale_that_was_never_set_is_deleted_again(self):
         self.capture(env=self.start_adb(font_scale="null"))
@@ -968,6 +997,61 @@ class DartTemplateTest(unittest.TestCase):
         import via_capture_native
         self.assertIn("Directionality(", via_capture_native.DART_TEST)
         self.assertIn("TextDirection.rtl", via_capture_native.DART_TEST)
+
+
+def filtered_png(width, height, filters):
+    """An RGBA PNG like make_png, but row y is written with PNG filter filters[y % len(filters)], as screencap does."""
+    def paeth(a, b, c):
+        p = a + b - c
+        pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+        return a if pa <= pb and pa <= pc else b if pb <= pc else c
+    raw, prior = b"", bytes(width * 4)
+    for y in range(height):
+        line = bytes(b for x in range(width) for b in ((x * 37 + y) % 256, (y * 53) % 256, (x * y) % 256, 255))
+        kind, out = filters[y % len(filters)], bytearray()
+        for i, value in enumerate(line):
+            a, b, c = (line[i - 4] if i >= 4 else 0), prior[i], (prior[i - 4] if i >= 4 else 0)
+            out.append((value - (0, a, b, (a + b) >> 1, paeth(a, b, c))[kind]) % 256)
+        raw, prior = raw + bytes((kind,)) + bytes(out), line
+    return (b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+            + png_chunk(b"IDAT", zlib.compress(raw)) + png_chunk(b"IEND", b""))
+
+
+class CropTest(unittest.TestCase):
+    """crop_png on PNGs that use every filter, as real `screencap -p` output does (adaptive filtering)."""
+
+    def setUp(self):
+        sys.path.insert(0, HERE)
+        import via_capture_native
+        self.crop = via_capture_native.crop_png
+
+    def test_every_filter_is_undone_before_the_crop(self):
+        width, height, box = 9, 15, (2, 3, 8, 14)
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, filters in (("plain", [0]), ("each", [0, 1, 2, 3, 4])):
+                paths = {}
+                for kind, source in (("want", [0]), ("got", filters)):
+                    paths[kind] = os.path.join(tmp, name + kind + ".png")
+                    with open(paths[kind], "wb") as f:
+                        f.write(self.crop(filtered_png(width, height, source), box))
+                self.assertEqual(read_png(paths["got"]), read_png(paths["want"]), name)
+            _, _, _, rows = read_png(paths["got"])
+            self.assertEqual(rows[0][0], ((2 * 37 + 3) % 256, (3 * 53) % 256, 6, 255))
+
+    def test_an_unknown_filter_is_refused(self):
+        data = filtered_png(3, 2, [0])
+        raw = bytearray(zlib.decompress(data[data.index(b"IDAT") + 4:data.index(b"IEND") - 8]))
+        raw[13] = 9  # the second row's filter byte
+        bad = data[:data.index(b"IDAT") - 4] + png_chunk(b"IDAT", zlib.compress(bytes(raw))) + png_chunk(b"IEND", b"")
+        with self.assertRaisesRegex(ValueError, "unknown PNG filter 9"):
+            self.crop(bad, (0, 0, 3, 2))
+
+    def test_short_image_data_is_refused(self):
+        data = filtered_png(3, 4, [0])
+        raw = zlib.decompress(data[data.index(b"IDAT") + 4:data.index(b"IEND") - 8])
+        short = data[:data.index(b"IDAT") - 4] + png_chunk(b"IDAT", zlib.compress(raw[:20])) + png_chunk(b"IEND", b"")
+        with self.assertRaisesRegex(ValueError, "shorter than its header"):
+            self.crop(short, (0, 0, 3, 4))
 
 
 class VocabularyTest(unittest.TestCase):
