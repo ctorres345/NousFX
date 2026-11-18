@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.3.1 (unreleased)
+## 1.3.1 (2026-11-17)
 
 ### Via assets (NFX-159)
 - `/via assets <KEY>` makes the images and SVGs a ticket declares, then stops at a review gallery (NFX-163). `via_assets_review.py` keeps a static gallery page and a state file in `design/asset-review/<KEY>/`, which ignores itself in git. `add` takes a file that `generate` wrote for a declared name. `approve` copies it to its source, re-encodes a JPEG when the spec names a PNG, and converts that one asset. `reject` needs a note, and adding again regenerates only that asset. Every step appends to `design/asset-log/<KEY>.md`. An unattended run never approves or rejects. A failed approve puts every file back and leaves the asset pending. `shots` hands pending images to Argon through a Via run. `generate --ref` passes up to 4 style reference images. Via never commits; you commit the assets.
