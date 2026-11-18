@@ -5,6 +5,9 @@
 ### Via assets
 - A free image source outside agy (NFX-179): `/via assets` step 3c has Claude make the images on gemini.google.com in Chrome, with no paid API call and no manual step, then import them for the gallery, Argon and approve. One Gem per app holds the style, one chat per ticket is named `<KEY> <short title>`, and each image is saved with Gemini's download button: the one new `Gemini_Generated_Image_*` file in `~/Downloads` is moved to `~/Downloads/via/<KEY>/` and imported by exact path. The Gemini Mac app is not used: it has no download, and its files are sandboxed. `via_assets.py prompts --key KEY` prints the context message (brief, palette, set layouts, web design tokens) and one prompt per open image row with no candidate yet, each the same art prompt generate sends agy. It sends nothing, and stops on an unknown or SVG row, a linked or unreadable `design/brief.md`, or a secret-shaped value in its input or output.
 
+### Via
+- Emulator fallback shots are safe to publish (NFX-91). `via_capture_native.py` takes them in SystemUI demo mode (clock 12:00, full battery and signal, no notification icons) with Do Not Disturb on, and crops each shot to the app's focused window with its PNG metadata dropped. A shot whose window or frame cannot be read is not taken. Demo mode (left on if it was on, with Via's clock and icons), Do Not Disturb, night mode and font scale are put back afterwards, also after a failure, SIGTERM or SIGHUP, and a second signal waits until they are back.
+
 ## 1.3.2 (2026-11-17)
 
 ### Via assets

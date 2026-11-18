@@ -6,10 +6,12 @@ stand in for the real tools. The tests check what a caller sees: exit codes, std
 """
 import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 
 sys.dont_write_bytecode = True
 
@@ -81,6 +83,44 @@ class DetectTest(Base):
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+
+def png_chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+
+def make_png(width, height, text=b""):
+    """A real RGBA PNG where pixel (x, y) is (x, y, 7, 255), with an optional tEXt chunk of metadata."""
+    rows = b"".join(b"\x00" + b"".join(bytes((x, y, 7, 255)) for x in range(width)) for y in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+            + (png_chunk(b"tEXt", text) if text else b"") + png_chunk(b"IDAT", zlib.compress(rows))
+            + png_chunk(b"IEND", b""))
+
+
+def read_png(path):
+    """(width, height, chunk kinds, pixel rows as lists of RGBA tuples) of a PNG written with filter 0 or by make_png."""
+    with open(path, "rb") as f:
+        data = f.read()
+    pos, kinds, idat = 8, [], b""
+    while pos < len(data):
+        size = struct.unpack(">I", data[pos:pos + 4])[0]
+        kind, body = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + size]
+        kinds.append(kind.decode())
+        if kind == b"IHDR":
+            width, height = struct.unpack(">II", body[:8])
+        elif kind == b"IDAT":
+            idat += body
+        pos += 12 + size
+    raw, stride = zlib.decompress(idat), 1 + width * 4
+    rows = []
+    for y in range(height):
+        line = raw[y * stride:(y + 1) * stride]
+        assert line[0] == 0, "the test reader only reads filter 0"
+        rows.append([tuple(line[1 + 4 * x:5 + 4 * x]) for x in range(width)])
+    return width, height, kinds, rows
+
+
+SCREEN = make_png(6, 10, b"Author\x00/Users/me on Pixel serial R5CT123ABC")
 
 # A stand-in for `flutter`: logs its call, then writes one PNG per entry of the plan it finds in the generated test.
 FAKE_FLUTTER = '''#!%(python)s
@@ -532,6 +572,12 @@ out = ""
 if args == ["devices"]:
     out = "List of devices attached\\n" + "".join("%%s\\tdevice\\n" %% d for d in state["devices"])
 elif args[:2] == ["exec-out", "screencap"]:
+    if state.get("screencap_hangs"):
+        with open(state_path, "w") as f:
+            json.dump(state, f)
+        open(state_path + ".hanging", "w").close()
+        import time
+        time.sleep(60)
     if state.get("screencap_fails"):
         sys.stderr.write("screencap: failed\\n")
         sys.exit(1)
@@ -548,11 +594,40 @@ elif args[:1] == ["shell"]:
         state["font_scale"] = cmd[4]
     elif cmd[:4] == ["settings", "delete", "system", "font_scale"]:
         state["font_scale"] = "null"
+    elif cmd[:3] == ["settings", "get", "global"]:
+        out = "%%s\\n" %% state["global"].get(cmd[3], "null")
+    elif cmd[:3] == ["settings", "put", "global"]:
+        state["global"][cmd[3]] = cmd[4]
+    elif cmd[:3] == ["settings", "delete", "global"]:
+        state["global"].pop(cmd[3], None)
+    elif cmd[:4] == ["am", "broadcast", "-a", "com.android.systemui.demo"]:
+        if state["global"].get("sysui_demo_allowed") != "1":
+            pass  # SystemUI ignores demo commands until they are allowed
+        elif cmd[5:7] == ["command", "enter"]:
+            state["demo"] = []
+        elif cmd[5:7] == ["command", "exit"]:
+            state["demo"] = None
+            if state.get("exit_pauses"):  # the first restore is slow, so a test can signal again during it
+                open(state_path + ".restoring", "w").close()
+                import time
+                time.sleep(2)
+        elif state.get("demo") is not None:
+            state["demo"].append(" ".join(w for w in cmd[6:] if w != "-e"))
+    elif cmd[:3] == ["cmd", "notification", "set_dnd"]:
+        state["global"]["zen_mode"] = "0" if cmd[3] in ("off", "all") else "2"
+    elif cmd == ["dumpsys", "window", "displays"]:
+        out = "".join(l + "\\n" for l in state["windows"].splitlines() if "mCurrentFocus" in l)
+        if state.get("focus_null_reads", 0) > 0:  # the app is being relaunched: nothing has focus yet
+            state["focus_null_reads"] -= 1
+            out = "  mCurrentFocus=null\\n"
+    elif cmd == ["dumpsys", "window", "windows"]:
+        out = "".join(l + "\\n" for l in state["windows"].splitlines() if "mCurrentFocus" not in l)
     elif cmd[:2] == ["dumpsys", "activity"]:
         state["dumpsys_calls"] = state.get("dumpsys_calls", 0) + 1
         out = state["dumpsys_later"] if state.get("dumpsys_later") and state["dumpsys_calls"] > 1 else state["dumpsys"]
 if args[:2] == ["exec-out", "screencap"]:
     state["shots_seen"] = state.get("shots_seen", []) + [[state["night"], state["font_scale"]]]
+    state["demo_seen"] = state.get("demo_seen", []) + [[state.get("demo"), state["global"].get("zen_mode")]]
 with open(state_path, "w") as f:
     json.dump(state, f)
 sys.stdout.write(out)
@@ -561,16 +636,26 @@ sys.stdout.write(out)
 DUMPSYS = "  topResumedActivity=ActivityRecord{1a2b u0 dev.demo/.MainActivity t12}\n"
 
 
+def windows(frame="[0,0][6,10]", focus="dev.demo/dev.demo.MainActivity", form="Frames: parent=[0,0][6,10] frame=%s last=[0,0][0,0]"):
+    """`dumpsys window` for a status bar, the focused window and a navigation bar."""
+    return ("WINDOW MANAGER WINDOWS (dumpsys window windows)\n"
+            "  Window #0 Window{11 u0 StatusBar}:\n    Frames: parent=[0,0][6,10] frame=[0,0][6,1] last=[0,0][0,0]\n"
+            "  Window #1 Window{22 u0 %s}:\n    mAttrs={(0,0)(fillxfill)}\n    %s\n"
+            "  Window #2 Window{33 u0 NavigationBar0}:\n    Frames: parent=[0,0][6,10] frame=[0,9][6,10] last=[0,0][0,0]\n"
+            "  mCurrentFocus=Window{22 u0 %s}\n" % (focus, form % frame, focus))
+
+
 class FallbackBase:
     """Mixed into the Compose and Flutter test classes: a fake adb and a running device."""
 
     def start_adb(self, devices=("emulator-5554",), **state):
         self.adb = os.path.join(self.bin, "adb")
-        write(self.adb, FAKE_ADB % {"python": sys.executable, "png": PNG})
+        write(self.adb, FAKE_ADB % {"python": sys.executable, "png": SCREEN})
         os.chmod(self.adb, 0o755)
         self.adb_state = os.path.join(self.bin, "adb-state.json")
         write(self.adb_state, json.dumps({"devices": list(devices), "night": "no", "font_scale": "1.15",
-                                          "dumpsys": DUMPSYS, "calls": [], **state}))
+                                          "dumpsys": DUMPSYS, "windows": windows(), "calls": [],
+                                          "global": {"sysui_demo_allowed": "0", "zen_mode": "0"}, **state}))
         return {"VIA_ADB": self.adb, "VIA_FAKE_ADB_STATE": self.adb_state, "VIA_FAKE_FAIL": "1", "VIA_ADB_SETTLE": "0"}
 
     def device(self):
@@ -612,6 +697,130 @@ class ComposeFallbackTest(FallbackBase, ComposeBase):
         dev = self.device()
         self.assertEqual((dev["night"], dev["font_scale"]), ("no", "1.15"))
         self.assertEqual(os.listdir(self.run_dir), [])
+
+    def test_every_shot_is_taken_in_demo_mode_with_do_not_disturb_on(self):
+        r = self.capture(env=self.start_adb())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        seen = self.device()["demo_seen"]
+        self.assertEqual(len(seen), 3)
+        for demo, zen in seen:
+            self.assertEqual(zen, "2")
+            self.assertIn("notifications visible false", demo)
+            self.assertTrue(any(c.startswith("clock hhmm") for c in demo), demo)
+
+    def test_demo_mode_and_do_not_disturb_are_put_back(self):
+        self.capture(env=self.start_adb())
+        dev = self.device()
+        self.assertIsNone(dev.get("demo"))
+        self.assertEqual(dev["global"], {"sysui_demo_allowed": "0", "zen_mode": "0"})
+
+    def test_demo_mode_is_put_back_when_screencap_fails(self):
+        r = self.capture(env=self.start_adb(screencap_fails=True))
+        self.assertEqual(r.returncode, 4)
+        dev = self.device()
+        self.assertIsNone(dev.get("demo"))
+        self.assertEqual(dev["global"], {"sysui_demo_allowed": "0", "zen_mode": "0"})
+
+    def test_a_terminated_or_hung_up_run_still_puts_the_device_back(self):
+        import signal
+        import time
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(sig=sig):
+                env = {**os.environ, **self.start_adb(screencap_hangs=True), "VIA_GRADLEW": self.p("no-such-gradlew")}
+                proc = subprocess.Popen([sys.executable, "-I", "-B", SCRIPT, "capture", "--run-dir", self.run_dir,
+                                         "--project", self.project, "--platform", "compose"], env=env,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.addCleanup(proc.kill)
+                for _ in range(200):
+                    if os.path.exists(self.adb_state + ".hanging"):
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(os.path.exists(self.adb_state + ".hanging"), "screencap never started")
+                os.remove(self.adb_state + ".hanging")
+                proc.send_signal(sig)
+                proc.wait(timeout=20)
+                dev = self.device()
+                self.assertIsNone(dev.get("demo"))
+                self.assertEqual(dev["global"], {"sysui_demo_allowed": "0", "zen_mode": "0"})
+                self.assertEqual((dev["night"], dev["font_scale"]), ("no", "1.15"))
+                self.assertEqual(os.listdir(self.run_dir), [])
+
+    def test_a_second_signal_during_the_restores_waits_until_they_finish(self):
+        import signal
+        import time
+        env = {**os.environ, **self.start_adb(screencap_hangs=True, exit_pauses=True),
+               "VIA_GRADLEW": self.p("no-such-gradlew")}
+        proc = subprocess.Popen([sys.executable, "-I", "-B", SCRIPT, "capture", "--run-dir", self.run_dir,
+                                 "--project", self.project, "--platform", "compose"], env=env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(proc.kill)
+        for marker in (".hanging", ".restoring"):
+            for _ in range(200):
+                if os.path.exists(self.adb_state + marker):
+                    break
+                time.sleep(0.05)
+            self.assertTrue(os.path.exists(self.adb_state + marker), marker)
+            proc.send_signal(signal.SIGTERM)
+        self.assertEqual(proc.wait(timeout=20), 143)
+        dev = self.device()
+        self.assertEqual(dev["global"], {"sysui_demo_allowed": "0", "zen_mode": "0"})
+        self.assertEqual((dev["night"], dev["font_scale"]), ("no", "1.15"))
+
+    def test_settings_that_were_never_set_are_deleted_again(self):
+        self.capture(env=self.start_adb(**{"global": {"zen_mode": "0"}}))
+        self.assertEqual(self.device()["global"], {"zen_mode": "0"})
+
+    def test_do_not_disturb_and_demo_mode_that_were_already_on_are_left_on(self):
+        self.capture(env=self.start_adb(demo=["clock hhmm 0930"], **{"global": {"sysui_demo_allowed": "1",
+                                                                                "sysui_tuner_demo_on": "1",
+                                                                                "zen_mode": "1"}}))
+        dev = self.device()
+        self.assertIsNotNone(dev["demo"])
+        self.assertEqual(dev["global"], {"sysui_demo_allowed": "1", "sysui_tuner_demo_on": "1", "zen_mode": "1"})
+
+    def test_a_shot_is_cropped_to_the_app_window_and_loses_its_metadata(self):
+        r = self.capture(env=self.start_adb(windows=windows("[1,2][5,9]")))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        width, height, kinds, rows = read_png(os.path.join(self.run_dir, "compose-main-light-phone.png"))
+        self.assertEqual((width, height), (4, 7))
+        self.assertEqual(rows[0][0], (1, 2, 7, 255))
+        self.assertEqual(rows[-1][-1], (4, 8, 7, 255))
+        self.assertEqual(kinds, ["IHDR", "IDAT", "IEND"])
+
+    def test_a_full_screen_app_window_keeps_the_whole_shot(self):
+        r = self.capture(env=self.start_adb())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        width, height, kinds, rows = read_png(os.path.join(self.run_dir, "compose-main-dark-phone.png"))
+        self.assertEqual((width, height), (6, 10))
+        self.assertEqual(rows[9][5], (5, 9, 7, 255))
+        self.assertNotIn("tEXt", kinds)
+
+    def test_the_older_android_window_frame_is_read(self):
+        r = self.capture(env=self.start_adb(windows=windows("[0,1][6,10]", form="mFrame=%s mLastFrame=[0,0][0,0]")))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(read_png(os.path.join(self.run_dir, "compose-main-light-phone.png"))[:2], (6, 9))
+
+    def test_a_focused_window_of_another_app_is_never_shot(self):
+        r = self.capture(env=self.start_adb(windows=windows(focus="com.google.android.gm/com.google.ConversationList")))
+        self.assertEqual(r.returncode, 4)
+        self.assertIn("window", r.stderr)
+        self.assertEqual(os.listdir(self.run_dir), [])
+        self.assertIsNone(self.device().get("demo"))
+
+    def test_the_app_window_is_waited_for_while_the_app_is_relaunched(self):
+        r = self.capture(env=self.start_adb(focus_null_reads=2))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(os.listdir(self.run_dir)), 3)
+
+    def test_an_unreadable_focus_or_window_frame_is_never_shot_uncropped(self):
+        for dump, message in (("no windows here\n", "focused window could not be read"),
+                              (windows(form="Frames: parent=%s"), "frame could not be read")):
+            with self.subTest(message=message):
+                r = self.capture(env=self.start_adb(windows=dump))
+                self.assertEqual(r.returncode, 4)
+                self.assertIn(message, r.stderr)
+                self.assertEqual(os.listdir(self.run_dir), [])
+                self.assertIsNone(self.device().get("demo"))
 
     def test_a_font_scale_that_was_never_set_is_deleted_again(self):
         self.capture(env=self.start_adb(font_scale="null"))
@@ -788,6 +997,61 @@ class DartTemplateTest(unittest.TestCase):
         import via_capture_native
         self.assertIn("Directionality(", via_capture_native.DART_TEST)
         self.assertIn("TextDirection.rtl", via_capture_native.DART_TEST)
+
+
+def filtered_png(width, height, filters):
+    """An RGBA PNG like make_png, but row y is written with PNG filter filters[y % len(filters)], as screencap does."""
+    def paeth(a, b, c):
+        p = a + b - c
+        pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+        return a if pa <= pb and pa <= pc else b if pb <= pc else c
+    raw, prior = b"", bytes(width * 4)
+    for y in range(height):
+        line = bytes(b for x in range(width) for b in ((x * 37 + y) % 256, (y * 53) % 256, (x * y) % 256, 255))
+        kind, out = filters[y % len(filters)], bytearray()
+        for i, value in enumerate(line):
+            a, b, c = (line[i - 4] if i >= 4 else 0), prior[i], (prior[i - 4] if i >= 4 else 0)
+            out.append((value - (0, a, b, (a + b) >> 1, paeth(a, b, c))[kind]) % 256)
+        raw, prior = raw + bytes((kind,)) + bytes(out), line
+    return (b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+            + png_chunk(b"IDAT", zlib.compress(raw)) + png_chunk(b"IEND", b""))
+
+
+class CropTest(unittest.TestCase):
+    """crop_png on PNGs that use every filter, as real `screencap -p` output does (adaptive filtering)."""
+
+    def setUp(self):
+        sys.path.insert(0, HERE)
+        import via_capture_native
+        self.crop = via_capture_native.crop_png
+
+    def test_every_filter_is_undone_before_the_crop(self):
+        width, height, box = 9, 15, (2, 3, 8, 14)
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, filters in (("plain", [0]), ("each", [0, 1, 2, 3, 4])):
+                paths = {}
+                for kind, source in (("want", [0]), ("got", filters)):
+                    paths[kind] = os.path.join(tmp, name + kind + ".png")
+                    with open(paths[kind], "wb") as f:
+                        f.write(self.crop(filtered_png(width, height, source), box))
+                self.assertEqual(read_png(paths["got"]), read_png(paths["want"]), name)
+            _, _, _, rows = read_png(paths["got"])
+            self.assertEqual(rows[0][0], ((2 * 37 + 3) % 256, (3 * 53) % 256, 6, 255))
+
+    def test_an_unknown_filter_is_refused(self):
+        data = filtered_png(3, 2, [0])
+        raw = bytearray(zlib.decompress(data[data.index(b"IDAT") + 4:data.index(b"IEND") - 8]))
+        raw[13] = 9  # the second row's filter byte
+        bad = data[:data.index(b"IDAT") - 4] + png_chunk(b"IDAT", zlib.compress(bytes(raw))) + png_chunk(b"IEND", b"")
+        with self.assertRaisesRegex(ValueError, "unknown PNG filter 9"):
+            self.crop(bad, (0, 0, 3, 2))
+
+    def test_short_image_data_is_refused(self):
+        data = filtered_png(3, 4, [0])
+        raw = zlib.decompress(data[data.index(b"IDAT") + 4:data.index(b"IEND") - 8])
+        short = data[:data.index(b"IDAT") - 4] + png_chunk(b"IDAT", zlib.compress(raw[:20])) + png_chunk(b"IEND", b"")
+        with self.assertRaisesRegex(ValueError, "shorter than its header"):
+            self.crop(short, (0, 0, 3, 4))
 
 
 class VocabularyTest(unittest.TestCase):
