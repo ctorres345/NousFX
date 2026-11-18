@@ -6,6 +6,9 @@ Usage: via_capture.py --run-dir RUN_DIR --screen NAME=PAGE [--screen NAME=PAGE .
 
 PAGE is an .html, .htm or .svg file inside the project (not in a hidden folder), or an http(s) URL that
 answers with a page (a dev server). Each screen gets four shots in RUN_DIR: NAME-light-phone.png, NAME-dark-phone.png, NAME-light-desktop.png and NAME-dark-desktop.png.
+A phone shot is a 390x844 CSS px mobile viewport at 2x (a 780x1688 PNG), set over Chrome's DevTools pipe before the page
+loads, since a headless window is never narrower than 500 px (on Windows it keeps that 500 px window). Like a real phone,
+it lays out a page with no viewport meta tag 980 px wide and scales it down. A desktop shot is a 1280x800 window at 1x.
 NAME is lowercase letters, digits and hyphens. RUN_DIR is a folder made by `via_run.py init`.
 Stdout is JSON: {"browser": ..., "screenshots": [...]}, with entries in the run record's shape.
 
@@ -34,6 +37,7 @@ The run can outlast a foreground command, so run it in the background. SIGTERM a
 after the browser and its helpers are killed.
 """
 import argparse
+import base64
 import http.client
 import http.server
 import json
@@ -41,19 +45,22 @@ import mimetypes
 import os
 import pathlib
 import re
+import select
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 RUN_AREA = os.path.join(".via", "runs")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-SIZES = {"phone": (390, 844), "desktop": (1280, 800)}
+SIZES = {"phone": (390, 844), "desktop": (1280, 800)}  # CSS px
+PHONE_SCALE = 2  # a phone shot is 780x1688 pixels, at a phone's pixel density
 # Chrome's --blink-settings=preferredColorScheme value: 0 is dark and 1 is light (checked against real Chrome).
 THEMES = {"light": 1, "dark": 0}
 MAC_BROWSERS = (
@@ -459,6 +466,103 @@ def shot_timeout():
         return SHOT_TIMEOUT
 
 
+class Clock:
+    """The time one shot may take. The first shot of a run may get one extension, with a note on stderr."""
+
+    def __init__(self, limit, first):
+        self.limit, self.extra = limit, min(2 * limit, FIRST_LAUNCH_EXTRA) if first else 0
+        self.extended = False
+        self.end = time.monotonic() + limit
+
+    def left(self):
+        """Seconds left. Raises TimeoutError when they ran out and no extension is due."""
+        left = self.end - time.monotonic()
+        if left <= 0 and self.extra and not self.extended:
+            self.extended = True
+            print("The first launch is slow (%d s so far). Waiting up to %d s more." % (self.limit, self.extra),
+                  file=sys.stderr, flush=True)
+            self.end += self.extra
+            left = self.end - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("no answer in time")
+        return left
+
+
+PUT_PIPES = ("import os, sys; os.dup2(int(sys.argv[1]), 3); os.dup2(int(sys.argv[2]), 4); "
+             "os.close(int(sys.argv[1])); os.close(int(sys.argv[2])); os.execv(sys.argv[3], sys.argv[3:])")
+
+
+class DevTools:
+    """Chrome's DevTools protocol over --remote-debugging-pipe: JSON messages ending in a NUL byte."""
+
+    def __init__(self, to_browser, from_browser, clock):
+        self.to_browser, self.from_browser, self.clock = to_browser, from_browser, clock
+        self.buf, self.last_id, self.events = b"", 0, []
+
+    def next_message(self):
+        while b"\0" not in self.buf:
+            ready, _, _ = select.select([self.from_browser], [], [], self.clock.left())
+            if ready:
+                chunk = os.read(self.from_browser, 65536)
+                if not chunk:
+                    raise EOFError("the browser closed the DevTools pipe")
+                self.buf += chunk
+        raw, self.buf = self.buf.split(b"\0", 1)
+        return json.loads(raw)
+
+    def call(self, method, params=None, session=None):
+        self.last_id += 1
+        message = {"id": self.last_id, "method": method, "params": params or {}}
+        if session:
+            message["sessionId"] = session
+        os.write(self.to_browser, json.dumps(message).encode() + b"\0")
+        while True:
+            reply = self.next_message()
+            if "id" not in reply:
+                self.events.append(reply)  # an event that comes before the reply, such as an early load
+            elif reply["id"] == self.last_id:
+                if "error" in reply:
+                    raise ValueError("%s: %s" % (method, reply["error"].get("message", reply["error"])))
+                return reply.get("result", {})
+
+    def wait_for(self, test):
+        """Read until test(message) is true. The events kept while waiting for replies go first, in order."""
+        while self.events:
+            if test(self.events.pop(0)):
+                return
+        while not test(self.next_message()):
+            pass
+
+
+def phone_shot(tools, url, width, height):
+    """Lay the page out at the phone's own width, then shoot it. Chrome's window can't be narrower than 500 px.
+
+    The viewport is set before the page loads, so the page's scripts see the phone width too. It is a mobile viewport,
+    so a page with no viewport meta tag is laid out 980 px wide and scaled down, as on a real phone."""
+    target = tools.call("Target.createTarget", {"url": "about:blank"})["targetId"]
+    session = tools.call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
+    tools.call("Emulation.setDeviceMetricsOverride",
+               {"width": width, "height": height, "deviceScaleFactor": PHONE_SCALE, "mobile": True}, session)
+    tools.call("Page.enable", {}, session)
+    loaded = tools.call("Page.navigate", {"url": url}, session)
+    if loaded.get("errorText"):
+        raise ValueError("the page did not load (%s)" % loaded["errorText"])
+    navigated = []
+
+    def page_loaded(m):
+        """The load of whatever page the frame shows last, also one a script moved it to before it loaded."""
+        if m.get("sessionId") != session:
+            return False
+        if m.get("method") == "Page.frameNavigated":
+            frame = m["params"]["frame"]
+            if frame.get("id") == loaded["frameId"] and not frame.get("url", "").startswith("about:"):
+                navigated.append(frame["url"])
+        return bool(navigated) and m.get("method") == "Page.loadEventFired"
+
+    tools.wait_for(page_loaded)
+    return base64.b64decode(tools.call("Page.captureScreenshot", {"format": "png"}, session)["data"])
+
+
 def take(browser, profile, stage, shot, first=False):
     """Take one shot into the staging folder. The first shot of a run may wait two limits longer.
 
@@ -470,26 +574,49 @@ def take(browser, profile, stage, shot, first=False):
     cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
            "--no-default-browser-check", "--user-data-dir=" + profile,
            "--blink-settings=preferredColorScheme=%d" % THEMES[shot["theme"]],
-           "--window-size=%d,%d" % (width, height), "--screenshot=" + out, url]
+           "--window-size=%d,%d" % (width, height)]
+    emulate = shot["size"] == "phone" and os.name == "posix"
+    mine, theirs = [], ()  # our ends of the DevTools pipes, and the browser's (its fds 3 and 4)
+    if emulate:
+        import fcntl  # POSIX only, like the shell below
+        their_in, to_browser = os.pipe()
+        from_browser, their_out = os.pipe()
+        mine = [to_browser, from_browser]
+        # Moved above 4, so putting one end on fd 3 or 4 never closes the other.
+        theirs = tuple(fcntl.fcntl(fd, fcntl.F_DUPFD, 10) for fd in (their_in, their_out))
+        os.close(their_in)
+        os.close(their_out)
+        # A small Python step puts the pipe ends on fds 3 and 4 and execs the browser: a preexec_fn is unsafe while the
+        # mask server's threads run, and dash (/bin/sh on Debian and Ubuntu) refuses fd numbers above 9.
+        cmd = [sys.executable, "-I", "-c", PUT_PIPES, *map(str, theirs), *cmd, "--remote-debugging-pipe", "about:blank"]
+    else:
+        cmd += ["--screenshot=" + out, url]
     proc = None
-    limit = shot_timeout()
+    clock = Clock(shot_timeout(), first)
     try:
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, start_new_session=True)
-        try:
-            proc.wait(timeout=limit)
-        except subprocess.TimeoutExpired:
-            if not first:
-                raise
-            extra = min(2 * limit, FIRST_LAUNCH_EXTRA)
-            print("The first launch is slow (%d s so far). Waiting up to %d s more." % (limit, extra),
-                  file=sys.stderr, flush=True)
-            proc.wait(timeout=extra)
-    except (OSError, subprocess.SubprocessError) as e:
-        slow = " The first launch was slow and still did not finish in %d s." % (limit + min(2 * limit, FIRST_LAUNCH_EXTRA)) \
-            if first and isinstance(e, subprocess.TimeoutExpired) else ""
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True, pass_fds=theirs)
+        for fd in theirs:  # only the browser holds them now, so its exit closes the pipe
+            os.close(fd)
+        theirs = ()
+        if emulate:
+            png = phone_shot(DevTools(*mine, clock), url, width, height)
+            with open(out, "wb") as f:
+                f.write(png)
+        else:
+            while True:
+                try:
+                    proc.wait(timeout=clock.left())
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+    except (OSError, EOFError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as e:
+        slow = " The first launch was slow and still did not finish in %d s." % (clock.limit + clock.extra) \
+            if clock.extended and isinstance(e, TimeoutError) else ""
         die("the browser failed on %s (%s).%s No screenshots were kept." % (name, type(e).__name__, slow), 4)
     finally:
+        for fd in mine + list(theirs):
+            os.close(fd)
         if proc is not None:
             stop_group(proc)  # helpers can outlive the browser, so the whole group goes either way
             proc.wait()
@@ -540,6 +667,8 @@ def main():
         why = problem_with(url)
         if why:
             die("%s %s. No screenshots were taken." % (url, why), 4)
+    if os.name != "posix":
+        print("Phone shots here are a 500 px wide layout (Chrome's narrowest window), not 390 px.", file=sys.stderr)
     work = tempfile.mkdtemp(prefix="via-capture-")  # holds the browser profile, so a running Chrome keeps out
     stage = tempfile.mkdtemp(prefix=".stage-", dir=run_dir)  # same filesystem, so os.replace is atomic
     servers, urls = masked_urls(screens, project, mask_style(args.redact_selector))
