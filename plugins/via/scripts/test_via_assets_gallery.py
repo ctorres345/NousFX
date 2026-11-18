@@ -207,6 +207,153 @@ class GalleryTest(unittest.TestCase):
             self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
         self.assertIn("app/src/main/res/drawable-xxxhdpi/home_hero_main.png", out["written"])
 
+    # --- transparent: key out a flat background on approve (NFX-173) ---
+
+    def pillow(self, code, *args):
+        r = subprocess.run([PILLOW, "-I", "-B", "-c", code, *args], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    DISC = "d.ellipse((12, 12, 52, 52), fill=(200, 60, 40), outline=(20, 20, 20), width=3)"
+
+    def keyed_candidate(self, art=DISC, background=(0, 255, 0), name="frame.jpg"):
+        """A 64x64 image with the art drawn on a flat background (a JPEG unless name says .png)."""
+        with open(os.path.join(self.project, "design", "assets.toml"), "a") as f:
+            f.write('\n[[asset]]\nname = "home_frame_main"\nkind = "image"\nsource = "design/assets/home_frame_main.png"'
+                    '\nplatforms = ["android", "web"]\nsize = "32x32"\nusage = "Frame"\ntransparent = "#00FF00"\n')
+        path = os.path.join(self.raw, name)
+        os.makedirs(self.raw, exist_ok=True)
+        self.pillow("import sys\nfrom PIL import Image, ImageDraw\nim = Image.new(%r, (64, 64), %r)\n"
+                    "d = ImageDraw.Draw(im)\n%s\nim.save(sys.argv[1], **({'quality': 90} if sys.argv[1].endswith('.jpg') else {}))"
+                    % ("RGBA" if len(background) == 4 else "RGB", background, art), path)
+        return self.ok("add", "--name", "home_frame_main", "--file", path)
+
+    def pixels(self, path):
+        """[corner alphas, center alpha, visible green px, visible magenta px] of an image."""
+        return json.loads(self.pillow(
+            "import sys, json\nfrom PIL import Image\nim = Image.open(sys.argv[1]).convert('RGBA')\nw, h = im.size\n"
+            "px = list(im.get_flattened_data())\n"
+            "print(json.dumps([[im.getpixel(p)[3] for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))],"
+            " im.getpixel((w // 2, h // 2))[3], sum(1 for r, g, b, a in px if a > 0 and g > r + 60 and g > b + 60),"
+            " sum(1 for r, g, b, a in px if a > 0 and r > g + 60 and b > g + 60)]))", path))
+
+    def frame_paths(self):
+        return [os.path.join(self.project, p) for p in (
+            "design/assets/home_frame_main.png", "public/images/home_frame_main.webp",
+            "app/src/main/res/drawable-mdpi/home_frame_main.png")]
+
+    @unittest.skipUnless(PILLOW, "needs the Pillow environment from /via setup")
+    def test_a_green_backed_jpeg_becomes_a_png_with_transparent_corners_and_an_opaque_center(self):
+        self.keyed_candidate()
+        state = json.loads(self.read(self.review("state.json")))
+        self.assertEqual(state["assets"]["home_frame_main"]["preview"], "home_frame_main-1.keyed.png")
+        page = self.read(self.review("gallery.html"))
+        self.assertIn('<img src="home_frame_main-1.keyed.png"', page)  # the tiles show the cut-out
+        self.assertIn("Background #00FF00 keyed out", page)
+        self.assertTrue(os.path.isfile(self.review("home_frame_main-1.keyed.png")))
+        out = self.ok("approve", "--name", "home_frame_main")
+        self.assertEqual(out["assets"]["home_frame_main"]["state"], "approved")
+        self.assertIn("public/images/home_frame_main.webp", out["written"])
+        for path in self.frame_paths():
+            corners, center, green, magenta = self.pixels(path)
+            self.assertEqual(corners, [0, 0, 0, 0], path)  # transparent corners
+            self.assertEqual(center, 255, path)  # opaque center
+            self.assertEqual((green, magenta), (0, 0), path)  # no green or magenta fringe
+        with open(self.frame_paths()[0], "rb") as f:
+            self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
+
+    def assert_key_refused(self, why):
+        page = self.read(self.review("gallery.html"))
+        self.assertIn('<p class="note">Key-out: ', page)  # the card warns before anyone approves
+        self.assertIn(why, page)
+        self.assertIn('<img src="home_frame_main-1.', page)  # the candidate, no preview
+        self.assertIn(why, self.refused("approve", "--name", "home_frame_main"))
+        for path in self.frame_paths():
+            self.assertFalse(os.path.exists(path), path)  # nothing half written
+        self.assertEqual(self.ok("status")["assets"]["home_frame_main"]["state"], "pending")
+
+    @unittest.skipUnless(PILLOW, "needs the Pillow environment from /via setup")
+    def test_a_frame_opening_is_keyed_out_and_light_art_gets_no_fringe(self):
+        for art in ("d.rectangle((8, 8, 56, 56), fill=(150, 100, 50))\nd.rectangle((20, 20, 44, 44), fill=(0, 255, 0))",
+                    "d.ellipse((12, 12, 52, 52), fill=(255, 255, 255))"):
+            with self.subTest(art):
+                self.setUp()
+                self.keyed_candidate(art)
+                self.ok("approve", "--name", "home_frame_main")
+                corners, center, green, magenta = self.pixels(self.frame_paths()[0])
+                self.assertEqual(corners, [0, 0, 0, 0])
+                self.assertEqual(center, 0 if "rectangle" in art else 255)  # the opening is see-through
+                self.assertEqual((green, magenta), (0, 0))
+
+    @unittest.skipUnless(PILLOW, "needs the Pillow environment from /via setup")
+    def test_an_imported_png_that_is_already_cut_out_keeps_its_alpha(self):
+        self.keyed_candidate(background=(0, 0, 0, 0), name="frame.png")
+        self.ok("approve", "--name", "home_frame_main")
+        corners, center, _, _ = self.pixels(self.frame_paths()[0])
+        self.assertEqual((corners, center), ([0, 0, 0, 0], 255))
+
+    def test_without_pillow_a_transparent_card_says_to_fix_setup_not_to_reject(self):
+        with open(self.config, "w") as f:
+            json.dump({"version": 1, "assets": {"python": None}}, f)
+        with open(os.path.join(self.project, "design", "assets.toml"), "a") as f:
+            f.write('\n[[asset]]\nname = "home_frame_main"\nkind = "image"\nsource = "design/assets/home_frame_main.png"'
+                    '\nplatforms = ["web"]\nsize = "2x2"\nusage = "Frame"\ntransparent = "#00FF00"\n')
+        self.ok("add", "--name", "home_frame_main", "--file", self.raw_file("frame.jpg", JPEG))
+        page = self.read(self.review("gallery.html"))
+        self.assertIn("No cut-out preview", page)
+        self.assertIn("/via setup", page)
+        self.assertNotIn("Key-out:", page)
+
+    @unittest.skipUnless(PILLOW, "needs the Pillow environment from /via setup")
+    def test_a_row_that_drops_transparent_shows_the_plain_candidate(self):
+        self.keyed_candidate()
+        path = os.path.join(self.project, "design", "assets.toml")
+        self.write(path, self.read(path).replace('transparent = "#00FF00"\n', "").encode())
+        self.ok("status")
+        page = self.read(self.review("gallery.html"))
+        self.assertIn('<img src="home_frame_main-1.jpg"', page)
+        self.assertNotIn("keyed out", page)
+
+    @unittest.skipUnless(PILLOW, "needs the Pillow environment from /via setup")
+    def test_a_changed_key_color_hides_the_old_preview(self):
+        self.keyed_candidate()
+        path = os.path.join(self.project, "design", "assets.toml")
+        self.write(path, self.read(path).replace('"#00FF00"', '"#FF00FF"').encode())
+        self.ok("status")
+        page = self.read(self.review("gallery.html"))
+        self.assertIn('<img src="home_frame_main-1.jpg"', page)
+        self.assertNotIn("keyed out", page)
+        self.assertIn("No cut-out preview for background #FF00FF yet", page)
+        self.ok("add", "--name", "home_frame_main", "--file", os.path.join(self.raw, "frame.jpg"))
+        page = self.read(self.review("gallery.html"))
+        self.assertNotIn("No cut-out preview for background", page)
+        self.assertIn("Key-out: no #FF00FF background touches the edge", page)
+
+    @unittest.skipUnless(PILLOW, "needs the Pillow environment from /via setup")
+    def test_an_image_too_large_to_key_out_refuses(self):
+        self.keyed_candidate(name="frame.png")
+        big = os.path.join(self.raw, "big.png")
+        self.pillow("import sys\nfrom PIL import Image\nImage.new('RGB', (4097, 4096), (0, 255, 0)).save(sys.argv[1])",
+                    big)
+        self.ok("add", "--name", "home_frame_main", "--file", big)
+        self.assertIn('<p class="note">Key-out: 4097x4096 is too large to key out',
+                      self.read(self.review("gallery.html")))
+        self.assertIn("too large to key out", self.refused("approve", "--name", "home_frame_main"))
+        for path in self.frame_paths():
+            self.assertFalse(os.path.exists(path), path)
+
+    @unittest.skipUnless(PILLOW, "needs the Pillow environment from /via setup")
+    def test_a_key_color_inside_the_art_refuses_approve(self):
+        dots = "\n".join("d.rectangle((%d, %d, %d, %d), fill=(0, 255, 0))" % (x, y, x + 1, y + 1)
+                         for x in range(20, 44, 5) for y in range(20, 44, 5))
+        self.keyed_candidate(self.DISC + "\n" + dots, name="frame.png")  # a JPEG would blur 2 px dots away
+        self.assert_key_refused("also covers")
+
+    @unittest.skipUnless(PILLOW, "needs the Pillow environment from /via setup")
+    def test_no_key_color_at_all_refuses_approve(self):
+        self.keyed_candidate(background=(255, 255, 255))
+        self.assert_key_refused("no #00FF00 background touches the edge")
+
     def test_approve_without_pillow_leaves_the_image_pending_and_writes_no_source(self):
         with open(self.config, "w") as f:
             json.dump({"version": 1, "assets": {"python": None}}, f)

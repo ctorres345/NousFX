@@ -118,6 +118,15 @@ elif mode == "memory-limit":
 elif mode == "limit":
     print("Error: quota exceeded for this plan", file=sys.stderr)
     sys.exit(1)
+elif mode == "quota-reply":
+    reply("Image generation failed: 429 RESOURCE_EXHAUSTED. Your image quota is used up; please retry in 2h 14m.")
+elif mode == "quota-stderr":
+    print('Error 429 Too Many Requests: RESOURCE_EXHAUSTED {"retryDelay": "37s"}', file=sys.stderr)
+    sys.exit(1)
+elif mode == "quota-decimal":
+    reply("Error: RESOURCE_EXHAUSTED. Please retry in 43.517279306s. Details follow")
+elif mode == "quota-svg":
+    reply("RESOURCE_EXHAUSTED: quota reached")
 elif mode == "bad-json":
     print("not json at all")
 elif mode == "new-shape":
@@ -286,7 +295,7 @@ class GenerateTest(unittest.TestCase):
         self.assertIn("agy is not installed", err)
 
     def test_each_agy_failure_is_a_clear_error_and_writes_nothing(self):
-        cases = {"fail": "agy failed (exit 3)", "signed-out": "not signed in", "limit": "subscription limit",
+        cases = {"fail": "agy failed (exit 3)", "signed-out": "not signed in", "time-limit": "agy failed (exit 1)",
                  "bad-json": "did not return JSON", "new-shape": "not the expected shape",
                  "no-image": "no image file", "stale": "no image file", "outside": "no image file",
                  "symlink-out": "no image file", "not-an-image": "no image file",
@@ -295,6 +304,83 @@ class GenerateTest(unittest.TestCase):
             with self.subTest(mode):
                 self.mode(mode)
                 self.assertIn(words, self.stopped("--kind", "image", "--prompt", "x"))
+
+    # --- quota, --missing and set layouts (NFX-173) ---
+
+    def test_a_quota_error_exits_with_the_quota_code_and_the_reset_time(self):
+        for mode, kind, reset in (("quota-reply", "image", "It resets: 2h 14m."),
+                                  ("quota-stderr", "image", "It resets: 37s."), ("limit", "image", "no reset time"),
+                                  ("quota-svg", "svg", "no reset time")):
+            with self.subTest(mode):
+                self.mode(mode)
+                err = self.stopped("--kind", kind, "--prompt", "x", code=21)
+                self.assertIn("out of quota", err)
+                self.assertIn(reset, err)
+                self.assertIn("--missing", err)
+        self.mode("quota-decimal")
+        self.assertIn("It resets: 43.517279306s.", self.stopped("--kind", "image", "--prompt", "x", code=21))
+        self.mode("quota-reply")  # reply text can echo the prompt, so a prompt naming the error is not a stop
+        self.assertIn("no image file", self.stopped("--kind", "image", "--prompt", "art for the HTTP 429 error page"))
+        self.mode("limit")  # agy's own stderr never echoes the prompt: still the quota code
+        self.assertIn("out of quota", self.stopped("--kind", "image", "--prompt", "art for the HTTP 429 page", code=21))
+
+    def review_state(self, entries):
+        path = os.path.join(self.project, "design", "asset-review", "APP-7", "state.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"version": 1, "key": "APP-7", "assets": {
+                name: {"kind": "image", "file": "%s-1.jpg" % name, "state": state, "note": None, "attempt": 1}
+                for name, state in entries.items()}}, f)
+
+    def test_missing_skips_a_name_with_a_pending_or_approved_candidate(self):
+        for state in ("pending", "approved"):
+            with self.subTest(state):
+                self.review_state({"home_plane_main": state})
+                self.assertEqual(self.ok("--kind", "image", "--prompt", "x", "--missing"),
+                                 {"skipped": "home_plane_main",
+                                  "reason": "it already has a pending or approved candidate"})
+        self.assertEqual(self.calls(), [])  # nothing was sent
+        self.review_state({"home_plane_main": "rejected", "home_other_main": "pending"})
+        self.assertIn("path", self.ok("--kind", "image", "--prompt", "x", "--missing"))
+        self.assertEqual(len(self.calls()), 1)
+
+    def spec(self, rows):
+        path = os.path.join(self.project, "design", "assets.toml")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            for name, extra in rows:
+                f.write('[[asset]]\nname = "%s"\nkind = "image"\nsource = "design/assets/%s.png"\n'
+                        'platforms = ["web"]\nsize = "64x64"\nusage = "Frame"\n%s\n' % (name, name, extra))
+
+    def prompt_of(self, call):
+        return call["argv"][call["argv"].index("-p") + 1] if "-p" in call["argv"] else " ".join(call["argv"])
+
+    def test_rows_in_one_set_share_the_layout_and_the_key_color_in_their_prompts(self):
+        layout = "8% margins, 6 px line weight, opening 60% of the width"
+        self.spec([("home_plane_main", 'set = "frames"\nlayout = "%s"\ntransparent = "#00ff00"' % layout),
+                   ("home_frame_second", 'set = "frames"'), ("home_frame_alone", "")])
+        self.ok("--kind", "image", "--prompt", "a plane frame")
+        r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "generate", "--project", self.project,
+                            "--key", "APP-7", "--name", "home_frame_second", "--kind", "image", "--prompt", "x"],
+                           capture_output=True, text=True, timeout=120,
+                           env=th.env(self.home, PATH=self.bin + os.pathsep + "/usr/bin:/bin"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        first, second = (self.prompt_of(c) for c in self.calls())
+        for text in (first, second):
+            self.assertIn("Shared layout of the set frames, the same for every asset in it: %s." % layout, text)
+        self.assertIn("flat, solid #00FF00 background", first)
+        self.assertNotIn("#00FF00", second)  # the key color is per row
+
+    def test_bad_set_layout_and_transparent_fields_are_refused(self):
+        for rows, words in (
+                ([("home_plane_main", 'transparent = "green"')], "transparent must be a key color"),
+                ([("home_plane_main", 'layout = "x"')], "layout needs a set"),
+                ([("home_plane_main", 'set = "a"\nlayout = "x"'), ("home_frame_two", 'set = "a"\nlayout = "y"')],
+                 "already has a different layout")):
+            with self.subTest(words):
+                self.spec(rows)
+                self.assertIn(words, self.stopped("--kind", "image", "--prompt", "x"))
+        self.assertEqual(self.calls(), [])
 
     def test_raw_reply_is_shown_when_the_shape_changes(self):
         self.mode("new-shape")
