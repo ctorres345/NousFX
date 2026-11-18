@@ -564,6 +564,188 @@ class GenerateTest(unittest.TestCase):
         self.assertEqual(self.calls(), [])
 
 
+class PromptsTest(unittest.TestCase):
+    """via_assets.py prompts (NFX-179): the context message and per-row prompts for an outside image source such as
+    the Gemini app. Each prompt must be the one generate sends agy for the same row."""
+
+    ROWS = ('palette = ["#1A73E8", "#FFFFFF"]\n\n'
+            '[[asset]]\nname = "home_frame_paw"\nkind = "image"\nsource = "design/assets/home_frame_paw.png"\n'
+            'platforms = ["web"]\nsize = "512x768"\nusage = "Photo frame with paw prints"\nset = "frames"\n'
+            'layout = "8% margins, 6 px lines"\ntransparent = "#00ff00"\n\n'
+            '[[asset]]\nname = "home_frame_star"\nkind = "image"\nsource = "design/assets/home_frame_star.png"\n'
+            'platforms = ["web"]\nsize = "512x768"\nusage = "Photo frame with stars"\nset = "frames"\n\n'
+            '[[asset]]\nname = "home_icon_paw"\nkind = "svg"\nsource = "design/assets/home_icon_paw.svg"\n'
+            'platforms = ["web"]\nsize = "24x24"\nusage = "Paw icon"\n')
+    BRIEF = "# Brief\n\nSoft pastel watercolor, rounded shapes, 4 px outlines, playful and calm.\n\nReferences: none.\n"
+
+    def setUp(self):
+        GenerateTest.setUp(self)
+        os.makedirs(os.path.join(self.project, "design"))
+        self.write("design/assets.toml", self.ROWS)
+        self.write("design/brief.md", self.BRIEF)
+
+    allow, mode, calls, raw_dir = GenerateTest.allow, GenerateTest.mode, GenerateTest.calls, GenerateTest.raw_dir
+
+    def write(self, rel_path, text):
+        with open(os.path.join(self.project, rel_path), "w") as f:
+            f.write(text)
+
+    def cli(self, *args):
+        env = th.env(self.home, PATH=self.bin + os.pathsep + "/usr/bin:/bin")
+        return subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, *args], capture_output=True, text=True,
+                              env=env, timeout=120)
+
+    def prompts(self, *args):
+        r = self.cli("prompts", "--project", self.project, "--key", "PAP-43", *args)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def refused(self, *args):
+        r = self.cli("prompts", "--project", self.project, "--key", "PAP-43", *args)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("Stopped:", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.stdout, "")
+        return r.stderr
+
+    def test_a_long_style_is_cut_after_its_last_whole_sentence(self):
+        first = "Soft pastel watercolor, rounded shapes, 4 px outlines, playful and calm. " * 3  # 219 characters
+        self.write("design/brief.md", "# Brief\n\n" + first + "Mood: a keepsake photo for a child's finished "
+                   "jewel painting, framed and kept on a shelf for years to come.\n")
+        prompt = self.prompts()["prompts"][0]["prompt"]
+        self.assertIn("Style: " + first.strip() + " ", prompt)
+        self.assertNotIn("Mood", prompt)
+
+    def test_an_early_abbreviation_does_not_shrink_the_style_to_a_few_words(self):
+        self.write("design/brief.md", "# Brief\n\nNo. 1 style: " + "soft pastel watercolor with rounded shapes " * 9 + "\n")
+        style = self.prompts()["prompts"][0]["base"].split("Style: ")[1]
+        self.assertGreater(len(style), 200)
+        last_word = style.rstrip(".").split()[-1]  # cut at a space, not mid-word
+        self.assertIn(last_word, ("soft", "pastel", "watercolor", "with", "rounded", "shapes"))
+
+    def test_the_context_message_holds_the_brief_palette_and_set_layouts(self):
+        context = self.prompts()["context"]
+        self.assertIn("Soft pastel watercolor, rounded shapes, 4 px outlines", context)
+        self.assertIn("#1A73E8", context)
+        self.assertIn("#FFFFFF", context)
+        self.assertIn("frames: 8% margins, 6 px lines", context)
+        self.assertEqual(self.calls(), [])  # prompts sends nothing anywhere
+
+    def test_the_chat_name_starts_with_the_key(self):
+        self.assertTrue(self.prompts("--title", "frames")["chat"].startswith("PAP-43 frames"))
+
+    def test_by_default_every_open_image_row_gets_one_prompt_in_file_order(self):
+        names = [p["name"] for p in self.prompts()["prompts"]]
+        self.assertEqual(names, ["home_frame_paw", "home_frame_star"])  # the SVG row stays with agy
+
+    def test_a_row_with_a_pending_or_approved_candidate_is_not_made_again(self):
+        for state in ("pending", "approved"):
+            with self.subTest(state):
+                path = os.path.join(self.project, "design", "asset-review", "PAP-43", "state.json")
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    json.dump({"version": 1, "key": "PAP-43", "assets": {"home_frame_paw": {
+                        "kind": "image", "file": "home_frame_paw-1.png", "state": state, "note": None,
+                        "attempt": 1}}}, f)
+                self.assertEqual([p["name"] for p in self.prompts()["prompts"]], ["home_frame_star"])
+        self.assertEqual([p["name"] for p in self.prompts("--name", "home_frame_paw")["prompts"]], ["home_frame_paw"])
+
+    def test_an_svg_row_is_refused(self):
+        self.assertIn("agy", self.refused("--name", "home_icon_paw"))
+
+    def test_a_name_given_twice_gets_one_prompt(self):
+        out = self.prompts("--name", "home_frame_star", "--name", "home_frame_star")
+        self.assertEqual([p["name"] for p in out["prompts"]], ["home_frame_star"])
+
+    def test_a_brief_that_is_not_utf8_is_refused_without_a_traceback(self):
+        with open(os.path.join(self.project, "design", "brief.md"), "wb") as f:
+            f.write(b"\xff\xfe bad bytes")
+        self.assertIn("brief.md", self.refused())
+
+    def test_a_key_hidden_by_a_toml_escape_is_never_printed(self):
+        self.write("design/assets.toml", self.ROWS.replace("Photo frame with stars", "Frame \\u0041KIA" + "ABCDEFGHIJKLMNOP"))
+        self.assertNotIn("AKIA", self.refused())
+
+    def test_a_key_after_a_toml_newline_escape_is_never_printed(self):
+        self.write("design/assets.toml", self.ROWS.replace("Photo frame with stars", "Frame\\nsk-" + "a" * 24))
+        self.assertNotIn("sk-", self.refused())
+
+    def test_a_linked_brief_is_refused(self):
+        outside = os.path.join(self.root, "outside.md")
+        with open(outside, "w") as f:
+            f.write("Private notes\n")
+        os.remove(os.path.join(self.project, "design", "brief.md"))
+        os.symlink(outside, os.path.join(self.project, "design", "brief.md"))
+        self.assertNotIn("Private notes", self.refused())
+
+    def test_the_context_has_the_web_design_tokens(self):
+        self.write("tokens.css", ":root { --brand-primary: #1a73e8; --radius-card: 12px; }\n"
+                                 "@media (prefers-color-scheme: dark) { :root { --brand-primary: #8ab4f8; } }\n")
+        context = self.prompts()["context"]
+        self.assertIn("--brand-primary: #1a73e8 / dark #8ab4f8", context)
+        self.assertIn("--radius-card: 12px", context)
+
+    def test_a_dark_only_token_says_dark_and_never_none(self):
+        self.write("tokens.css", "@media (prefers-color-scheme: dark) { :root { --night-bg: #101010; } }\n")
+        context = self.prompts()["context"]
+        self.assertIn("--night-bg: dark #101010", context)
+        self.assertNotIn("None", context)
+
+    def test_a_title_with_shell_characters_is_refused(self):
+        for title in ('frames"', "a$(id)", "x`y`", "two\nlines"):
+            with self.subTest(title=title):
+                self.refused("--title", title)
+
+    def test_a_row_prompt_has_the_usage_size_style_layout_and_key_color(self):
+        p = {p["name"]: p for p in self.prompts()["prompts"]}["home_frame_paw"]
+        self.assertEqual((p["kind"], p["size"], p["file"]), ("image", "512x768", "home_frame_paw.png"))
+        for part in ("Photo frame with paw prints", "512x768", "Soft pastel watercolor",
+                     "Shared layout of the set frames", "flat, solid #00FF00 background"):
+            self.assertIn(part, p["prompt"])
+
+    def test_each_prompt_is_what_generate_sends_agy_for_the_same_row(self):
+        rows = {p["name"]: p for p in self.prompts()["prompts"]}
+        for name, mode in (("home_frame_paw", "image"), ("home_frame_star", "image")):
+            with self.subTest(name=name):
+                self.mode(mode)
+                before = len(self.calls())
+                r = self.cli("generate", "--project", self.project, "--key", "PAP-43", "--name", name, "--kind",
+                             rows[name]["kind"], "--prompt", rows[name]["base"], "--any-order")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                argv = self.calls()[before]["argv"]
+                sent = argv[argv.index("-p") + 1]
+                self.assertTrue(sent.endswith(rows[name]["agy_prompt"]), sent)  # after agy_call's own safety lines
+                self.assertIn(rows[name]["prompt"], sent)
+
+    def test_named_rows_only_and_a_note_is_added(self):
+        out = self.prompts("--name", "home_frame_star", "--note", "thicker lines")
+        self.assertEqual([p["name"] for p in out["prompts"]], ["home_frame_star"])
+        self.assertIn("thicker lines", out["prompts"][0]["prompt"])
+
+    def test_a_row_not_in_assets_toml_is_refused(self):
+        self.assertIn("home_frame_moon", self.refused("--name", "home_frame_moon"))
+
+    def test_a_secret_shaped_value_is_never_printed(self):
+        self.write("design/brief.md", self.BRIEF + "\nKey for the bucket: AKIA" + "ABCDEFGHIJKLMNOP\n")
+        err = self.refused()
+        self.assertNotIn("AKIA", err)
+        self.assertIn("design/brief.md", err)
+
+    def test_a_secret_in_a_note_is_refused(self):
+        err = self.refused("--note", "use token ghp_" + "a" * 36)
+        self.assertNotIn("ghp_", err)
+
+    def test_no_assets_toml_is_a_clear_error(self):
+        os.remove(os.path.join(self.project, "design", "assets.toml"))
+        self.assertIn("assets.toml", self.refused())
+
+    def test_a_missing_brief_still_gives_prompts_and_says_so(self):
+        os.remove(os.path.join(self.project, "design", "brief.md"))
+        out = self.prompts()
+        self.assertTrue(out["prompts"])
+        self.assertIn("brief.md", " ".join(out.get("warnings", [])))
+
+
 class TextCallTest(unittest.TestCase):
     """via_agy_call.py text, the entry point Argon uses (NFX-164). Same stub agy, not the generate tests again."""
     setUp, allow, mode, calls = GenerateTest.setUp, GenerateTest.allow, GenerateTest.mode, GenerateTest.calls

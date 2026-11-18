@@ -507,5 +507,25 @@ class ViaSkillsTest(unittest.TestCase):
         self.assertEqual(self.skill_files(), self.BASE)
 
 
+class AssetsModeDocTest(unittest.TestCase):
+    """modes/assets.md step 3c (NFX-179): the outside image source, such as the Gemini app."""
+
+    def test_the_mode_has_the_outside_image_source_step(self):
+        path = os.path.join(os.path.dirname(SCRIPT), "..", "skills", "via", "modes", "assets.md")
+        with open(path, encoding="utf-8") as f:
+            doc = f.read()
+        step = doc[doc.index("## 3c. "):doc.index("## 4. ")]
+        for phrase in ("via_assets.py\" prompts", "`<KEY> <short title>`", "Gem", "first message",
+                       "~/Downloads/via/<KEY>/", "import", "--origin \"Gemini web, chat <KEY>",
+                       "never read from the clipboard", "fall back to 3b", "no paid", "limit", "after the SVG rows",
+                       "Gemini_Generated_Image_*.png", "-newer", "exactly one file", "-type f", ".crdownload",
+                       "stop the whole batch", "mv -n", "Ask where to save"):
+            self.assertIn(phrase, step)
+        plan = doc[doc.index("Exit 21 (`\"image\": \"quota\"`)"):]
+        for earlier in (doc[doc.index("## 3. "):doc.index("## 3b. ")], doc[doc.index("## 3b. "):doc.index("## 3c. ")],
+                        plan[:plan.index("\n")]):
+            self.assertIn("3c", earlier)  # steps 3 and 3b point to it
+
+
 if __name__ == "__main__":
     unittest.main()
