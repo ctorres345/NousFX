@@ -7,6 +7,7 @@ Usage: via_assets.py audit    [--project DIR]
                               [--project DIR] [--timeout SECONDS] [--ref IMAGE ...] [--missing] [--any-order]
        via_assets.py probe-image [--project DIR] [--timeout SECONDS (120)]
        via_assets.py plan     --key KEY [--project DIR]
+       via_assets.py prompts  --key KEY [--project DIR] [--name NAME ...] [--note TEXT] [--title TEXT]
 
 The spec is design/assets.toml in the project:
 
@@ -69,6 +70,15 @@ does not know, or a failed call such as a timeout), 21 for quota, 22 when agy is
 order a batch generates them: SVG rows first, then image rows, each kind in file order. SVGs use agy's text models and images its much smaller image quota, so a quota stop on an image never
 blocks an SVG. Prints {"order": [{"name", "kind", "candidate"}], "images": N} (N open image rows with no pending or approved candidate); candidate is true when the row
 already has a pending or approved candidate for KEY (generate --missing would skip it). Sends nothing.
+
+`prompts` is for an image source outside agy that Claude drives, such as the Gemini app (modes/assets.md step 3c). It
+sends nothing. It prints {"chat": "<KEY> <title>", "context": the style message (design/brief.md, the palette, each
+set's layout, the web design tokens), "prompts": [{"name", "kind", "size", "file", "base", "prompt", "agy_prompt"}]}:
+the open image rows with no pending or approved candidate for KEY (a later run picks up where the last one stopped),
+in file order, or the --name rows. SVG rows stay with agy. "prompt" is the art prompt generate would send for the row;
+"agy_prompt" is exactly what agy gets after agy_call's safety lines. It stops (exit 1) on a name not in assets.toml,
+an SVG row, an unreadable brief.md, or a value shaped like a key or token in its input or output, and never prints
+that value.
 """
 import argparse
 import contextlib
@@ -1176,6 +1186,161 @@ def svgs_first(project, key):
                         "image the user wants now. Nothing was sent" % ", ".join(waiting))
 
 
+def row_notes(kind, row):
+    """What the assets.toml row adds to every prompt for it: the set's shared layout, and an image's key color."""
+    notes = ""
+    if row and row.get("layout"):
+        notes += LAYOUT_NOTE % (row["set"], row["layout"])
+    if row and row.get("transparent") and kind == "image":
+        notes += KEY_NOTE % row["transparent"].upper()
+    return notes
+
+
+def art_prompt(kind, prompt, row):
+    """The prompt for one asset as any image source reads it. An SVG keeps its drawing rules; an image is only the
+    description, because how a source saves its file differs (agy names a path, the Gemini app has a download)."""
+    return ("%s" if kind == "image" else SVG_PROMPT) % prompt.strip() + row_notes(kind, row)
+
+
+def agy_prompt(kind, prompt, row):
+    """The prompt generate sends agy: the art prompt, an image wrapped in agy's save-and-reply instruction."""
+    return (IMAGE_PROMPT % prompt.strip() + row_notes(kind, row)) if kind == "image" else art_prompt(kind, prompt, row)
+
+
+# --- prompts for an outside image source (NFX-179) ---
+
+BRIEF = os.path.join("design", "brief.md")
+MAX_BRIEF, MAX_STYLE, MAX_NOTE, MAX_TITLE, MAX_TOKENS = 4000, 300, 500, 40, 60
+TITLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]*$")
+
+
+def style_line(brief):
+    """The brief's first paragraph that is not a heading, on one line: the style every row prompt repeats."""
+    for block in re.split(r"\n\s*\n", brief):
+        text = " ".join(l.strip() for l in block.splitlines() if l.strip() and not l.lstrip().startswith("#"))
+        if text:
+            return text[:MAX_STYLE]
+    return ""
+
+
+def no_secret(text, where):
+    """Stop, printing nothing, when text holds a value shaped like a key or token. The value itself is never shown."""
+    import via_run  # the shared secret pattern; imported late like via_assets_review
+    if via_run.has_secret(text):
+        raise SpecError("%s holds a value shaped like a key or token. Remove it and run again. Nothing was printed"
+                        % where)
+
+
+def outside_prompts(project, key, names=(), note="", title=""):
+    """The context message (the project's style, for a Gemini Gem or a chat's first message) and one prompt per row,
+    each the art prompt generate would send for that row. Sends nothing anywhere."""
+    if not KEY_RE.match(key):
+        raise SpecError("--key %r is not a ticket key such as APP-7" % key)
+    if len(note) > MAX_NOTE or len(title) > MAX_TITLE:
+        raise SpecError("--note is at most %d characters and --title at most %d" % (MAX_NOTE, MAX_TITLE))
+    if title and not TITLE_RE.match(title):
+        raise SpecError("--title takes letters, digits, spaces, dots, dashes and underscores only, as it goes into a "
+                        "chat name and a shell command")
+    spec = load_spec(project)
+    with open(os.path.join(project, SPEC), encoding="utf-8") as f:
+        spec_text = f.read()
+    warnings, brief = [], ""
+    brief_path = os.path.join(project, BRIEF)
+    if os.path.islink(brief_path) or not inside(brief_path, project):
+        raise SpecError("%s is a link. Its text goes to an outside source, so it must be a plain file in the project"
+                        % BRIEF)
+    try:
+        with open(brief_path, encoding="utf-8") as f:
+            brief = f.read()
+    except FileNotFoundError:
+        warnings.append("%s is missing: the prompts carry no style. Write it first (step 2)." % BRIEF)
+    except (OSError, UnicodeDecodeError) as e:
+        raise SpecError("%s could not be read as UTF-8 text (%s). Fix it and run again" % (BRIEF, type(e).__name__))
+    for text, where in ((note, "--note"), (title, "--title"), (spec_text, SPEC), (brief, BRIEF)):
+        no_secret(text, where)  # the whole text, so a cut never leaves half a key behind
+    brief = brief[:MAX_BRIEF].strip()
+    rows = {a["name"]: a for a in spec["assets"]}
+    names = list(dict.fromkeys(names))  # a name given twice is made once
+    unknown = [n for n in names if n not in rows]
+    if unknown:
+        raise SpecError("%s not in %s. Add the row first (step 2)" % (", ".join(unknown), SPEC))
+    svgs = [n for n in names if rows[n]["kind"] != "image"]
+    if svgs:
+        raise SpecError("%s: SVG rows come from agy (step 3); an outside source makes image rows only"
+                        % ", ".join(svgs))
+    if names:
+        chosen = [rows[n] for n in names]
+    else:  # the open image rows with no pending or approved candidate yet, like generate --missing
+        import via_assets_review  # imports this module, so not at the top
+        state = via_assets_review.load_state(project, key)["assets"]
+        open_names = {a["name"] for a in open_rows(project)}
+        chosen = [a for a in spec["assets"]
+                  if a["kind"] == "image" and a["name"] in open_names and not candidate(state, a["name"])]
+    style = style_line(brief)
+    palette = spec.get("palette") or []
+    layouts = {}
+    for a in spec["assets"]:
+        if a.get("layout"):
+            layouts.setdefault(a["set"], a["layout"])
+    context = ["Art style for this app. Keep it for every image in this chat; each later message asks for one image."]
+    if brief:
+        context.append("Brief:\n" + brief)
+    if palette:
+        context.append("Palette: " + ", ".join(palette))
+    if layouts:
+        context.append("Shared layouts of sets:\n" + "\n".join("- %s: %s" % s for s in sorted(layouts.items())))
+    tokens = token_lines(project)
+    if tokens:
+        context.append("Design tokens:\n" + "\n".join(tokens))
+    prompts = []
+    for a in chosen:
+        parts = ["%s. Size %s pixels." % (a["usage"].rstrip(". "), a["size"])]
+        if style:
+            parts.append("Style: %s." % style.rstrip("."))
+        if note:
+            parts.append("Note: %s." % note.rstrip("."))
+        base = " ".join(parts)
+        prompts.append({"name": a["name"], "kind": a["kind"], "size": a["size"],
+                        "file": os.path.basename(a["source"]), "base": base,
+                        "prompt": art_prompt(a["kind"], base, a), "agy_prompt": agy_prompt(a["kind"], base, a)})
+    out = {"chat": "%s %s" % (key, title.strip() or "assets"), "context": "\n\n".join(context), "prompts": prompts}
+    if warnings:
+        out["warnings"] = warnings
+    for text in strings(out):  # each printed value, as parsed TOML escapes can hide a key from the raw scan
+        no_secret(text, "The output")
+    return out
+
+
+def strings(value):
+    """Every string inside a JSON-shaped value."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from strings(v)
+
+
+def token_lines(project):
+    """The project's design tokens (web CSS custom properties, via_tokens.py) as "name: light / dark" lines, at most
+    MAX_TOKENS. None for a project without them, such as an Android app."""
+    import via_tokens
+    tokens = via_tokens.read_tokens(project)
+    lines = []
+    for group in via_tokens.GROUPS:
+        for name, v in sorted(tokens[group].items()):
+            if v["light"] is None:
+                both = "dark %s" % v["dark"]
+            elif v["dark"] in (None, v["light"]):
+                both = v["light"]
+            else:
+                both = "%s / dark %s" % (v["light"], v["dark"])
+            lines.append("- %s: %s" % (name, both))
+    return lines[:MAX_TOKENS]
+
+
 def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, any_order=False):
     if not NAME_RE.match(name):
         raise SpecError("--name %r is not <feature>_<what>_<variant> in snake_case" % name)
@@ -1192,11 +1357,7 @@ def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, 
     files = read_refs(refs)
     started = via_agy_call.now()
     try:
-        asked = (IMAGE_PROMPT if kind == "image" else SVG_PROMPT) % prompt.strip()
-        if row and row.get("layout"):
-            asked += LAYOUT_NOTE % (row["set"], row["layout"])
-        if row and row.get("transparent") and kind == "image":
-            asked += KEY_NOTE % row["transparent"].upper()
+        asked = agy_prompt(kind, prompt, row)
         if files:
             asked += REF_NOTE % ", ".join(sorted(files))
         reply = via_agy_call.call(asked, timeout, files=files, skip=(project,), draw=True)
@@ -1276,9 +1437,18 @@ def main():
     pr = sub.add_parser("probe-image")
     pr.add_argument("--project", default=".")
     pr.add_argument("--timeout", type=int, default=120)
+    po = sub.add_parser("prompts")
+    po.add_argument("--project", default=".")
+    po.add_argument("--key", required=True)
+    po.add_argument("--name", action="append", default=[], help="a row of assets.toml (default: every open row)")
+    po.add_argument("--note", default="", help="added to every prompt, such as a rejection note")
+    po.add_argument("--title", default="", help="a few words after the key in the chat name")
     args = ap.parse_args()
     project = os.path.realpath(args.project)
     try:
+        if args.cmd == "prompts":
+            emit(outside_prompts(project, args.key, args.name, args.note, args.title))
+            return
         if args.cmd == "plan":
             emit(plan(project, args.key))
             return
