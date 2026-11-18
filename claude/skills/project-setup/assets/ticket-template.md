@@ -13,6 +13,7 @@ Out: ...
 ## Acceptance criteria
 - [ ] Checkable behavior. Proof: `command that shows it`
 - [ ] Behavior only a device or network shows. Proof: manual: the step to run
+- [ ] Behavior a quota-limited or paid service shows. Proof: manual: the step Backup: a recorded output or a stubbed run
 
 ## Failure modes
 How it could break in production, and what it does then.
@@ -50,6 +51,7 @@ Ticket keys, or "None"
 A ticket gets `ready-for-agent` only when all of these hold:
 
 - Every section is filled, and each acceptance criterion ends in a `Proof:` line (a command, or `manual: <step>`).
+- A manual proof that needs a quota-limited or paid service (agy images, the Gemini API, a store review) adds `Backup: <proof>`, such as a recorded output or a stubbed run, which counts when the service is unavailable. The PR's proof table says which one ran.
 - Failure modes names at least one way it breaks.
 - It has exactly one `env-*` label (Epics have none).
 - Human gates says "None", and every blocker is Done.

@@ -170,6 +170,24 @@ class Attest(Base):
         self.assertIn("manual: check on a device", r.stdout)
         self.assertIn("manual: open the app", r.stdout)
 
+    def test_a_manual_proof_with_a_backup_prints_both(self):
+        path = self.run_ok(ac("`true`", "manual: make one image with agy Backup: the recorded run in shots/x.png",
+                              "manual: check on a device"))
+        r = self.prove("attest", path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(LINE.search(r.stdout).group(1, 2, 3), ("1", "1", "2"))
+        self.assertIn("  manual: make one image with agy (not run)\n    backup: the recorded run in shots/x.png\n",
+                      r.stdout)
+        self.assertIn("  manual: check on a device (not run)\n", r.stdout)  # a line without a backup is as before
+
+    def test_a_backup_that_names_nothing_is_refused(self):
+        for bad in ("manual: make it Backup:", "manual: make it Backup:   ", "manual: Backup: the recording",
+                    "manual: a Backup: b Backup: c"):
+            with self.subTest(proof=bad):
+                r = self.prove("run", self.write_list(ac("`true`", bad)))
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn("line 2", r.stderr)
+
     def test_attest_prints_the_commands(self):
         path = self.run_ok(ac("`test -f a.txt`"))
         self.assertIn("test -f a.txt", self.prove("attest", path).stdout)
