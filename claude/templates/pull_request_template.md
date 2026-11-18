@@ -16,7 +16,8 @@
 
 ## Screenshots / recording
 <!-- Required for any UI/UX change (feature or bugfix): before and after, light and dark, relevant device sizes.
-     Use a screen recording for motion, flows, or bugs that only show over time. Write "N/A (no UI change)" otherwise. -->
+     Use a screen recording for motion, flows, or bugs that only show over time. Write "N/A (no UI change)" otherwise.
+     To attach shots with no human, run `python3 -B <NousFX checkout>/scripts/pr_evidence.py publish <KEY> <Via run folder> --project .` from this repo and paste its table (NousFX docs/pr-evidence.md). -->
 
 | Before | After |
 |---|---|

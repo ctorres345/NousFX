@@ -10,6 +10,9 @@
 - Emulator fallback shots are safe to publish (NFX-91). `via_capture_native.py` takes them in SystemUI demo mode (clock 12:00, full battery and signal, no notification icons) with Do Not Disturb on, and crops each shot to the app's focused window with its PNG metadata dropped. A shot whose window or frame cannot be read is not taken. Demo mode (left on if it was on, with Via's clock and icons), Do Not Disturb, night mode and font scale are put back afterwards, also after a failure, SIGTERM or SIGHUP, and a second signal waits until they are back.
 - Cut-out assets keep no key-colored rim (NFX-180). Key-out took the key color's spill out only 2 px into the art, and a JPEG blurs it about 3 px, so a green-keyed frame from Gemini kept a 1 px dark-green line along its outline. The spill is now taken out up to 4 px in; art further in keeps its colors.
 
+### PR evidence
+- Screenshots in a PR with no human (NFX-87). `scripts/pr_evidence.py publish KEY RUN_DIR` uploads a Via run's kept shots to one permanent public prerelease named `evidence` (made on first use) as `KEY-<run>-<shot>.<ext>` (so a before and an after run stay apart), replacing them when the same run is published again, and prints the markdown table for the PR body. It takes only shots the run record marks as kept that are masked or are emulator demo-mode or preview shots (a real phone's shots are refused; native shots now record `emulator`), only .png, .jpg, .webp, .gif and .mp4, and removes their metadata first. A file that still holds this machine's user, home or host name, a path or an emulator serial stops the run before any upload. A token that cannot write releases gets the scope to add (exit 3); a partial upload lists only what uploaded (exit 4). The PR template points at it.
+
 ## 1.3.2 (2026-11-17)
 
 ### Via assets

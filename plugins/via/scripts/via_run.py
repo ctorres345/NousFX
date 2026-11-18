@@ -991,7 +991,9 @@ def cmd_outbound_shots(project, args):
     The per-call cap of 8 is enforced by via_second_opinion.py."""
     run_dir, record_path = resolve_run(project, args.run_dir)
     shots = load_record(record_path).get("screenshots", [])
-    emit({"shots": [path for _, path in kept_shots(run_dir, shots)],
+    kept = kept_shots(run_dir, shots)
+    emit({"shots": [path for _, path in kept],
+          "kept": [{"path": path, "redacted": s.get("redacted"), "source": s.get("source"), "emulator": s.get("emulator")} for s, path in kept],
           "dropped": sum(1 for s in shots if s.get("review") == "dropped"),
           "unreviewed": sum(1 for s in shots if s.get("review") is None)})
 

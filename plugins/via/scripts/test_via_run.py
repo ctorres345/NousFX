@@ -835,6 +835,7 @@ class ViaRunTest(unittest.TestCase):
         out = self.ok("outbound-shots", run_dir)
         self.assertEqual(out["shots"], [os.path.join(os.path.realpath(run_dir), "a.png")])
         self.assertEqual((out["dropped"], out["unreviewed"]), (1, 1))
+        self.assertEqual(out["kept"], [{"path": out["shots"][0], "redacted": True, "source": None, "emulator": None}])
 
     def test_outbound_shots_refuses_a_kept_shot_outside_the_run_folder_or_missing(self):
         for name in ("../escape.png", "/etc/hosts", "missing.png"):
