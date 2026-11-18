@@ -4,8 +4,9 @@
 Usage: via_assets.py audit    [--project DIR]
        via_assets.py convert  [--project DIR] [--dry-run] [--only NAME ...]
        via_assets.py generate --kind image|svg --name NAME --key KEY (--prompt TEXT | --prompt-file FILE)
-                              [--project DIR] [--timeout SECONDS] [--ref IMAGE ...] [--missing]
+                              [--project DIR] [--timeout SECONDS] [--ref IMAGE ...] [--missing] [--any-order]
        via_assets.py probe-image [--project DIR] [--timeout SECONDS (120)]
+       via_assets.py plan     --key KEY [--project DIR]
 
 The spec is design/assets.toml in the project:
 
@@ -52,7 +53,9 @@ is the one <svg> document in the reply text, saved as text with its audit findin
 rule (parse, DOCTYPE, script, embedded content) stops with exit 1 and nothing is written. It needs no assets.toml and no
 Pillow; when assets.toml has a row for --name, the row's set layout and transparent key color go into the prompt.
 --missing prints {"skipped": NAME, "reason"} and sends nothing when the name already has a pending or approved
-candidate in design/asset-review/<KEY>/state.json. Prints {"path", "kind", "conversation_id", "findings"}; exit 21
+candidate in design/asset-review/<KEY>/state.json. An image is refused (exit 1, nothing sent) while an svg row of
+assets.toml with no source file yet has no candidate for KEY in any state, so a batch makes its SVGs first (see
+`plan`); --any-order lifts that once each SVG was tried, or for an image the user wants now. Prints {"path", "kind", "conversation_id", "findings"}; exit 21
 with "Stopped: ..." and the reset time (when agy gave one) on a quota error (RESOURCE_EXHAUSTED, 429), exit 1 when
 agy fails otherwise.
 
@@ -61,6 +64,11 @@ whether the image model answers. The image it finds is deleted from agy's folder
 find or remove, also after a failed call, stays there) and written nowhere else. Prints
 {"image": "ok" | "quota" | "unavailable" | "unknown", "reset", "detail"}; exit 0 for ok and unknown (an answer it
 does not know, or a failed call such as a timeout), 21 for quota, 22 when agy is not installed or not signed in.
+
+`plan` lists the open assets.toml rows (no source file yet; rows an earlier ticket approved are left out) in the
+order a batch generates them: SVG rows first, then image rows, each kind in file order. SVGs use agy's text models and images its much smaller image quota, so a quota stop on an image never
+blocks an SVG. Prints {"order": [{"name", "kind", "candidate"}], "images": N} (N open image rows with no pending or approved candidate); candidate is true when the row
+already has a pending or approved candidate for KEY (generate --missing would skip it). Sends nothing.
 """
 import argparse
 import contextlib
@@ -1117,6 +1125,25 @@ def probe_image(project, timeout):
     return {"image": "unknown", "reset": None, "detail": said[:400]}, 0
 
 
+def open_rows(project):
+    """The assets.toml rows whose source file is not in the project yet. Rows an earlier ticket made and approved
+    have their source, so a batch neither redoes them nor waits for them."""
+    return [a for a in load_spec(project)["assets"] if not os.path.exists(os.path.join(project, a["source"]))]
+
+
+def plan(project, key):
+    """The open rows (no source file yet) in batch order: SVG rows first, then image rows, each kind in
+    assets.toml order."""
+    if not KEY_RE.match(key):
+        raise SpecError("--key %r is not a ticket key such as APP-7" % key)
+    rows = sorted(open_rows(project), key=lambda a: a["kind"] != "svg")  # stable: file order kept
+    import via_assets_review  # imports this module, so not at the top
+    state = via_assets_review.load_state(project, key)["assets"]
+    return {"order": [{"name": a["name"], "kind": a["kind"],
+                       "candidate": candidate(state, a["name"])} for a in rows],
+            "images": sum(a["kind"] == "image" and not candidate(state, a["name"]) for a in rows)}
+
+
 def spec_row(project, name):
     """The assets.toml row for name, or None when there is no assets.toml or no such row."""
     if not os.path.exists(os.path.join(project, SPEC)):
@@ -1124,14 +1151,32 @@ def spec_row(project, name):
     return next((a for a in load_spec(project)["assets"] if a["name"] == name), None)
 
 
+def candidate(assets, name):
+    """True when the review state's assets hold a pending or approved candidate for name."""
+    return bool(assets.get(name)) and assets[name]["state"] in ("pending", "approved")
+
+
 def has_candidate(project, key, name):
     """True when the review state for key holds a pending or approved candidate for name."""
     import via_assets_review  # imports this module, so not at the top
-    entry = via_assets_review.load_state(project, key)["assets"].get(name)
-    return bool(entry) and entry["state"] in ("pending", "approved")
+    return candidate(via_assets_review.load_state(project, key)["assets"], name)
 
 
-def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False):
+def svgs_first(project, key):
+    """Stop, sending nothing, while an open svg row (no source file yet) was never tried for key: it has no
+    candidate in the review state, in any state. A rejected SVG counts as tried."""
+    if not os.path.exists(os.path.join(project, SPEC)):
+        return
+    import via_assets_review  # imports this module, so not at the top
+    state = via_assets_review.load_state(project, key)["assets"]
+    waiting = [a["name"] for a in open_rows(project) if a["kind"] == "svg" and not state.get(a["name"])]
+    if waiting:
+        raise SpecError("make the SVG rows first, so an image quota stop cannot block them: %s not made yet "
+                        "(see plan). Pass --any-order once each SVG was tried (one that failed counts) or for an "
+                        "image the user wants now. Nothing was sent" % ", ".join(waiting))
+
+
+def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, any_order=False):
     if not NAME_RE.match(name):
         raise SpecError("--name %r is not <feature>_<what>_<variant> in snake_case" % name)
     if not KEY_RE.match(key):
@@ -1140,6 +1185,8 @@ def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False):
         raise SpecError("the prompt is empty")
     if missing and has_candidate(project, key, name):
         return {"skipped": name, "reason": "it already has a pending or approved candidate"}
+    if kind == "image" and not any_order:
+        svgs_first(project, key)
     row = spec_row(project, name)
     agy_allowed(project)
     files = read_refs(refs)
@@ -1220,14 +1267,21 @@ def main():
     src.add_argument("--prompt-file")
     g.add_argument("--timeout", type=int, default=300)
     g.add_argument("--ref", action="append", default=[], help="a style reference image (up to %d)" % MAX_REFS)
+    g.add_argument("--any-order", action="store_true", help="make an image even while an svg row has no candidate")
     g.add_argument("--missing", action="store_true", help="skip the name when it already has a pending or "
                    "approved candidate in the review gallery")
+    pl = sub.add_parser("plan")
+    pl.add_argument("--project", default=".")
+    pl.add_argument("--key", required=True)
     pr = sub.add_parser("probe-image")
     pr.add_argument("--project", default=".")
     pr.add_argument("--timeout", type=int, default=120)
     args = ap.parse_args()
     project = os.path.realpath(args.project)
     try:
+        if args.cmd == "plan":
+            emit(plan(project, args.key))
+            return
         if args.cmd == "probe-image":
             report, code = probe_image(project, args.timeout)
             emit(report)
@@ -1240,7 +1294,8 @@ def main():
                         prompt = f.read()
                 except OSError as e:
                     raise SpecError("cannot read the prompt file (%s)" % e.strerror)
-            emit(generate(project, args.kind, args.name, args.key, prompt, args.timeout, args.ref, args.missing))
+            emit(generate(project, args.kind, args.name, args.key, prompt, args.timeout, args.ref, args.missing,
+                          args.any_order))
             return
         spec = load_spec(project)
         if args.cmd == "audit":

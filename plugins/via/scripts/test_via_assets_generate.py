@@ -392,6 +392,94 @@ class GenerateTest(unittest.TestCase):
                 f.write('[[asset]]\nname = "%s"\nkind = "image"\nsource = "design/assets/%s.png"\n'
                         'platforms = ["web"]\nsize = "64x64"\nusage = "Frame"\n%s\n' % (name, name, extra))
 
+    def test_a_mixed_batch_makes_the_svgs_before_the_images(self):
+        path = os.path.join(self.project, "design", "assets.toml")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            for name, kind in (("home_hero_main", "image"), ("home_icon_main", "svg"), ("home_frame_main", "image"),
+                               ("home_badge_main", "svg")):
+                f.write('[[asset]]\nname = "%s"\nkind = "%s"\nsource = "design/assets/%s.%s"\nplatforms = ["web"]\n'
+                        'size = "24x24"\nusage = "x"\n\n' % (name, kind, name, "svg" if kind == "svg" else "png"))
+        self.review_state({"home_badge_main": "pending"})
+        env = th.env(self.home, PATH=self.bin + os.pathsep + "/usr/bin:/bin")
+        r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "plan", "--project", self.project, "--key",
+                            "APP-7"], capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rep = json.loads(r.stdout)
+        self.assertEqual([(o["name"], o["kind"], o["candidate"]) for o in rep["order"]],
+                         [("home_icon_main", "svg", False), ("home_badge_main", "svg", True),
+                          ("home_hero_main", "image", False), ("home_frame_main", "image", False)])
+        self.assertEqual(rep["images"], 2)
+        self.assertEqual(self.calls(), [])  # plan sends nothing
+        # The batch runs in plan order; the image quota then stops it with every SVG already made.
+        made, states = [], {"home_badge_main": "pending"}
+        for o in rep["order"]:
+            self.mode("svg" if o["kind"] == "svg" else "quota-reply")
+            r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "generate", "--project", self.project,
+                                "--key", "APP-7", "--name", o["name"], "--kind", o["kind"], "--prompt", "x",
+                                "--missing"], capture_output=True, text=True, env=env, timeout=120)
+            if r.returncode == 21:
+                break
+            self.assertEqual(r.returncode, 0, r.stderr)
+            made.append(o["name"])
+            states[o["name"]] = "pending"  # the mode adds each result right after its generate
+            self.review_state(states)
+        self.assertEqual(made, ["home_icon_main", "home_badge_main"])
+        self.assertEqual(len(self.calls()), 2)  # one SVG call, the skipped badge, one image call
+
+    def test_an_image_waits_for_the_svg_rows_unless_any_order(self):
+        path = os.path.join(self.project, "design", "assets.toml")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write('[[asset]]\nname = "home_icon_main"\nkind = "svg"\nsource = "design/assets/home_icon_main.svg"\n'
+                    'platforms = ["web"]\nsize = "24x24"\nusage = "x"\n')
+        err = self.stopped("--kind", "image", "--prompt", "x")
+        self.assertIn("make the SVG rows first", err)
+        self.assertIn("home_icon_main", err)
+        self.assertEqual(self.calls(), [])  # nothing was sent
+        self.assertIn("path", self.ok("--kind", "image", "--prompt", "x", "--any-order"))
+        self.review_state({"home_icon_main": "rejected"})  # a tried SVG, even a rejected one, no longer blocks
+        self.assertIn("path", self.ok("--kind", "image", "--prompt", "x"))
+
+    def test_rows_an_earlier_ticket_made_are_left_out_of_the_plan_and_the_wait(self):
+        path = os.path.join(self.project, "design", "assets.toml")
+        os.makedirs(os.path.join(self.project, "design", "assets"), exist_ok=True)
+        with open(path, "w") as f:
+            for name, kind in (("home_logo_main", "svg"), ("home_bg_main", "image"), ("home_hero_main", "image")):
+                f.write('[[asset]]\nname = "%s"\nkind = "%s"\nsource = "design/assets/%s.%s"\nplatforms = ["web"]\n'
+                        'size = "24x24"\nusage = "x"\n\n' % (name, kind, name, "svg" if kind == "svg" else "png"))
+        for done in ("home_logo_main.svg", "home_bg_main.png"):  # approved under an earlier ticket's key
+            open(os.path.join(self.project, "design", "assets", done), "w").close()
+        env = th.env(self.home, PATH=self.bin + os.pathsep + "/usr/bin:/bin")
+        r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "plan", "--project", self.project, "--key",
+                            "APP-7"], capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rep = json.loads(r.stdout)
+        self.assertEqual([o["name"] for o in rep["order"]], ["home_hero_main"])
+        self.assertEqual(rep["images"], 1)
+        self.assertIn("path", self.ok("--name", "home_hero_main", "--kind", "image", "--prompt", "x"))
+        self.review_state({"home_hero_main": "pending"})  # a resumed batch: no image left, so no probe
+        r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "plan", "--project", self.project, "--key",
+                            "APP-7"], capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(json.loads(r.stdout)["images"], 0, r.stderr)
+
+    def test_the_modes_put_svgs_first_and_plan_after_the_rows_are_written(self):
+        modes = os.path.join(HERE, "..", "skills", "via", "modes")
+        with open(os.path.join(modes, "assets.md"), encoding="utf-8") as f:
+            assets = f.read()
+        with open(os.path.join(modes, "spec.md"), encoding="utf-8") as f:
+            spec = f.read()
+        for doc in (assets, spec):
+            self.assertRegex(doc, r"(?i)svg is the default for flat art")
+            self.assertRegex(doc, r"image only for photos, painted textures and rich illustration")
+            self.assertIn("image quota", doc)
+        # plan reads assets.toml, so it runs after the rows are written and before the first generate
+        rows, plan, gen = (assets.index("Add one `[[asset]]` table"), assets.index("via_assets.py\" plan"),
+                           assets.index("via_assets.py\" generate"))
+        self.assertLess(rows, plan)
+        self.assertLess(plan, gen)
+        self.assertIn("in `plan`'s order", assets)
+
     def prompt_of(self, call):
         return call["argv"][call["argv"].index("-p") + 1] if "-p" in call["argv"] else " ".join(call["argv"])
 
