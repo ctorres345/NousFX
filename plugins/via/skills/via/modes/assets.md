@@ -54,7 +54,7 @@ One call for the whole batch.
 4. Verify each finding as that file says. Real ones go in the report next to their asset. If Argon is unavailable, say so and go on: the gallery comes next either way.
 
 ## 5. The gallery
-Open the gallery page for the user (attended: the browser pane or `open <path>`), and report one table: name, kind, state, Argon findings, SVG findings. Then ask the user to approve or reject each pending asset; a rejection needs a note. Unattended: stop here and report the table and the gallery path.
+Open the gallery page for the user. In the Claude app's browser pane, serve it first: the pane shows a local file as a static snapshot, so a `file://` gallery has empty tiles. Run `python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets_review.py" serve --project "<project root>" --key <KEY>` in the background, open the `url` it prints (127.0.0.1 only, the gallery's own CSP), and stop it when the review ends: stop that background task, or `kill <pid>` with the `pid` it printed (it stops by itself after `--minutes`, default 60). Anywhere else, `open <path>` works. Then report one table: name, kind, state, Argon findings, SVG findings. Then ask the user to approve or reject each pending asset; a rejection needs a note. Unattended: stop here and report the table and the gallery path.
 
 ```
 python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets_review.py" approve --project "<project root>" --key <KEY> --name <name>
