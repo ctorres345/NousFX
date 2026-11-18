@@ -516,10 +516,14 @@ class AssetsModeDocTest(unittest.TestCase):
             doc = f.read()
         step = doc[doc.index("## 3c. "):doc.index("## 4. ")]
         for phrase in ("via_assets.py\" prompts", "`<KEY> <short title>`", "Gem", "first message",
-                       "~/Downloads/via/<KEY>/", "import", "--origin \"Gemini app, chat <KEY>",
-                       "never read from the clipboard", "fall back to 3b", "no paid", "limit", "after the SVG rows"):
+                       "~/Downloads/via/<KEY>/", "import", "--origin \"Gemini web, chat <KEY>",
+                       "never read from the clipboard", "fall back to 3b", "no paid", "limit", "after the SVG rows",
+                       "Gemini_Generated_Image_*.png", "-newer", "exactly one file", "-type f", ".crdownload",
+                       "stop the whole batch", "mv -n", "Ask where to save"):
             self.assertIn(phrase, step)
-        for earlier in (doc[doc.index("## 3. "):doc.index("## 3b. ")], doc[doc.index("## 3b. "):doc.index("## 3c. ")]):
+        plan = doc[doc.index("Exit 21 (`\"image\": \"quota\"`)"):]
+        for earlier in (doc[doc.index("## 3. "):doc.index("## 3b. ")], doc[doc.index("## 3b. "):doc.index("## 3c. ")],
+                        plan[:plan.index("\n")]):
             self.assertIn("3c", earlier)  # steps 3 and 3b point to it
 
 

@@ -71,7 +71,7 @@ order a batch generates them: SVG rows first, then image rows, each kind in file
 blocks an SVG. Prints {"order": [{"name", "kind", "candidate"}], "images": N} (N open image rows with no pending or approved candidate); candidate is true when the row
 already has a pending or approved candidate for KEY (generate --missing would skip it). Sends nothing.
 
-`prompts` is for an image source outside agy that Claude drives, such as the Gemini app (modes/assets.md step 3c). It
+`prompts` is for an image source outside agy that Claude drives, such as Gemini on the web (modes/assets.md step 3c). It
 sends nothing. It prints {"chat": "<KEY> <title>", "context": the style message (design/brief.md, the palette, each
 set's layout, the web design tokens), "prompts": [{"name", "kind", "size", "file", "base", "prompt", "agy_prompt"}]}:
 the open image rows with no pending or approved candidate for KEY (a later run picks up where the last one stopped),
@@ -1198,7 +1198,7 @@ def row_notes(kind, row):
 
 def art_prompt(kind, prompt, row):
     """The prompt for one asset as any image source reads it. An SVG keeps its drawing rules; an image is only the
-    description, because how a source saves its file differs (agy names a path, the Gemini app has a download)."""
+    description, because how a source saves its file differs (agy names a path, Gemini on the web has a download button)."""
     return ("%s" if kind == "image" else SVG_PROMPT) % prompt.strip() + row_notes(kind, row)
 
 
@@ -1215,11 +1215,20 @@ TITLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]*$")
 
 
 def style_line(brief):
-    """The brief's first paragraph that is not a heading, on one line: the style every row prompt repeats."""
+    """The brief's first paragraph that is not a heading, on one line: the style every row prompt repeats. A long one is
+    cut after its last whole sentence that fits, so a prompt does not end mid-sentence ("Mood: a .")."""
     for block in re.split(r"\n\s*\n", brief):
         text = " ".join(l.strip() for l in block.splitlines() if l.strip() and not l.lstrip().startswith("#"))
-        if text:
-            return text[:MAX_STYLE]
+        if len(text) <= MAX_STYLE:
+            if text:
+                return text
+            continue
+        cut = text[:MAX_STYLE + 1]
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+        if end >= MAX_STYLE // 2:  # an early "e.g. " or "No. 1" would leave only a few words: cut at a space
+            return cut[:end + 1]
+        space = cut.rfind(" ")
+        return text[:space] if space > 0 else text[:MAX_STYLE]
     return ""
 
 

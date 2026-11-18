@@ -608,6 +608,21 @@ class PromptsTest(unittest.TestCase):
         self.assertEqual(r.stdout, "")
         return r.stderr
 
+    def test_a_long_style_is_cut_after_its_last_whole_sentence(self):
+        first = "Soft pastel watercolor, rounded shapes, 4 px outlines, playful and calm. " * 3  # 219 characters
+        self.write("design/brief.md", "# Brief\n\n" + first + "Mood: a keepsake photo for a child's finished "
+                   "jewel painting, framed and kept on a shelf for years to come.\n")
+        prompt = self.prompts()["prompts"][0]["prompt"]
+        self.assertIn("Style: " + first.strip() + " ", prompt)
+        self.assertNotIn("Mood", prompt)
+
+    def test_an_early_abbreviation_does_not_shrink_the_style_to_a_few_words(self):
+        self.write("design/brief.md", "# Brief\n\nNo. 1 style: " + "soft pastel watercolor with rounded shapes " * 9 + "\n")
+        style = self.prompts()["prompts"][0]["base"].split("Style: ")[1]
+        self.assertGreater(len(style), 200)
+        last_word = style.rstrip(".").split()[-1]  # cut at a space, not mid-word
+        self.assertIn(last_word, ("soft", "pastel", "watercolor", "with", "rounded", "shapes"))
+
     def test_the_context_message_holds_the_brief_palette_and_set_layouts(self):
         context = self.prompts()["context"]
         self.assertIn("Soft pastel watercolor, rounded shapes, 4 px outlines", context)
