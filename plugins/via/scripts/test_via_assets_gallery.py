@@ -606,6 +606,43 @@ class GalleryTest(unittest.TestCase):
         again = self.ok("shots", "--run-dir", run_dir)  # a second call lists nothing twice
         self.assertEqual(len(json.loads(self.read(record_path))["screenshots"]), 1, again)
 
+    def init_run(self):
+        run = subprocess.run([th.python(self.home), "-I", "-B", os.path.join(HERE, "via_run.py"), "init",
+                              "--project", self.project], capture_output=True, text=True, env=th.env(self.home))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        return json.loads(run.stdout)["run_dir"]
+
+    def test_shots_refuses_a_symlinked_candidate_cleanly(self):
+        self.ok("add", "--name", "home_hero_main", "--file", self.raw_file("hero.jpg", JPEG))
+        cand = self.review("home_hero_main-1.jpg")
+        real = self.write(os.path.join(self.root, "elsewhere.jpg"), JPEG)
+        os.unlink(cand)
+        os.symlink(real, cand)
+        run_dir = self.init_run()
+        err = self.refused("shots", "--run-dir", run_dir)
+        self.assertIn("symlink", err)
+        self.assertEqual(sorted(os.listdir(run_dir)), [])
+
+    def test_a_copy_that_fails_partway_leaves_nothing_and_a_rerun_works(self):
+        with open(os.path.join(self.project, "design", "assets.toml"), "a") as f:
+            f.write('\n[[asset]]\nname = "home_spot_main"\nkind = "image"\nsource = "design/assets/home_spot_main.png"'
+                    '\nplatforms = ["web"]\nsize = "2x2"\nusage = "Spot"\n')
+        self.ok("add", "--name", "home_hero_main", "--file", self.raw_file("hero.jpg", JPEG))
+        self.ok("add", "--name", "home_spot_main", "--file", self.raw_file("spot.jpg", JPEG))
+        run_dir = self.init_run()
+        mine = self.write(os.path.join(run_dir, "notes.txt"), b"keep")  # a file this call did not write
+        second = self.review("home_spot_main-1.jpg")
+        os.chmod(second, 0)  # the first copy succeeds, the second cannot be read
+        try:
+            err = self.refused("shots", "--run-dir", run_dir)
+        finally:
+            os.chmod(second, 0o644)
+        self.assertIn("could not copy", err)
+        self.assertEqual(sorted(os.listdir(run_dir)), ["notes.txt"])
+        self.assertEqual(self.read(mine), "keep")
+        out = self.ok("shots", "--run-dir", run_dir)
+        self.assertEqual(out["shots"], ["asset-home_hero_main-1.jpg", "asset-home_spot_main-1.jpg"])
+
     def test_shots_needs_a_run_folder_made_by_init(self):
         self.add_logo()
         self.refused("shots", "--run-dir", self.root)
