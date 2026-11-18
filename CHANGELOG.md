@@ -7,6 +7,7 @@
 
 ### Via
 - Emulator fallback shots are safe to publish (NFX-91). `via_capture_native.py` takes them in SystemUI demo mode (clock 12:00, full battery and signal, no notification icons) with Do Not Disturb on, and crops each shot to the app's focused window with its PNG metadata dropped. A shot whose window or frame cannot be read is not taken. Demo mode (left on if it was on, with Via's clock and icons), Do Not Disturb, night mode and font scale are put back afterwards, also after a failure, SIGTERM or SIGHUP, and a second signal waits until they are back.
+- Cut-out assets keep no key-colored rim (NFX-180). Key-out took the key color's spill out only 2 px into the art, and a JPEG blurs it about 3 px, so a green-keyed frame from Gemini kept a 1 px dark-green line along its outline. The spill is now taken out up to 4 px in; art further in keeps its colors.
 
 ## 1.3.2 (2026-11-17)
 
