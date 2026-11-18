@@ -37,6 +37,8 @@ if args[:2] == ["release", "upload"]:
     n = len(os.listdir(assets))
     if mode == "fail-second" and n == 1:
         sys.stderr.write("HTTP 502: Bad Gateway\n"); sys.exit(1)
+    if os.path.exists(os.path.join(assets, os.path.basename(args[3]))) and "--clobber" not in args:
+        sys.stderr.write("asset under the same name already exists\n"); sys.exit(1)
     shutil.copy(args[3], assets); sys.exit(0)
 sys.exit(2)
 '''
@@ -81,6 +83,10 @@ def box(kind, body):
     return struct.pack(">I", len(body) + 8) + kind + body
 
 
+def hdlr(kind, name):
+    return box(b"hdlr", b"\x00" * 8 + kind + b"\x00" * 12 + name + b"\x00")
+
+
 class PrEvidenceTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -108,8 +114,10 @@ class PrEvidenceTest(unittest.TestCase):
         for name, data in files.items():
             with open(os.path.join(run_dir, name), "wb") as f:
                 f.write(data)
+            review = (reviews or {}).get(name, "kept")
             shots.append({"path": name, "screen": "home", "theme": "light", "size": "phone", "redacted": True,
-                          "review": (reviews or {}).get(name, "kept"), **(extra or {}).get(name, {})})
+                          "review": review, **({"public": True} if review == "kept" else {}),
+                          **(extra or {}).get(name, {})})
         rec = {"version": 1, "mode": "check", "scope": "all", "platforms": ["web"], "findings": [], "screenshots": shots}
         with open(os.path.join(run_dir, "findings.json"), "w") as f:
             json.dump(rec, f)
@@ -195,17 +203,20 @@ class PrEvidenceTest(unittest.TestCase):
         secret = b"Author: someone on /Users/QA"
         files = {
             "a.png": png(chunk(b"tEXt", b"Comment\x00" + secret), chunk(b"eXIf", secret), chunk(b"tIME", b"\x07" * 7),
-                         chunk(b"prVt", secret)),
+                         chunk(b"prVt", secret), chunk(b"iCCP", b"Display\x00\x00" + zlib.compress(secret))),
             "b.jpg": jpeg(seg(0xE0, JFIF + b"\x01\x01" + b"thumbnail"), seg(0xE1, b"Exif\x00\x00" + secret), seg(0xEC, secret), seg(0xE2, b"MPF\x00" + secret),
+                          seg(0xE2, b"ICC_PROFILE\x00" + secret), seg(0xEE, b"Other" + secret),
                           seg(0xFE, secret), between=seg(0xFE, secret) + seg(0xE1, secret)) + secret,
-            "c.webp": webp((b"VP8X", b"\x0c" + b"\x00" * 9), (b"VP8 ", b"frame"), (b"EXIF", secret), (b"XMP ", secret),
-                           (b"ABCD", secret)),
+            "c.webp": webp((b"VP8X", b"\x2c" + b"\x00" * 9), (b"ICCP", secret), (b"VP8 ", b"frame"), (b"EXIF", secret),
+                           (b"XMP ", secret), (b"ABCD", secret)),
             "d.gif": gif(b"\x21\xfe" + bytes([len(secret)]) + secret + b"\x00",
                          b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00",
                          b"\x21\xff\x0bXMP DataXMP" + bytes([len(secret)]) + secret + b"\x00",
                          b"\x21\x99" + bytes([len(secret)]) + secret + b"\x00", IMAGE),
-            "e.mp4": box(b"ftyp", b"isom\x00\x00\x02\x00") + box(b"moov", box(b"mvhd", b"\x00" * 20)
-                                                                  + box(b"udta", box(b"\xa9too", secret))),
+            "e.mp4": box(b"ftyp", b"isom\x00\x00\x02\x00") + box(b"free", secret)
+                     + box(b"moov", box(b"mvhd", b"\x00" * 4 + b"\xe1" * 8 + b"\x00" * 8)
+                           + box(b"udta", box(b"\xa9too", secret)) + box(b"GPMF", secret)
+                           + box(b"trak", box(b"mdia", hdlr(b"vide", secret)))),
         }
         r = self.publish(self.run_dir(files))
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -220,17 +231,37 @@ class PrEvidenceTest(unittest.TestCase):
         mp4 = self.asset(self.p + "e.mp4")
         self.assertEqual(len(mp4), len(files["e.mp4"]))  # same size, so sample offsets still hold
         self.assertIn(b"free", mp4)
+        self.assertNotIn(b"\xe1", mp4)  # the recording times are zeroed
+        self.assertIn(b"vide", mp4)
         self.assertIn("[{0}e](https://github.com/owner/repo/releases/download/evidence/{0}e.mp4)".format(self.p), r.stdout)
         self.assertNotIn("![%se]" % self.p, r.stdout)
 
     def test_a_damaged_file_is_refused_not_crashed_on(self):
         files = {"a.png": png()[:-12], "b.webp": b"RIFF\x0c\x00\x00\x00WEBPVP8X\x00\x00\x00\x00",
-                 "c.jpg": b"\xff\xd8\xff\xda\x00\x02pix"}
+                 "c.jpg": b"\xff\xd8\xff\xda\x00\x02pix",
+                 "d.gif": b"GIF89a\x01\x00\x01\x00\x87\x00\x00" + b"\x00" * 30,  # a colour table longer than the file
+                 "e.gif": gif(IMAGE)[:-1]}  # no trailer
         for name, data in files.items():
             with self.subTest(name=name):
                 r = self.publish(self.run_dir({name: data}))
                 self.assertEqual(r.returncode, 1, r.stderr)
                 self.assertIn("damaged", r.stderr)
+
+    def test_a_masked_kept_shot_without_public_approval_is_refused(self):
+        for extra in ({}, {"public": False}):
+            with self.subTest(extra=extra):
+                shot = {"redacted": True, "review": "kept", **extra}
+                run = self.run_dir({"a.png": png(), "b.png": png()}, extra={"b.png": shot})
+                with open(os.path.join(run, "findings.json")) as f:
+                    rec = json.load(f)
+                if not extra:
+                    rec["screenshots"][1].pop("public")
+                    with open(os.path.join(run, "findings.json"), "w") as f:
+                        json.dump(rec, f)
+                r = self.publish(run)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("b.png has no public approval", r.stderr)
+                self.assertEqual(self.uploads(), [])
 
     def test_an_unmasked_shot_goes_only_when_it_is_an_emulator_demo_or_preview_shot(self):
         r = self.publish(self.run_dir({"a.png": png(), "b.png": png()}, extra={"b.png": {"redacted": False}}))
@@ -246,6 +277,17 @@ class PrEvidenceTest(unittest.TestCase):
                   "b.png": {"redacted": False, "source": "preview"}}
         r = self.publish(self.run_dir({"a.png": png(), "b.png": png()}, extra=native))
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_an_mp4_with_a_timed_metadata_track_is_refused(self):
+        empty = box(b"ftyp", b"isom\x00\x00\x02\x00") + box(b"moov", box(b"mvhd", b""))
+        r = self.publish(self.run_dir({"a.mp4": empty}))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("damaged", r.stderr)
+        mp4 = box(b"ftyp", b"isom\x00\x00\x02\x00") + box(b"moov", box(b"trak", box(b"mdia", hdlr(b"meta", b""))))
+        r = self.publish(self.run_dir({"a.mp4": mp4}))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not video or sound", r.stderr)
+        self.assertEqual(self.uploads(), [])
 
     def test_before_and_after_runs_with_the_same_shot_names_keep_both(self):
         before = self.run_dir({"home-light-phone.png": png()})
@@ -269,6 +311,16 @@ class PrEvidenceTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("user, home or host name", r.stderr)
         self.assertEqual(self.uploads(), [])
+
+    def test_a_short_name_is_matched_only_as_a_whole_part_of_a_shot_name(self):
+        out = subprocess.run([sys.executable, "-I", "-B", "-c",
+                              "import sys; sys.path.insert(0, %r); import pr_evidence as p, socket, getpass, os\n"
+                              "getpass.getuser = lambda: 'max'; os.path.expanduser = lambda _: '/home/me'\n"
+                              "socket.gethostname = lambda: 'studio-box.local'\n"
+                              "names, _ = p.identifiers()\n"
+                              "for n in ('run-maxwidth', 'run-max', 'run-xstudio-boxx'): print(bool(p.leak(n.encode(), names)))"
+                              % HERE], capture_output=True, text=True)
+        self.assertEqual(out.stdout.split(), ["False", "True", "True"], out.stderr)
 
     def test_an_emulator_serial_in_the_name_is_refused(self):
         r = self.publish(self.run_dir({"emulator-5554.png": png()}))

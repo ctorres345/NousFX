@@ -59,7 +59,7 @@ def die(message, code=1):
 
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 # An allow-list: any other chunk (text, EXIF, time, a vendor's private chunk) is dropped.
-PNG_KEEP = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"iCCP", b"sBIT", b"bKGD",
+PNG_KEEP = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"sBIT", b"bKGD",
             b"pHYs", b"acTL", b"fcTL", b"fdAT"}
 
 
@@ -83,8 +83,8 @@ def strip_png(data):
 
 
 def strip_jpeg(data):
-    """Keep the image segments, APP0 (JFIF), APP2 (ICC profile) and APP14 (Adobe color transform). Every other
-    APPn (EXIF, XMP, vendor data), comments and any bytes after the end marker are dropped."""
+    """Keep the image segments, APP0 (JFIF, without its thumbnail) and APP14 when it is Adobe's color transform.
+    Every other APPn (EXIF, XMP, ICC profiles, MPF, vendor data), comments and bytes after the end marker are dropped."""
     if not data.startswith(b"\xff\xd8"):
         raise Refused("is not a JPEG file")
     out, i = [b"\xff\xd8"], 2
@@ -110,8 +110,8 @@ def strip_jpeg(data):
         if marker == 0xE0:  # JFIF only, with its embedded thumbnail dropped (it may show the uncropped frame)
             if data[i + 4:i + 9] == b"JFIF\x00" and length >= 16:
                 out.append(b"\xff\xe0\x00\x10" + data[i + 4:i + 16] + b"\x00\x00")
-        elif not (0xE0 <= marker <= 0xEF or marker == 0xFE) or marker == 0xEE \
-                or (marker == 0xE2 and data[i + 4:i + 16] == b"ICC_PROFILE\x00"):  # APP2 also carries MPF and FPXR
+        elif not (0xE0 <= marker <= 0xEF or marker == 0xFE) \
+                or (marker == 0xEE and data[i + 4:i + 9] == b"Adobe"):  # APP2 (ICC, MPF, FPXR) goes: profiles name displays
             out.append(data[i:end])
         i = end
         if marker == 0xDA:  # entropy-coded data runs to the next marker that is not a stuffed 0xFF00 or an RSTn
@@ -143,9 +143,9 @@ def strip_webp(data):
             raise Refused("is a damaged WebP file")
         if kind == b"VP8X":  # clear the EXIF (0x08) and XMP (0x04) flags, since those chunks go
             chunk = bytearray(data[i:end])
-            chunk[8] &= 0xF3
+            chunk[8] &= 0xD3  # no ICC, EXIF or XMP
             out.append(bytes(chunk))
-        elif kind in (b"VP8 ", b"VP8L", b"ALPH", b"ANIM", b"ANMF", b"ICCP"):  # all else (EXIF, XMP, unknown) goes
+        elif kind in (b"VP8 ", b"VP8L", b"ALPH", b"ANIM", b"ANMF"):  # all else (EXIF, XMP, unknown) goes
             out.append(data[i:end])
         i = end
     body = b"".join(out)
@@ -173,11 +173,14 @@ def strip_gif(data):
         raise Refused("is not a GIF file")
     flags = data[10]
     i = 13 + color_table_len(flags)
-    out = [data[:i]]
+    if i > len(data):
+        raise Refused("is a damaged GIF file")
+    out, images, ended = [data[:i]], 0, False
     while i < len(data):
         b = data[i]
         if b == 0x3B:
             out.append(b"\x3b")
+            ended = True
             break
         if b == 0x21:
             if i + 2 > len(data):
@@ -194,22 +197,41 @@ def strip_gif(data):
             j = i + 10 + color_table_len(lflags)
             end = gif_sub_blocks(data, j + 1)  # one byte of LZW minimum code size, then the data
             out.append(data[i:end])
+            images += 1
             i = end
         else:
             raise Refused("is a damaged GIF file")
+    if not (ended and images):
+        raise Refused("is a damaged GIF file")
     return b"".join(out)
 
 
-MP4_CONTAINERS = {b"moov", b"trak", b"mdia", b"minf", b"stbl", b"edts", b"dinf"}
-MP4_BLANK = {b"udta", b"meta", b"uuid", b"XMP_"}
+# An allow-list per container: any other box (udta, meta, uuid, XMP_, free space that may hold old metadata, a vendor's
+# box) becomes a zero-filled `free` box of the same size. Containers are walked; the rest are kept as they are.
+MP4_TREE = {
+    None: {b"ftyp", b"styp", b"moov", b"mdat", b"moof", b"mfra", b"sidx"},
+    b"moov": {b"mvhd", b"trak", b"mvex", b"iods"},
+    b"trak": {b"tkhd", b"edts", b"mdia", b"tref"},
+    b"edts": {b"elst"},
+    b"mdia": {b"mdhd", b"hdlr", b"minf"},
+    b"minf": {b"vmhd", b"smhd", b"nmhd", b"dinf", b"stbl"},
+    b"dinf": {b"dref"},
+    b"stbl": {b"stsd", b"stts", b"stss", b"ctts", b"stsc", b"stsz", b"stz2", b"stco", b"co64", b"sdtp", b"sgpd",
+              b"sbgp", b"cslg"},
+    b"mvex": {b"mehd", b"trex"},
+    b"moof": {b"mfhd", b"traf"},
+    b"traf": {b"tfhd", b"tfdt", b"trun", b"sbgp", b"sgpd", b"saiz", b"saio"},
+    b"mfra": {b"tfra", b"mfro"},
+}
+MP4_TIMED = {b"mvhd", b"tkhd", b"mdhd"}  # their creation and modification times are zeroed
 
 
 def strip_mp4(data):
-    """Turn user data, metadata and vendor boxes into `free` boxes of the same size, zero-filled.
+    """Blank every box outside MP4_TREE, the recording times and the handler names, in place.
     Nothing moves, so the sample offsets in stco and co64 stay right."""
     buf = bytearray(data)
 
-    def walk(start, stop):
+    def walk(start, stop, parent):
         i = start
         while i < stop:
             if i + 8 > stop:
@@ -224,14 +246,28 @@ def strip_mp4(data):
                 size = stop - i
             if size < head or i + size > stop:
                 raise Refused("is a damaged MP4 file")
-            if kind in MP4_BLANK:
+            body = i + head
+            if kind not in MP4_TREE[parent]:
                 buf[i + 4:i + 8] = b"free"
-                buf[i + head:i + size] = bytes(size - head)
-            elif kind in MP4_CONTAINERS:
-                walk(i + head, i + size)
+                buf[body:i + size] = bytes(size - head)
+            elif kind in MP4_TREE:
+                walk(body, i + size, kind)
+            elif kind in MP4_TIMED:
+                if body + 12 > i + size:
+                    raise Refused("is a damaged MP4 file")
+                times = 16 if buf[body] == 1 else 8  # version 1 has 64-bit times
+                if body + 4 + times > i + size:
+                    raise Refused("is a damaged MP4 file")
+                buf[body + 4:body + 4 + times] = bytes(times)
+            elif kind == b"hdlr":
+                if i + size < body + 24:
+                    raise Refused("is a damaged MP4 file")
+                if bytes(buf[body + 8:body + 12]) not in (b"vide", b"soun"):
+                    raise Refused("has a track that is not video or sound (timed metadata may hold places or dates)")
+                buf[body + 24:i + size] = bytes(i + size - body - 24)  # the handler's name
             i += size
 
-    walk(0, len(buf))
+    walk(0, len(buf), None)
     if b"ftyp" not in bytes(buf[4:8]):
         raise Refused("is not an MP4 file")
     return bytes(buf)
@@ -254,15 +290,19 @@ def identifiers():
     host = socket.gethostname()
     found.update({host, host.split(".")[0]})
     words = sorted(s for s in found if len(s) >= 3 and s not in ("root", "user", "runner", "/"))
-    return pattern(words), pattern([w for w in words if len(w) >= 5])
+    short, long = [w for w in words if len(w) < 5], [w for w in words if len(w) >= 5]
+    return (pattern(short, bounded=True), pattern(long)), pattern(long)
 
 
-def pattern(words):
+def pattern(words, bounded=False):
     """One case-insensitive search for any of the words. Names are checked for every word; a file's bytes only for
     words of 5 or more characters, since a 3-letter word turns up by chance in a few MB of compressed data."""
     if not words:
         return re.compile(rb"(?!)")  # never matches: an empty alternation would match every file
-    return re.compile(b"|".join(re.escape(w.encode("utf-8")) for w in words), re.I)
+    alternation = b"|".join(re.escape(w.encode("utf-8")) for w in words)
+    if bounded:  # a short word counts in a name only as a whole hyphen-separated part: "max" is not in "maximum"
+        return re.compile(rb"(?:^|[-.])(?:" + alternation + rb")(?=[-.]|$)", re.I)
+    return re.compile(alternation, re.I)
 
 
 DEVICE_RE = re.compile(rb"emulator-\d{4}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|/Users/|/home/|"
@@ -270,7 +310,7 @@ DEVICE_RE = re.compile(rb"emulator-\d{4}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 
 
 def leak(blob, words):
-    if words.search(blob):
+    if any(p.search(blob) for p in (words if isinstance(words, tuple) else (words,))):
         return "this machine's user, home or host name"
     m = DEVICE_RE.search(blob)
     return ("a path or device id (%r)" % m.group(0).decode("latin-1")) if m else None
@@ -285,7 +325,7 @@ def prepare(prefix, path, name_words, byte_words):
     if not SHOT_RE.match(stem):
         raise Refused("has a name other than lowercase letters, digits and hyphens")
     name = "%s-%s%s" % (prefix, stem, ext)
-    why = leak(name.encode("utf-8"), name_words)
+    why = leak(name.split("-", 2)[2].encode("utf-8"), name_words)  # the ticket key is not this machine's
     if why:
         raise Refused("has %s in its name" % why)
     with open(path, "rb") as f:
@@ -333,6 +373,9 @@ def kept_shots(project, run_dir):
 # Native shots have no mask (redacted: false). Only these sources are safe to publish: an emulator shot in demo
 # mode cropped to the app (NFX-91), and a preview rendered from code with no device or account behind it.
 def unsafe(shot):
+    # The web mask blurs fields and tagged elements, not page text, so every shot also needs its own public approval.
+    if shot.get("public") is not True:
+        return "has no public approval (set public: true only after checking it shows nothing personal to anyone)"
     # A device shot is safe only from an emulator in demo mode; a real phone shows a real account.
     if (shot.get("redacted") is True or shot.get("source") == "preview"
             or (shot.get("source") == "device" and shot.get("emulator") is True)):
