@@ -28,9 +28,36 @@ VIA_RUN = os.path.join(HERE, "via_run.py")
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
 FAKE_BROWSER = """#!%(python)s
-import http.client, json, os, subprocess, sys, time, urllib.parse
+import base64, http.client, json, os, subprocess, sys, time, urllib.parse
 args = sys.argv[1:]
 log_path = os.environ["VIA_FAKE_LOG"]
+pipe = "--remote-debugging-pipe" in args  # a phone shot: answer the DevTools calls on fds 3 and 4
+buf = b""
+
+def receive():
+    global buf
+    while b"\\0" not in buf:
+        chunk = os.read(3, 65536)
+        if not chunk:
+            sys.exit(0)
+        buf += chunk
+    raw, buf = buf.split(b"\\0", 1)
+    return json.loads(raw)
+
+def send(message):
+    os.write(4, json.dumps(message).encode() + b"\\0")
+
+answers = {"Target.createTarget": {"targetId": "t1"}, "Target.attachToTarget": {"sessionId": "s1"},
+           "Page.navigate": {"frameId": "f1", "loaderId": "l1"}}
+if pipe:  # the page URL comes with the navigate call, and is logged last like a plain shot's
+    while True:
+        call = receive()
+        if call["method"] == "Page.navigate":
+            break
+        if call["method"] == "Emulation.setDeviceMetricsOverride":
+            args.append("--emulated=%%(width)d,%%(height)d@%%(deviceScaleFactor)d" %% call["params"])
+        send({"id": call["id"], "result": answers.get(call["method"], {})})
+    args.append(call["params"]["url"])
 with open(log_path, "a") as log:
     log.write("\\t".join(args) + "\\n")
 
@@ -67,6 +94,15 @@ if os.environ.get("VIA_FAKE_HANG"):
     time.sleep(300)
 if os.environ.get("VIA_FAKE_FAIL"):
     sys.exit(0)
+if pipe:
+    send({"id": call["id"], "result": answers["Page.navigate"]})
+    for event in json.loads(os.environ.get("VIA_FAKE_EVENTS", "null")) or [
+            ["Page.frameNavigated", {"frame": {"id": "f1", "url": call["params"]["url"]}}], ["Page.loadEventFired", {}]]:
+        send({"method": event[0], "sessionId": "s1", "params": event[1]})
+    while True:
+        call = receive()
+        result = {"data": base64.b64encode(%(png)r).decode()} if call["method"] == "Page.captureScreenshot" else {}
+        send({"id": call["id"], "result": result})
 for a in args:
     if a.startswith("--screenshot="):
         with open(a.split("=", 1)[1], "wb") as f:
@@ -153,6 +189,16 @@ class Page(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def via_capture_browser():
+    """The browser via_capture would pick, without the stand-in. None when there is no real one."""
+    sys.path.insert(0, HERE)
+    try:
+        import via_capture
+        return via_capture.find_browser()
+    finally:
+        sys.path.remove(HERE)
+
+
 def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -211,8 +257,8 @@ class ViaCaptureTest(unittest.TestCase):
         return sorted(n for n in os.listdir(self.run_dir) if n.endswith(".png"))
 
     def shot_args(self, name):
-        for args in self.calls():
-            if any(a.endswith("/" + name) and a.startswith("--screenshot=") for a in args):
+        for args in self.calls():  # each shot has a profile of its own, named after it
+            if any(a.endswith("/profile-" + name) and a.startswith("--user-data-dir=") for a in args):
                 return args
         self.fail("the browser was never asked for %s" % name)
 
@@ -231,8 +277,27 @@ class ViaCaptureTest(unittest.TestCase):
             with self.subTest(shot=name):
                 args = self.shot_args(name)
                 self.assertIn("--window-size=" + size, args)
+                if "phone" in name and os.name == "posix":  # Chrome's window is at least 500 px wide
+                    self.assertIn("--emulated=390,844@2", args)
+                    self.assertIn("--remote-debugging-pipe", args)
+                else:
+                    self.assertIn("--screenshot=", " ".join(args))
                 self.assertIn("--blink-settings=preferredColorScheme=" + scheme, args)
                 self.assertIn("--headless=new", args)
+
+    @unittest.skipIf(os.name != "posix", "phone emulation uses the DevTools pipe, POSIX only")
+    def test_a_phone_shot_waits_for_the_load_of_the_page_it_lands_on_not_about_blank(self):
+        events = [["Page.loadEventFired", {}],  # the blank start page's late load: too early to shoot
+                  ["Page.frameNavigated", {"frame": {"id": "f1", "url": "about:blank"}}], ["Page.loadEventFired", {}],
+                  ["Page.frameNavigated", {"frame": {"id": "f1", "url": "http://127.0.0.1/index.html"}}],
+                  ["Page.frameNavigated", {"frame": {"id": "f1", "url": "http://127.0.0.1/login.html"}}],
+                  ["Page.loadEventFired", {}]]
+        self.ok("home=index.html", extra_env={"VIA_FAKE_EVENTS": json.dumps(events)})
+        never = [["Page.frameNavigated", {"frame": {"id": "other", "url": "http://127.0.0.1/ad.html"}}],
+                 ["Page.loadEventFired", {}]]  # a child frame's page is not the shot's page
+        r = self.capture("home=index.html", run_dir=self.via_run("init")["run_dir"],
+                         extra_env={"VIA_FAKE_EVENTS": json.dumps(never), "VIA_SHOT_TIMEOUT": "1"})
+        self.assertEqual(r.returncode, 4, r.stderr)
 
     def test_the_browser_gets_its_own_profile_so_it_does_not_hand_off_to_a_running_chrome(self):
         self.ok("home=index.html")
@@ -801,5 +866,102 @@ class ViaCaptureTest(unittest.TestCase):
         self.assertEqual(os.listdir(real), [])
 
 
+def png_pixels(path, last_row):
+    """Width, height and a pixel(x, y) -> (r, g, b) reader for an 8-bit, non-interlaced RGB or RGBA PNG.
+
+    Only rows up to last_row are decoded: pure Python is slow on a whole phone shot."""
+    import struct, zlib
+    with open(path, "rb") as f:
+        data = f.read()
+    pos, idat = 8, []
+    while pos < len(data):
+        size, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + size]
+        if kind == b"IHDR":
+            width, height, depth, color, _, _, interlace = struct.unpack(">IIBBBBB", body)
+            assert depth == 8 and color in (2, 6) and not interlace, (depth, color, interlace)
+        elif kind == b"IDAT":
+            idat.append(body)
+        pos += 12 + size
+    raw, step = zlib.decompress(b"".join(idat)), 3 if color == 2 else 4
+    stride, rows, prev = width * step, [], bytearray(width * step)
+    for y in range(min(height, last_row + 1)):
+        kind, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a = line[i - step] if i >= step else 0
+            b, c = prev[i], prev[i - step] if i >= step else 0
+            if kind == 1:
+                line[i] = (line[i] + a) & 255
+            elif kind == 2:
+                line[i] = (line[i] + b) & 255
+            elif kind == 3:
+                line[i] = (line[i] + (a + b) // 2) & 255
+            elif kind == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append(line)
+        prev = line
+    return width, height, lambda x, y: tuple(rows[y][x * step:x * step + 3])
+
+
+REQUIRE_CHROME = "--require-chrome" in sys.argv  # a proof run: no Chrome is a failure, not a skip
+
+
+@unittest.skipIf(via_capture_browser() is None and not REQUIRE_CHROME, "no Chrome or Chromium here")
+class RealBrowserTest(unittest.TestCase):
+    """Real Chrome, real pixels. The page paints itself green only when it was laid out at the phone's width."""
+
+    def setUp(self):
+        self.assertIsNotNone(via_capture_browser(), "--require-chrome: no Chrome or Chromium found")
+
+    PAGE = ("<!doctype html><meta name=viewport content='width=device-width'>"
+            "<style>body{margin:0;height:100vh;background:red}"
+            "#edge{position:fixed;top:0;right:0;width:10px;height:10px;background:blue}"
+            "#scheme{position:fixed;top:0;left:0;width:10px;height:10px;background:white}"
+            "@media (prefers-color-scheme: dark){#scheme{background:black}}</style>"
+            "<div id=edge></div><div id=scheme></div>"
+            "<script>if (innerWidth === %d) document.body.style.background = 'lime'</script>")
+
+    def shoot(self, width, first=None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = os.path.join(tmp.name, "repo")
+        write(os.path.join(repo, "index.html"), first or self.PAGE % width)
+        write(os.path.join(repo, "next.html"), self.PAGE % width)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        r = subprocess.run([sys.executable, VIA_RUN, "init", "--project", repo], capture_output=True, text=True)
+        run_dir = json.loads(r.stdout)["run_dir"]
+        r = subprocess.run([sys.executable, CAPTURE, "--run-dir", run_dir, "--project", repo, "--screen=home=index.html"],
+                           capture_output=True, text=True, timeout=600)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return run_dir
+
+    @unittest.skipIf(os.name != "posix", "phone emulation uses the DevTools pipe, POSIX only")
+    def test_a_phone_shot_is_laid_out_at_390_px_and_nothing_is_cropped(self):
+        run_dir = self.shoot(390)
+        for theme, mark in (("light", (255, 255, 255)), ("dark", (0, 0, 0))):
+            with self.subTest(theme=theme):
+                width, height, pixel = png_pixels(os.path.join(run_dir, "home-%s-phone.png" % theme), 840)
+                self.assertEqual((width, height), (780, 1688))  # 390x844 CSS px at 2x
+                self.assertEqual(pixel(390, 840), (0, 255, 0))  # the page saw innerWidth 390
+                self.assertEqual(pixel(775, 5), (0, 0, 255))  # its right edge is in the shot
+                self.assertEqual(pixel(5, 5), mark)  # the color scheme still applies
+
+    @unittest.skipIf(os.name != "posix", "phone emulation uses the DevTools pipe, POSIX only")
+    def test_a_page_a_script_moves_on_before_it_loads_is_shot_where_it_lands(self):
+        run_dir = self.shoot(390, first="<!doctype html><script>location.replace('next.html')</script>"
+                                        "<img src='slow.svg'>")
+        width, height, pixel = png_pixels(os.path.join(run_dir, "home-light-phone.png"), 840)
+        self.assertEqual(pixel(390, 840), (0, 255, 0))
+
+    def test_a_desktop_shot_is_unchanged(self):
+        run_dir = self.shoot(1280)
+        width, height, pixel = png_pixels(os.path.join(run_dir, "home-light-desktop.png"), 400)
+        self.assertEqual((width, height), (1280, 800))
+        self.assertEqual(pixel(640, 400), (0, 255, 0))
+        self.assertEqual(pixel(1275, 5), (0, 0, 255))
+
+
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(argv=[a for a in sys.argv if a != "--require-chrome"])

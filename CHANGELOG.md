@@ -11,6 +11,9 @@
 - `via_assets_review.py shots` (NFX-176) stops with "Stopped:" on a symlinked candidate instead of a traceback, and when a copy fails partway it removes the files that call wrote, so a rerun works.
 - SVG first (NFX-171): `/via spec` and `/via assets` default flat art (icons, logos, badges, frames, UI shapes) to svg, and choose image only for photos, painted textures and rich illustration, with the reason in the usage cell. `via_assets.py plan` lists the rows without a source file yet in generation order, SVG rows first, so an image quota stop never blocks an SVG. `generate --kind image` refuses, sending nothing, while such an SVG row was never tried; `--any-order` lifts that once each SVG was tried, or for an image the user wants now.
 
+### Via
+- Phone shots are laid out at the phone's real width (NFX-169). Headless Chrome's window is at least 500 px wide, so `via_capture.py` phone shots were a 500 px layout with the right 110 px cut off. They now go through Chrome's DevTools pipe: the page loads at 390x844 CSS px as a mobile viewport (a page with no viewport meta tag is laid out 980 px wide and scaled down, as on a real phone), and the PNG is 780x1688 (2x). Desktop shots are unchanged. On Windows phone shots keep the old window size.
+
 ## 1.3.1 (2026-11-17)
 
 ### Via assets (NFX-159)
