@@ -35,6 +35,7 @@ Stdout is JSON. Exit 0 on success, 1 when the input is wrong or the step is refu
 """
 import argparse
 import html
+import io
 import json
 import os
 import re
@@ -55,6 +56,7 @@ MAX_FILE = 16 * 1024 * 1024
 MAX_NOTE = 500
 MAX_PROMPT_IN_LOG = 600
 MAX_ORIGIN = 200
+MAX_PIXELS = 89478485  # Pillow's decompression-bomb limit, so approve never trips it
 MAGIC = {".png": b"\x89PNG\r\n\x1a\n", ".jpg": b"\xff\xd8\xff", ".webp": b"RIFF"}
 CANDIDATE_RE = re.compile(r"[a-z0-9_]+-[0-9]+\.(svg|png|jpg|jpeg|webp)")  # <name>-<attempt>.<ext>, as add writes
 
@@ -191,9 +193,12 @@ def admit(project, args, src, conv="", prompt=None, origin=None):
     ext = os.path.splitext(src)[1].lower()
     if (asset["kind"] == "svg") != (ext == ".svg") or (ext != ".svg" and ext not in RASTER):
         die("%s is a %s asset, and %s is not. Nothing was changed." % (args.name, asset["kind"], args.file))
-    if os.path.getsize(src) > MAX_FILE:
-        die("%s is over %d bytes. Nothing was changed." % (args.file, MAX_FILE))
-    data = via_agy_call.read_file(src)
+    try:
+        if os.path.getsize(src) > MAX_FILE:
+            die("%s is over %d bytes. Nothing was changed." % (args.file, MAX_FILE))
+        data = via_agy_call.read_file(src)
+    except (OSError, via_agy_call.AgyError) as e:
+        die("cannot read %s (%s). Nothing was changed." % (args.file, getattr(e, "strerror", None) or e))
     if len(data) > MAX_FILE:
         die("%s is over %d bytes. Nothing was changed." % (args.file, MAX_FILE))
     findings = 0
@@ -204,8 +209,12 @@ def admit(project, args, src, conv="", prompt=None, origin=None):
         if problem or {f["rule"] for f in found} & via_assets.UNSAFE_SVG:
             die("%s breaks the SVG safety rules. Generate it again. Nothing was changed." % args.file)
         findings = len(found)
-    elif not data.startswith(MAGIC[ext.replace(".jpeg", ".jpg")]) or via_assets.image_size(src) is None:
-        die("%s is not a readable %s image. Nothing was changed." % (args.file, ext[1:].upper()))
+    else:
+        size = via_assets.image_size(io.BytesIO(data)) if data.startswith(MAGIC[ext.replace(".jpeg", ".jpg")]) else None
+        if size is None:
+            die("%s is not a readable %s image. Nothing was changed." % (args.file, ext[1:].upper()))
+        if size[0] * size[1] > MAX_PIXELS:
+            die("%s is %dx%d, over %d pixels. Nothing was changed." % (args.file, size[0], size[1], MAX_PIXELS))
 
     state = load_state(project, args.key)
     old = state["assets"].get(args.name)

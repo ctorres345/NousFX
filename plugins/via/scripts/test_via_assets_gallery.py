@@ -308,6 +308,25 @@ class GalleryTest(unittest.TestCase):
         with open(os.path.join(self.project, "design", "assets", "home_logo_main.svg"), "rb") as f:
             self.assertEqual(f.read(), SVG2)
 
+    def import_reject_reimport(self):
+        self.ok("import", "--name", "home_hero_main", "--file", self.outside("a.png", png()), "--origin", "Gemini app")
+        self.ok("reject", "--name", "home_hero_main", "--note", "Warmer gold")
+        out = self.ok("import", "--name", "home_hero_main", "--file", self.outside("b.jpg", JPEG),
+                      "--origin", "Gemini app")
+        self.assertEqual(out["assets"]["home_hero_main"], {"kind": "image", "state": "pending", "note": None,
+                                                           "attempt": 2})
+
+    def test_an_imported_png_rejects_and_reimports(self):
+        self.import_reject_reimport()
+
+    @unittest.skipUnless(PILLOW, "needs the Pillow environment from /via setup")
+    def test_an_imported_image_approves_into_the_platform_folders(self):
+        self.import_reject_reimport()
+        out = self.ok("approve", "--name", "home_hero_main")
+        with open(os.path.join(self.project, "design", "assets", "home_hero_main.png"), "rb") as f:
+            self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
+        self.assertIn("app/src/main/res/drawable-xxxhdpi/home_hero_main.png", out["written"])
+
     def test_import_refuses_the_same_files_add_does_and_non_images(self):
         good = self.outside("frame.png", png())
         link = os.path.join(self.root, "downloads", "link.png")
@@ -322,10 +341,20 @@ class GalleryTest(unittest.TestCase):
                            ("home_hero_main", big),                            # oversized
                            ("home_hero_main", self.outside("fake.png", b"not an image at all")),
                            ("home_hero_main", self.outside("fake.jpg", png())),  # a PNG named .jpg
+                           ("home_hero_main", self.outside("bomb.png", png(1)[:16] + struct.pack(">II", 50000, 50000)
+                                                           + png(1)[24:])),  # a header that claims 50000x50000
                            ("home_hero_main", os.path.join(self.root, "missing.png")),
                            ("home_logo_main", self.outside("bad.svg", BAD_SVG))):
             with self.subTest(name=name, path=os.path.basename(path)):
                 self.refused("import", "--name", name, "--file", path, "--origin", "Gemini app")
+        locked = self.outside("locked.png", png())
+        os.chmod(locked, 0)
+        self.addCleanup(os.chmod, locked, 0o600)
+        if os.access(locked, os.R_OK):
+            print("SKIPPED the unreadable-file case: running as a user who can read mode 000", file=sys.stderr)
+        else:
+            self.assertIn("cannot read", self.refused("import", "--name", "home_hero_main", "--file", locked,
+                                                      "--origin", "Gemini app"))
         self.refused("import", "--name", "home_hero_main", "--file", good, "--origin", "  ")
         self.refused("import", "--name", "home_hero_main", "--file", good, "--origin",
                      "key AKIAABCDEFGHIJKLMNOP", code=2)
