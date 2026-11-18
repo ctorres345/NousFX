@@ -227,6 +227,37 @@ class GalleryTest(unittest.TestCase):
         self.assertIn("--port must be", self.refused("serve", "--port", "70000"))
         self.assertIn("--port must be", self.refused("serve", "--port", "80"))  # Host would lack the port
 
+    def test_pending_cards_can_be_ticked_and_approved_with_one_copied_phrase(self):
+        self.add_logo()
+        self.ok("add", "--name", "home_hero_main", "--file", self.raw_file("hero.jpg", JPEG))
+        page = self.read(self.review("gallery.html"))
+        self.assertIn('id="pick-all"', page)
+        self.assertIn('<button type="button" id="copy-selected" disabled>Copy approve selected</button>', page)
+        self.assertEqual(re.findall(r'data-pick="([^"]+)"', page), ["home_hero_main", "home_logo_main"])
+        self.assertIn('"approve "+n.join(", ")', page)  # one phrase, names in page order
+        self.assertIn('data-copy="approve home_logo_main"', page)  # the per-card buttons stay
+        self.ok("reject", "--name", "home_hero_main", "--note", "too dark")
+        page = self.read(self.review("gallery.html"))
+        self.assertEqual(re.findall(r'data-pick="([^"]+)"', page), ["home_logo_main"])  # only pending cards
+        self.ok("approve", "--name", "home_logo_main")
+        page = self.read(self.review("gallery.html"))
+        self.assertNotIn("data-pick=", page)  # an approved card has no box either
+        self.assertNotIn('id="pick-all"', page)
+
+    def test_without_pending_cards_there_is_no_bulk_bar(self):
+        self.add_logo()
+        self.ok("reject", "--name", "home_logo_main", "--note", "too busy")
+        page = self.read(self.review("gallery.html"))
+        self.assertNotIn('id="pick-all"', page)
+        self.assertNotIn("data-pick=", page)
+
+    def test_the_page_script_only_writes_to_the_clipboard(self):
+        self.add_logo()
+        script = self.read(self.review("gallery.html")).split("<script>")[1].split("</script>")[0]
+        for word in ("fetch", "XMLHttpRequest", "WebSocket", "sendBeacon", "location", "import(", "eval"):
+            self.assertNotIn(word, script)
+        self.assertIn("navigator.clipboard.writeText", script)
+
     def test_the_gallery_csp_is_unchanged(self):
         self.add_logo()
         self.assertIn('content="%s"' % self.CSP, self.read(self.review("gallery.html")))
