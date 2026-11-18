@@ -367,17 +367,43 @@ def cmd_shots(project, args):
     if problem:
         die("the run's findings.json would not be valid (%s). Nothing was changed." % problem)
     for src, dst in copies:
+        if os.path.islink(src):
+            die("%s is a symlink. Nothing was changed." % via_assets.rel(project, src))
         if not os.path.isfile(src) or os.path.lexists(dst):
             die("%s is missing, or %s is already in the run. Nothing was changed."
                 % (via_assets.rel(project, src), os.path.basename(dst)))
-    for src, dst in copies:
-        via_assets.write_atomic(dst, via_agy_call.read_file(src))
-    via_assets.write_atomic(record_path, (json.dumps(rec, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    written, what = [], "findings.json"  # only the paths this call created, so a failure undoes them
+    try:
+        for src, dst in copies:
+            what = via_assets.rel(project, src)
+            create_new(dst, via_agy_call.read_file(src), written)
+        what = "findings.json"
+        via_assets.write_atomic(record_path, (json.dumps(rec, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    except BaseException as err:
+        left = []
+        for path in written:
+            try:
+                os.unlink(path)
+            except OSError:
+                left.append(os.path.basename(path))
+        if not isinstance(err, (OSError, via_agy_call.AgyError)):
+            raise
+        die("could not copy %s into the run (%s). %s" % (what, getattr(err, "strerror", None) or err,
+            "Remove %s from the run by hand before a rerun." % ", ".join(left) if left else "Nothing was changed."))
     return {"run_dir": run_dir, "shots": added, "capture": capture,
             "gallery": via_assets.rel(project, os.path.join(folder(project, args.key), "gallery.html"))}
 
 
 # --- helpers ---
+
+def create_new(path, data, written):
+    """Write data to path, which must not exist yet (O_EXCL: a file another process made there is never
+    overwritten). The path goes into written the moment it exists, so a later failure removes it."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_BINARY", 0), 0o666 & ~via_assets.UMASK)
+    written.append(path)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
 
 def load(project):
     try:
