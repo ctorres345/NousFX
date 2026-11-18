@@ -105,6 +105,12 @@ class PrEvidenceTest(unittest.TestCase):
         os.chmod(gh, 0o755)
         self.env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ["PATH"], FAKE_GH_STATE=self.state)
 
+    def write(self, name, data):
+        path = os.path.join(self.tmp, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
     def run_dir(self, files, reviews=None, extra=None):
         """A Via run folder with these files; each is kept unless reviews says otherwise."""
         r = subprocess.run([sys.executable, "-I", "-B", VIA_RUN, "init", "--project", self.project],
@@ -305,8 +311,8 @@ class PrEvidenceTest(unittest.TestCase):
 
     def test_a_shot_named_after_the_user_is_refused(self):
         user = getpass.getuser().lower()
-        if not re.match(r"^[a-z0-9][a-z0-9-]*$", user):
-            self.skipTest("the user name is not a valid shot name")
+        if not re.match(r"^[a-z0-9][a-z0-9-]{2,}$", user) or user in ("root", "user", "runner"):
+            self.skipTest("this user name is not a valid shot name or is too common to look for (a CI runner)")
         r = self.publish(self.run_dir({"%s-home.png" % user: png()}))
         self.assertEqual(r.returncode, 1)
         self.assertIn("user, home or host name", r.stderr)
@@ -318,9 +324,14 @@ class PrEvidenceTest(unittest.TestCase):
                               "getpass.getuser = lambda: 'max'; os.path.expanduser = lambda _: '/home/me'\n"
                               "socket.gethostname = lambda: 'studio-box.local'\n"
                               "names, _ = p.identifiers()\n"
-                              "for n in ('run-maxwidth', 'run-max', 'run-xstudio-boxx'): print(bool(p.leak(n.encode(), names)))"
-                              % HERE], capture_output=True, text=True)
-        self.assertEqual(out.stdout.split(), ["False", "True", "True"], out.stderr)
+                              "for n in ('run-maxwidth', 'run-max', 'run-xstudio-boxx'): print(bool(p.leak(n.encode(), names)))\n"
+                              "getpass.getuser = lambda: 'nfx'; ids = p.identifiers()\n"  # the ticket key is not looked at
+                              "print(p.prepare('NFX-87-run1', sys.argv[1], *ids)[0])\n"
+                              "try: p.prepare('NFX-87-run1', sys.argv[2], *ids)\n"
+                              "except p.Refused: print('refused')"
+                              % HERE, self.write("home.png", png()), self.write("nfx-home.png", png())],
+                             capture_output=True, text=True)
+        self.assertEqual(out.stdout.split(), ["False", "True", "True", "NFX-87-run1-home.png", "refused"], out.stderr)
 
     def test_an_emulator_serial_in_the_name_is_refused(self):
         r = self.publish(self.run_dir({"emulator-5554.png": png()}))
