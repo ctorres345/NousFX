@@ -18,16 +18,16 @@ python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_outbound.py" check --dest agy -
 ```
 Exit 20: the project does not allow agy. Stop, say so, and name the fix (`/via setup`, outbound allow-list). If `/via setup` reports agy missing or signed out, stop and say which.
 
-Add one `[[asset]]` table per row to `design/assets.toml` (the format is at the top of `via_assets.py`), with `source` `design/assets/<name>.svg` or `design/assets/<name>.png`. Keep rows that are already there. Write or update `design/brief.md`: the style in two or three lines (palette from `assets.toml`, line weight, mood), and the reference images if the user gave any. Both files stay in the working tree for the user to commit.
+Add one `[[asset]]` table per row to `design/assets.toml` (the format is at the top of `via_assets.py`), with `source` `design/assets/<name>.svg` or `design/assets/<name>.png`. Keep rows that are already there. An image that needs a see-through background gets `transparent = "#00FF00"` (a key color the art never uses) and a `.png` source: generate asks for that flat background and approve keys it out into real alpha, enclosed openings in that color included. The gallery tiles show the cut-out; a card with a "Key-out:" note will be refused at approve, so reject and regenerate it (images over 4096x4096 are refused too). After changing a row's key color, add the candidate again for a new cut-out. Assets that must match each other (frames, a badge family) share a `set` name and one `layout` line with the numbers (margins, line weight, opening); every prompt in the set gets it. Write or update `design/brief.md`: the style in two or three lines (palette from `assets.toml`, line weight, mood), and the reference images if the user gave any. Both files stay in the working tree for the user to commit.
 
 ## 3. Generate
 For each row, one prompt: the usage, the brief's style, the size, and for SVG the palette colors.
 ```
 python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets.py" generate --project "<project root>" --key <KEY> --kind <svg|image> --name <name> --prompt-file <file> [--ref <image> ...]
 ```
-Write the prompt to a file in the scratchpad. `--ref` passes up to 4 style reference images (PNG, JPEG or WebP). A call can take minutes: run it in the background. Exit 1: say which asset failed and why, and go on with the rest, except when the error says agy is not installed or not signed in: then stop the whole run, say which, and name the fix (`/via setup`). When agy is blocked (not set up, or out of image quota), offer step 3b for the images the user can make elsewhere.
+Write the prompt to a file in the scratchpad. `--ref` passes up to 4 style reference images (PNG, JPEG or WebP). A call can take minutes: run it in the background. Make the images one at a time with about a minute between calls. Exit 21 is the quota error (it names the reset time when agy gave one): stop the batch there, generate nothing more, and report which assets are done and when to try again. To pick up a stopped batch, run each row again with `--missing`: it skips a name that already has a pending or approved candidate and sends nothing. Exit 1: say which asset failed and why, and go on with the rest, except when the error says agy is not installed or not signed in: then stop the whole run, say which, and name the fix (`/via setup`). When agy is blocked (not set up, or out of image quota), offer step 3b for the images the user can make elsewhere.
 
-Then put each result in the gallery, one `add` at a time (each rewrites the state file):
+Put each result in the gallery right after its generate, before the next call, one `add` at a time (each rewrites the state file), so `--missing` sees it:
 ```
 python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets_review.py" add --project "<project root>" --key <KEY> --name <name> --file <path from generate> --conversation-id <id> --prompt-file <file>
 ```

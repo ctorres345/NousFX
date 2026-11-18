@@ -52,7 +52,7 @@ SIGNED_OUT = re.compile(r"not (signed|logged) in|please (sign|log) ?in|(sign|log
                         r"|login required|not authenticated|unauthenticated|\bunauthori[sz]ed\b", re.I)
 LIMIT = re.compile(r"resource_exhausted|quota (exceeded|reached)|exceeded (your |the )?quota"
                    r"|rate.?limit(ed| (reached|exceeded))|(reached|hit|exceeded) your (usage|daily|plan) limit"
-                   r"|\b429 too many requests\b", re.I)
+                   r"|\b429 too many requests\b|(?:code|status|error|http)\W{0,3}429\b|\b429\W{0,3}resource", re.I)
 # Session-only settings (never saved). Probed 2026-11-17: headless agy runs shell commands and reads files
 # anywhere unless told otherwise. With these, file tools stay inside its temp folder (a subagent's too), and
 # commands, MCP tools and writes are denied, whatever the user's settings.json allows. search_web cannot be

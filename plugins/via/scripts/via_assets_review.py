@@ -13,7 +13,8 @@ Everything for one ticket lives in design/asset-review/<KEY>/ in the project: st
 copy of each candidate (<name>-<attempt>.<ext>). The folder holds its own .gitignore ("*"), so none of it is
 ever committed. Every command rebuilds gallery.html, a static page (no network, no script except the copy
 buttons) with one card per asset: the candidate on a light and a dark tile, name, kind, platforms, size, usage,
-state and note.
+state and note. For a row with a transparent key color, add and import also make <name>-<attempt>.keyed.png, the
+cut-out approve would write, and the tiles show that (or the card says why the key-out would fail).
 
 States: pending (a candidate waits for review), approved, rejected (with a note). `add` takes a file that
 `via_assets.py generate` wrote (only from that ticket's raw-output folder) for a name in design/assets.toml, and
@@ -59,6 +60,8 @@ MAX_ORIGIN = 200
 MAX_PIXELS = 89478485  # Pillow's decompression-bomb limit, so approve never trips it
 MAGIC = {".png": b"\x89PNG\r\n\x1a\n", ".jpg": b"\xff\xd8\xff", ".webp": b"RIFF"}
 CANDIDATE_RE = re.compile(r"[a-z0-9_]+-[0-9]+\.(svg|png|jpg|jpeg|webp)")  # <name>-<attempt>.<ext>, as add writes
+PREVIEW_RE = re.compile(r"[a-z0-9_]+-[0-9]+\.keyed\.png")  # <name>-<attempt>.keyed.png, the key-out preview
+MAX_KEY_NOTE = 300
 
 
 die = via_assets.die
@@ -96,6 +99,9 @@ def entry_ok(a):
             and type(a.get("attempt")) is int and a["attempt"] > 0 and type(a.get("svg_findings", 0)) is int
             and "note" in a and (a["note"] is None or isinstance(a["note"], str))
             and (a.get("origin") is None or isinstance(a["origin"], str))
+            and (a.get("preview") is None or isinstance(a["preview"], str) and PREVIEW_RE.fullmatch(a["preview"]))
+            and (a.get("key_note") is None or isinstance(a["key_note"], str))
+            and (a.get("preview_key") is None or isinstance(a["preview_key"], str))
             and isinstance(a.get("history", []), list) and all(isinstance(h, dict) for h in a.get("history", [])))
 
 
@@ -186,6 +192,21 @@ def cmd_import(project, args):
     return admit(project, args, src, origin=origin)
 
 
+def keyed_preview(base, name, asset):
+    """(preview file, None), or (None, why not) for a row with a transparent key color: the keyed PNG approve
+    would write, so the gallery tiles show the real cut-out. (None, None) for other rows."""
+    if not asset.get("transparent") or name.endswith(".svg"):
+        return None, None
+    preview = "%s.keyed.png" % os.path.splitext(name)[0]
+    error = via_assets.run_resize({"src": os.path.join(base, name), "dst": os.path.join(base, preview),
+                                   "key": asset["transparent"]}, "_keyout")
+    if not error:
+        return preview, None
+    if isinstance(error, via_assets.KeyRefusal):
+        return None, "Key-out: %s" % error[:MAX_KEY_NOTE]
+    return None, "No cut-out preview (%s). Fix it with /via setup; this is no reason to reject." % error[:MAX_KEY_NOTE]
+
+
 def admit(project, args, src, conv="", prompt=None, origin=None):
     """Check one file against its assets.toml row and make it the asset's pending candidate."""
     spec = load(project)
@@ -225,12 +246,15 @@ def admit(project, args, src, conv="", prompt=None, origin=None):
     name = "%s-%d%s" % (args.name, attempt, ext)
     base = folder(project, args.key)
     via_assets.write_atomic(os.path.join(base, name), data)
+    preview, key_note = keyed_preview(base, name, asset)
     history = (old or {}).get("history", [])
     if old:
         history.append({k: old.get(k) for k in ("attempt", "state", "note", "conversation_id", "origin")})
     state["assets"][args.name] = {"kind": asset["kind"], "file": name, "state": "pending", "note": None,
                                   "attempt": attempt, "conversation_id": conv or None, "origin": origin,
-                                  "svg_findings": findings, "history": history}
+                                  "svg_findings": findings, "preview": preview, "key_note": key_note,
+                                  "preview_key": asset.get("transparent"),
+                                  "history": history}
     how = ", agy conversation %s" % conv if conv else ", imported from %s" % origin if origin else ""
     log(project, args.key, "`%s` attempt %d (%s)%s: pending.%s" % (
         args.name, attempt, asset["kind"], how, " Prompt: %s" % prompt if prompt else ""))
@@ -252,7 +276,7 @@ def cmd_approve(project, args):
     log_path(project, args.key)
     saved = snapshot([source])
     try:
-        place(candidate, source)
+        place(candidate, source, asset.get("transparent"))
         plan = via_assets.convert(spec["spec"], project, True, [args.name])  # writes nothing
         failed = [f["issue"] for f in plan["flags"] if f["name"] == args.name
                   and f["issue"].startswith(("not converted", "no VectorDrawable"))]
@@ -349,10 +373,16 @@ def load(project):
     return {"spec": spec, "rows": {a["name"]: a for a in spec["assets"]}, "palette": spec["palette"] or []}
 
 
-def place(candidate, source):
+def place(candidate, source, transparent=None):
     """Write the candidate to the asset's source in the source's format: agy draws JPEGs, a spec often names
-    a PNG. A different raster format is re-encoded at the same size in the Pillow environment."""
+    a PNG. A different raster format is re-encoded at the same size in the Pillow environment. With a key color
+    (the row's transparent), the background is keyed out into the PNG source there, or the approve is refused."""
     have, want = (os.path.splitext(p)[1].lower().replace(".jpeg", ".jpg") for p in (candidate, source))
+    if transparent:  # load_spec holds such a row to kind image and a .png source
+        error = via_assets.run_resize({"src": candidate, "dst": source, "key": transparent}, "_keyout")
+        if error:
+            raise via_assets.SpecError(error)
+        return
     if have == want:
         via_assets.write_atomic(source, via_agy_call.read_file(candidate))
         return
@@ -456,7 +486,13 @@ def gallery(state, rows):
     cards = []
     for name, a in sorted(state["assets"].items()):
         row = rows.get(name, {})
-        img = '<img src="%s" alt="%s candidate %d">' % (e(a["file"]), e(name), a["attempt"])
+        key = row.get("transparent")
+        # The preview and its note hold only for the key color they were made with. A row that dropped
+        # transparent, or changed its color since, shows the plain candidate.
+        keyed = bool(key) and a.get("preview_key") == key
+        stale = bool(key) and not keyed
+        img = '<img src="%s" alt="%s candidate %d">' % (e(keyed and a.get("preview") or a["file"]), e(name),
+                                                         a["attempt"])
         meta = "%s · %s · %s" % (a["kind"], ", ".join(row.get("platforms", [])) or "no platforms",
                                  row.get("size", "no size"))
         parts = ['<article class="card">',
@@ -467,6 +503,11 @@ def gallery(state, rows):
                  '<p class="meta">Attempt %d%s</p>' % (a["attempt"], " · %d SVG finding(s)" % a["svg_findings"]
                                                         if a.get("svg_findings") else ""),
                  '<p class="meta origin">From: %s</p>' % e(a["origin"]) if a.get("origin") else "",
+                 '<p class="meta">Background %s keyed out: approve writes this</p>' % e(row.get("transparent", ""))
+                 if keyed and a.get("preview") else "",
+                 '<p class="note">%s</p>' % e(a["key_note"]) if keyed and a.get("key_note") else "",
+                 '<p class="note">No cut-out preview for background %s yet: add or import this candidate again '
+                 'to see it. Approve keys it out with this color.</p>' % e(key) if stale else "",
                  '<span class="badge %s">%s</span>' % (a["state"], a["state"].capitalize())]
         if a["state"] == "rejected" and a.get("note"):
             parts.append('<p class="note">%s</p>' % e(a["note"]))

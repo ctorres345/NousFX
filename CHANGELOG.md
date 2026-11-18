@@ -4,6 +4,8 @@
 
 ### Via assets
 - `via_assets_review.py import` brings art made outside Via (the Gemini app, by hand) into the review gallery (NFX-170). It runs the same checks as `add`, also checks the file is a real PNG, JPEG or WebP, and records `--origin` in the state, the gallery card and the log. `/via assets` has an "Images from elsewhere" step for when agy is blocked.
+- `assets.toml` image rows take `transparent = "#00FF00"` (NFX-173): generate asks for that flat background and approve keys it out with Pillow into a PNG with real alpha (soft edge, de-spill). Enclosed openings in that color (a frame's opening, the hole of an O) are keyed out too; an image that already has transparency is kept as is. Approve refuses, and the asset stays pending, when the key color is scattered through the art or no background touches the edge. For these rows the gallery tiles show the cut-out, or why it would be refused.
+- `via_assets.py generate` exits 21 with the reset time on an agy quota error (RESOURCE_EXHAUSTED, 429), also when the 429 is only in agy's reply text (NFX-173). `--missing` skips a name that already has a pending or approved candidate. Rows with the same `set` share one `layout` line in their prompts.
 
 ## 1.3.1 (2026-11-17)
 

@@ -4,7 +4,7 @@
 Usage: via_assets.py audit    [--project DIR]
        via_assets.py convert  [--project DIR] [--dry-run] [--only NAME ...]
        via_assets.py generate --kind image|svg --name NAME --key KEY (--prompt TEXT | --prompt-file FILE)
-                              [--project DIR] [--timeout SECONDS] [--ref IMAGE ...]
+                              [--project DIR] [--timeout SECONDS] [--ref IMAGE ...] [--missing]
 
 The spec is design/assets.toml in the project:
 
@@ -23,6 +23,10 @@ The spec is design/assets.toml in the project:
     platforms = ["android", "flutter", "web"]
     size = "24x24"                         # 1x size in dp/px; an SVG may say "vector" (its viewBox size)
     usage = "App bar logo"
+    transparent = "#00FF00"                # optional, image rows with a .png source: generate asks for this flat
+                                           # background and approve keys it out into real alpha
+    set = "frames"                         # optional: rows in one set share one layout text in their prompts
+    layout = "8% margins, 6 px lines"      # optional, needs set; give it once per set (or the same on each row)
 
 Targets. image: Android drawable-mdpi..xxxhdpi PNG (1, 1.5, 2, 3, 4x); Flutter <name>.png, 2.0x/, 3.0x/; web
 <name>.webp and <name>@2x.webp. svg: Android drawable/<name>.xml (VectorDrawable); Flutter and web <name>.svg (a copy).
@@ -45,7 +49,11 @@ nothing sent otherwise). agy runs in an empty temp folder and the prompt tells i
 found only from the path named in agy's reply, inside that conversation's folder, written during the call; an SVG
 is the one <svg> document in the reply text, saved as text with its audit findings. An SVG that breaks a safety
 rule (parse, DOCTYPE, script, embedded content) stops with exit 1 and nothing is written. It needs no assets.toml and no
-Pillow. Prints {"path", "kind", "conversation_id", "findings"}; exit 1 with "Stopped: ..." when agy fails.
+Pillow; when assets.toml has a row for --name, the row's set layout and transparent key color go into the prompt.
+--missing prints {"skipped": NAME, "reason"} and sends nothing when the name already has a pending or approved
+candidate in design/asset-review/<KEY>/state.json. Prints {"path", "kind", "conversation_id", "findings"}; exit 21
+with "Stopped: ..." and the reset time (when agy gave one) on a quota error (RESOURCE_EXHAUSTED, 429), exit 1 when
+agy fails otherwise.
 """
 import argparse
 import contextlib
@@ -72,6 +80,8 @@ import via_outbound  # noqa: E402
 SPEC = os.path.join("design", "assets.toml")
 SCREEN, SOURCE = "assets", "via-assets"
 NAME_RE = re.compile(r"^[a-z0-9]+(_[a-z0-9]+){2,}$")
+HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+MAX_LAYOUT = 300
 SIZE_RE = re.compile(r"^([1-9][0-9]{0,4})x([1-9][0-9]{0,4})$")
 DEFAULT_PATHS = {"android": os.path.join("app", "src", "main", "res"), "flutter": os.path.join("assets", "images"),
                  "web": os.path.join("public", "images")}
@@ -187,7 +197,7 @@ def load_spec(project):
     assets = data.get("asset", [])
     if not isinstance(assets, list):
         raise SpecError("%s: assets are written as [[asset]] tables." % SPEC)
-    seen = set()
+    seen, layouts = set(), {}
     for i, a in enumerate(assets):
         if not isinstance(a, dict):
             bad(i, "an [[asset]] must be a table")
@@ -208,6 +218,24 @@ def load_spec(project):
         if a["name"] in seen:
             bad(i, "the name %s is used twice" % a["name"])
         seen.add(a["name"])
+        if "transparent" in a:
+            if not (isinstance(a["transparent"], str) and HEX_RE.match(a["transparent"])):
+                bad(i, 'transparent must be a key color such as "#00FF00"')
+            if a["kind"] != "image" or os.path.splitext(a["source"])[1].lower() != ".png":
+                bad(i, "transparent is for an image row with a .png source")
+        for key in ("set", "layout"):
+            if key in a and not (isinstance(a[key], str) and a[key].strip() and len(a[key]) <= MAX_LAYOUT):
+                bad(i, "%s must be non-empty text of at most %d characters" % (key, MAX_LAYOUT))
+        if "layout" in a and "set" not in a:
+            bad(i, "layout needs a set: it is shared by every row in the set")
+        if "set" in a and "layout" in a:
+            first = layouts.setdefault(a["set"], a["layout"])
+            if first != a["layout"]:
+                bad(i, "the set %s already has a different layout; give it once, or the same text on every row"
+                    % a["set"])
+    for a in assets:  # every row in a set gets the set's layout
+        if "set" in a and a["set"] in layouts:
+            a["layout"] = layouts[a["set"]]
     return {"palette": palette, "ignore": ignore, "paths": paths, "assets": assets}
 
 
@@ -738,10 +766,7 @@ def resize(jobs):
     for job in jobs:
         by_source.setdefault(job["src"], []).append(job)
     for src, group in by_source.items():  # decode each source once
-        with Image.open(src) as im:
-            if im.format == "JPEG":  # image_size() reads a JPEG's EXIF rotation, so turn it the same way
-                im = ImageOps.exif_transpose(im)
-            im = im.convert("RGBA")
+        im = open_upright(src).convert("RGBA")
         for job in group:
             out = ImageOps.fit(im, (job["width"], job["height"]), Image.Resampling.LANCZOS)
             buf = io.BytesIO()
@@ -750,6 +775,134 @@ def resize(jobs):
             else:
                 out.save(buf, "PNG")
             write_atomic(job["dst"], buf.getvalue())
+
+
+KEY_LO, KEY_HI = 48, 140  # max channel distance from the key color: at or under LO is background, from HI on is art
+MAX_INNER = 0.02  # small enclosed key-colored spots, as a share of the art, before approve refuses
+MIN_UNMIX = 64  # the lowest alpha keyout unmixes the key color from
+MAX_PARTS = 200  # enclosed key-colored areas key_holes looks at before it calls the key color scattered
+MAX_KEY_PIXELS = 4096 * 4096  # the edge fill is pure Python: about 11 s and 730 MB at this size
+KEY_REFUSED = 3   # _keyout's exit code for a refusal (its message is the last stderr line)
+
+
+class KeyRefused(Exception):
+    pass
+
+
+class KeyRefusal(str):
+    """run_resize's error when _keyout refused the image itself (not a broken Pillow environment)."""
+
+
+def open_upright(path):
+    """Open an image with Pillow, turned by a JPEG's EXIF rotation as image_size() reads it."""
+    from PIL import Image, ImageOps
+    with Image.open(path) as im:
+        im.load()
+        return ImageOps.exif_transpose(im) if im.format == "JPEG" else im.copy()
+
+
+def key_holes(inner, min_hole):
+    """Split the enclosed key-colored pixels (mask inner) into openings (each joined area of at least min_hole
+    pixels, such as a frame's opening or the hole of an O) and specks. Returns (openings mask, speck pixel
+    count), or None when there are more than MAX_PARTS areas: key color scattered through the art."""
+    from PIL import Image, ImageChops, ImageDraw
+    work, holes, specks = inner.copy(), Image.new("L", inner.size, 0), 0
+    for _ in range(MAX_PARTS):
+        box = work.getbbox()
+        if not box:
+            return holes, specks
+        row = work.crop((box[0], box[1], box[2], box[1] + 1))
+        x = next(i for i, v in enumerate(getattr(row, "get_flattened_data", row.getdata)()) if v)
+        ImageDraw.floodfill(work, (box[0] + x, box[1]), 128, thresh=0)
+        part = work.point(lambda v: 255 if v == 128 else 0)
+        size = part.histogram()[255]
+        if size >= min_hole:
+            holes = ImageChops.lighter(holes, part)
+        else:
+            specks += size
+        work = ImageChops.subtract(work, part)  # 128 - 255 clips to 0; other pixels keep their value
+    return None if work.getbbox() else (holes, specks)
+
+
+def keyout(job):
+    """Key the flat background color out of job["src"] into a PNG at job["dst"].
+
+    Background: the key-colored pixels (within KEY_LO) joined to the image edge, plus enclosed key-colored
+    openings of at least 0.1% of the image (a frame's opening). A soft edge ramps the alpha from KEY_LO to KEY_HI
+    in a 2 px band around it. De-spill: the key color is unmixed from the half-transparent pixels, then its spill
+    is taken out of every pixel in that band. A candidate that already has transparency is written as is.
+    Refuses, writing nothing, when the image is over MAX_KEY_PIXELS, when no background touches the edge, when key-colored specks cover more than
+    MAX_INNER of the art, or when nothing but background is left."""
+    from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageMath
+    import io
+
+    def save(image):
+        buf = io.BytesIO()
+        image.save(buf, "PNG")
+        write_atomic(job["dst"], buf.getvalue())
+
+    key = tuple(int(job["key"][i:i + 2], 16) for i in (1, 3, 5))
+    src = open_upright(job["src"])
+    if "A" in src.getbands() or "transparency" in src.info:
+        rgba = src.convert("RGBA")
+        if rgba.getchannel("A").getextrema()[0] < 255:  # already cut out (an imported PNG): keep its alpha
+            return save(rgba)
+    if src.size[0] * src.size[1] > MAX_KEY_PIXELS:
+        raise KeyRefused("%dx%d is too large to key out (at most 4096x4096 pixels); make it smaller"
+                         % src.size)
+    im = src.convert("RGB")
+    w, h = im.size
+    bands = im.split()
+    diff = [ImageChops.difference(band, Image.new("L", im.size, k)) for band, k in zip(bands, key)]
+    dist = ImageChops.lighter(ImageChops.lighter(diff[0], diff[1]), diff[2])
+    core = dist.point(lambda v: 255 if v <= KEY_LO else 0)
+    padded = Image.new("L", (w + 2, h + 2), 255)  # a key-colored frame joins every edge pixel to one fill
+    padded.paste(core, (1, 1))
+    ImageDraw.floodfill(padded, (0, 0), 128, thresh=0)
+    outer = padded.crop((1, 1, w + 1, h + 1)).point(lambda v: 255 if v == 128 else 0)
+    color = job["key"].upper()
+    if not outer.getbbox():
+        raise KeyRefused("no %s background touches the edge of the image; ask for the art on a flat %s background"
+                         % (color, color))
+    split = key_holes(ImageChops.subtract(core, outer), max(16, w * h // 1000))
+    if split is None:
+        raise KeyRefused("%s is scattered through the art in many small spots; keying it out would cut holes. Ask "
+                         "for art without that color, or pick another key color" % color)
+    holes, specks = split
+    background = ImageChops.lighter(outer, holes)
+    art = w * h - background.histogram()[255]
+    if art < w * h * 0.005:
+        raise KeyRefused("the image is all %s background; nothing would be left" % color)
+    if specks > art * MAX_INNER:
+        raise KeyRefused("%s also covers %d%% of the art in small spots; keying it out would cut holes. Ask for "
+                         "art without that color, or pick another key color" % (color, round(100 * specks / art)))
+    band = background.filter(ImageFilter.MaxFilter(5))  # the background and 2 px around it
+    ramp = dist.point(lambda v: 0 if v <= KEY_LO else 255 if v >= KEY_HI else
+                      int((v - KEY_LO) * 255 / (KEY_HI - KEY_LO) + 0.5))
+    alpha = Image.composite(Image.composite(Image.new("L", im.size, 0), ramp, background),
+                            Image.new("L", im.size, 255), band)
+    # Half-transparent pixels (alpha from MIN_UNMIX): unmix the key color, c = (p - (1 - a) * k) / a. Fainter
+    # ones would turn JPEG noise into bright colors, so only the spill step below cleans them.
+    edge = alpha.point(lambda v: 255 if MIN_UNMIX <= v < 255 else 0)
+    bands = [Image.composite(ImageMath.lambda_eval(
+        lambda e, k=k: e["convert"](e["min"](e["max"]((e["float"](e["b"]) - (255.0 - e["float"](e["a"])) * (k / 255.0))
+                                                     * 255.0 / e["max"](e["float"](e["a"]), 1.0), 0.0), 255.0), "L"),
+        b=b, a=alpha), b, edge) for b, k in zip(bands, key)]
+    # Then in the band: the key's strongest channels go no higher than the others (spill). On the unmixed edge
+    # they also go no lower than the others, since JPEG color blur leaves them too low there (a magenta rim).
+    hot = [i for i in range(3) if key[i] == max(key)]
+    cold = [i for i in range(3) if key[i] != max(key)]
+    if cold:
+        high_cold, low_cold = bands[cold[0]], bands[cold[0]]
+        for i in cold[1:]:
+            high_cold = ImageChops.lighter(high_cold, bands[i])
+            low_cold = ImageChops.darker(low_cold, bands[i])
+        for i in hot:
+            capped = Image.composite(ImageChops.darker(bands[i], high_cold), bands[i], band)
+            bands[i] = Image.composite(ImageChops.lighter(capped, low_cold), capped, edge)
+    clear = alpha.point(lambda v: 255 if v == 0 else 0)
+    black = Image.new("L", im.size, 0)
+    save(Image.merge("RGBA", [Image.composite(black, b, clear) for b in bands] + [alpha]))
 
 
 def pillow_python():
@@ -764,20 +917,22 @@ def pillow_python():
     return py if isinstance(py, str) and os.path.isabs(py) and os.path.isfile(py) and os.access(py, os.X_OK) else None
 
 
-def run_resize(jobs):
-    """Resize in the pinned Pillow environment from /via setup (never a Pillow that happens to be installed).
-    Returns an error or None."""
+def run_resize(jobs, mode="_resize"):
+    """Resize (or, with mode "_keyout" and one job, key out a background) in the pinned Pillow environment from
+    /via setup (never a Pillow that happens to be installed). Returns an error or None."""
     py = pillow_python()
     if not py:
         return ("The Pillow environment is missing, so raster images cannot be converted. Run /via setup and "
                 "create it, then run convert again. Nothing was written.")
     try:
-        r = subprocess.run([py, "-I", "-B", os.path.realpath(__file__), "_resize"], input=json.dumps(jobs),
+        r = subprocess.run([py, "-I", "-B", os.path.realpath(__file__), mode], input=json.dumps(jobs),
                            capture_output=True, text=True, timeout=600)
     except (subprocess.TimeoutExpired, OSError) as e:
         r, tail = None, "timed out" if isinstance(e, subprocess.TimeoutExpired) else str(e)
     if r is not None and r.returncode != 0:
         tail = (r.stderr.strip().splitlines() or ["no output"])[-1]
+        if r.returncode == KEY_REFUSED:
+            return KeyRefusal(tail)
     if r is None or r.returncode != 0:
         return ("The Pillow environment failed to convert (%s); some targets may already be written. "
                 "Run /via setup to check it, then convert again." % tail)
@@ -883,13 +1038,53 @@ def read_refs(refs):
     return files
 
 
-def generate(project, kind, name, key, prompt, timeout, refs=()):
+QUOTA = 21  # the same code via_agy_call.py uses for the subscription limit
+RESET_RE = re.compile(r"(?:retry|try again|resets?|available again)\s+(?:in|at|after|on)\s+"
+                      r"([0-9][^\n;,\"]{0,40}?)(?=\.(?:\s|$)|[\n;,\"]|$)"
+                      r"|\"retryDelay\"\s*:\s*\"([^\"]{1,20})\"", re.I)
+LAYOUT_NOTE = " Shared layout of the set %s, the same for every asset in it: %s."
+KEY_NOTE = (" Draw it on a flat, solid %s background that fills every pixel around the art: no gradient, shadow, "
+            "texture, checkerboard, frame or border, and do not use that color anywhere in the art itself.")
+
+
+def quota_stop(text, prompt=None):
+    """Stop with exit QUOTA when text shows a quota error, naming the reset time when agy gave one. Text that can
+    echo the prompt comes with it: a prompt that itself names a quota error (art for a 429 page) is never read
+    as one there."""
+    if not via_agy_call.LIMIT.search(text) or prompt is not None and via_agy_call.LIMIT.search(prompt):
+        return
+    reset = RESET_RE.search(text)
+    reset = (reset.group(1) or reset.group(2)).strip() if reset else None
+    die("agy is out of quota (RESOURCE_EXHAUSTED or 429). %s Stop the batch here; the assets without a candidate "
+        "can be made later with generate --missing. Nothing was written"
+        % ("It resets: %s." % reset if reset else "agy gave no reset time; try again later."),
+        QUOTA)
+
+
+def spec_row(project, name):
+    """The assets.toml row for name, or None when there is no assets.toml or no such row."""
+    if not os.path.exists(os.path.join(project, SPEC)):
+        return None
+    return next((a for a in load_spec(project)["assets"] if a["name"] == name), None)
+
+
+def has_candidate(project, key, name):
+    """True when the review state for key holds a pending or approved candidate for name."""
+    import via_assets_review  # imports this module, so not at the top
+    entry = via_assets_review.load_state(project, key)["assets"].get(name)
+    return bool(entry) and entry["state"] in ("pending", "approved")
+
+
+def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False):
     if not NAME_RE.match(name):
         raise SpecError("--name %r is not <feature>_<what>_<variant> in snake_case" % name)
     if not KEY_RE.match(key):
         raise SpecError("--key %r is not a ticket key such as APP-7" % key)
     if not prompt.strip():
         raise SpecError("the prompt is empty")
+    if missing and has_candidate(project, key, name):
+        return {"skipped": name, "reason": "it already has a pending or approved candidate"}
+    row = spec_row(project, name)
     files = read_refs(refs)
     try:
         code, result = via_outbound.decide(project, "agy")
@@ -899,11 +1094,19 @@ def generate(project, kind, name, key, prompt, timeout, refs=()):
         die("%s. Nothing was sent" % result["reason"], code)
     started = via_agy_call.now()
     try:
-        text = (IMAGE_PROMPT if kind == "image" else SVG_PROMPT) % prompt.strip()
+        asked = (IMAGE_PROMPT if kind == "image" else SVG_PROMPT) % prompt.strip()
+        if row and row.get("layout"):
+            asked += LAYOUT_NOTE % (row["set"], row["layout"])
+        if row and row.get("transparent") and kind == "image":
+            asked += KEY_NOTE % row["transparent"].upper()
         if files:
-            text += REF_NOTE % ", ".join(sorted(files))
-        reply = via_agy_call.call(text, timeout, files=files, skip=(project,), draw=True)
+            asked += REF_NOTE % ", ".join(sorted(files))
+        reply = via_agy_call.call(asked, timeout, files=files, skip=(project,), draw=True)
     except via_agy_call.AgyError as e:
+        if isinstance(e, via_agy_call.AgyLimit):  # read from agy's own stderr, which never echoes the prompt
+            quota_stop(str(e))
+        if not isinstance(e, via_agy_call.AgyUnavailable):
+            quota_stop(str(e), asked)
         die("%s. Nothing was written" % e)
     # The conversation id makes the name unique: two runs in the same second never overwrite each other.
     stem = "%s-%s-%s" % (name, time.strftime("%Y%m%d-%H%M%S"), reply["conversation_id"][:8])
@@ -912,6 +1115,7 @@ def generate(project, kind, name, key, prompt, timeout, refs=()):
     if kind == "image":
         got = via_agy_call.image(reply, started)
         if not got:
+            quota_stop(reply["response"], asked)
             die("agy returned no image file. Raw reply: %s. Nothing was written" % reply["response"][:400])
         data, ext = got
         path = os.path.join(folder, stem + ext)
@@ -923,6 +1127,7 @@ def generate(project, kind, name, key, prompt, timeout, refs=()):
             text = data = None
         root, _, problem = parse_svg_bytes(data) if data else (None, None, None)
         if text is None or (problem and problem[0] == "svg-parse"):
+            quota_stop(reply["response"], asked)
             die("agy's reply holds no single <svg> document. Raw reply: %s. Nothing was written"
                 % reply["response"][:400])
         path = os.path.join(folder, stem + ".svg")
@@ -938,6 +1143,13 @@ def generate(project, kind, name, key, prompt, timeout, refs=()):
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "_resize":  # the Pillow environment's half of convert
         resize(json.loads(sys.stdin.read()))
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "_keyout":  # the Pillow environment's half of approve with transparent
+        try:
+            keyout(json.loads(sys.stdin.read()))
+        except KeyRefused as e:
+            sys.stderr.write("%s\n" % e)
+            sys.exit(KEY_REFUSED)
         return
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -957,6 +1169,8 @@ def main():
     src.add_argument("--prompt-file")
     g.add_argument("--timeout", type=int, default=300)
     g.add_argument("--ref", action="append", default=[], help="a style reference image (up to %d)" % MAX_REFS)
+    g.add_argument("--missing", action="store_true", help="skip the name when it already has a pending or "
+                   "approved candidate in the review gallery")
     args = ap.parse_args()
     project = os.path.realpath(args.project)
     try:
@@ -968,7 +1182,7 @@ def main():
                         prompt = f.read()
                 except OSError as e:
                     raise SpecError("cannot read the prompt file (%s)" % e.strerror)
-            emit(generate(project, args.kind, args.name, args.key, prompt, args.timeout, args.ref))
+            emit(generate(project, args.kind, args.name, args.key, prompt, args.timeout, args.ref, args.missing))
             return
         spec = load_spec(project)
         if args.cmd == "audit":
