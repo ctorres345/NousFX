@@ -324,6 +324,46 @@ class GenerateTest(unittest.TestCase):
         self.mode("limit")  # agy's own stderr never echoes the prompt: still the quota code
         self.assertIn("out of quota", self.stopped("--kind", "image", "--prompt", "art for the HTTP 429 page", code=21))
 
+    def probe(self, code=0, path=None):
+        env = th.env(self.home, PATH=path if path is not None else self.bin + os.pathsep + "/usr/bin:/bin")
+        r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "probe-image", "--project", self.project],
+                           capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(r.returncode, code, (r.stdout, r.stderr))
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertFalse(os.path.exists(self.raw_dir()), "the probe writes no raw output")
+        self.assertFalse(os.path.exists(os.path.join(self.project, "design")), "nor anything in the project")
+        return json.loads(r.stdout) if r.stdout.strip() else r.stderr
+
+    def test_probe_image_reports_ok_and_deletes_the_test_image(self):
+        rep = self.probe()
+        self.assertEqual(rep["image"], "ok")
+        brain = os.path.join(self.home, ".gemini", "antigravity-cli", "brain", CONV)
+        self.assertEqual(os.listdir(brain), [], "the probe image is deleted")
+        argv = self.calls()[0]["argv"]
+        self.assertIn("generate_image", argv[argv.index("-p") + 1])  # the same image path as generate
+
+    def test_probe_image_reports_the_quota_and_its_reset_time(self):
+        for mode, reset in (("quota-reply", "2h 14m"), ("quota-stderr", "37s"), ("limit", None)):
+            with self.subTest(mode):
+                self.mode(mode)
+                rep = self.probe(code=21)
+                self.assertEqual((rep["image"], rep["reset"]), ("quota", reset))
+                self.assertIn(("It resets: %s." % reset) if reset else "no reset time", rep["detail"])
+
+    def test_probe_image_reports_agy_missing_or_signed_out_and_unknown_answers(self):
+        self.mode("signed-out")
+        self.assertEqual(self.probe(code=22)["image"], "unavailable")
+        self.assertEqual(self.probe(code=22, path="/usr/bin:/bin")["image"], "unavailable")
+        for mode in ("no-image", "fail", "status-error"):
+            with self.subTest(mode):
+                self.mode(mode)
+                self.assertEqual(self.probe()["image"], "unknown")
+
+    def test_probe_image_sends_nothing_when_agy_is_not_allowed(self):
+        self.allow([])
+        self.assertIn("Nothing was sent", self.probe(code=20))
+        self.assertEqual(self.calls(), [])
+
     def review_state(self, entries):
         path = os.path.join(self.project, "design", "asset-review", "APP-7", "state.json")
         os.makedirs(os.path.dirname(path), exist_ok=True)

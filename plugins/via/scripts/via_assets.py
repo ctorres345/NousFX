@@ -5,6 +5,7 @@ Usage: via_assets.py audit    [--project DIR]
        via_assets.py convert  [--project DIR] [--dry-run] [--only NAME ...]
        via_assets.py generate --kind image|svg --name NAME --key KEY (--prompt TEXT | --prompt-file FILE)
                               [--project DIR] [--timeout SECONDS] [--ref IMAGE ...] [--missing]
+       via_assets.py probe-image [--project DIR] [--timeout SECONDS (120)]
 
 The spec is design/assets.toml in the project:
 
@@ -54,6 +55,12 @@ Pillow; when assets.toml has a row for --name, the row's set layout and transpar
 candidate in design/asset-review/<KEY>/state.json. Prints {"path", "kind", "conversation_id", "findings"}; exit 21
 with "Stopped: ..." and the reset time (when agy gave one) on a quota error (RESOURCE_EXHAUSTED, 429), exit 1 when
 agy fails otherwise.
+
+`probe-image` asks agy for one tiny image through the same path, under the same allow-list, to learn before a batch
+whether the image model answers. The image it finds is deleted from agy's folder (best effort: one it cannot
+find or remove, also after a failed call, stays there) and written nowhere else. Prints
+{"image": "ok" | "quota" | "unavailable" | "unknown", "reset", "detail"}; exit 0 for ok and unknown (an answer it
+does not know, or a failed call such as a timeout), 21 for quota, 22 when agy is not installed or not signed in.
 """
 import argparse
 import contextlib
@@ -1047,18 +1054,67 @@ KEY_NOTE = (" Draw it on a flat, solid %s background that fills every pixel arou
             "texture, checkerboard, frame or border, and do not use that color anywhere in the art itself.")
 
 
-def quota_stop(text, prompt=None):
-    """Stop with exit QUOTA when text shows a quota error, naming the reset time when agy gave one. Text that can
-    echo the prompt comes with it: a prompt that itself names a quota error (art for a 429 page) is never read
-    as one there."""
-    if not via_agy_call.LIMIT.search(text) or prompt is not None and via_agy_call.LIMIT.search(prompt):
-        return
+def is_quota(text, prompt=None):
+    """True when text shows a quota error. Text that can echo the prompt comes with it: a prompt that itself names
+    a quota error (art for a 429 page) is never read as one there."""
+    return bool(via_agy_call.LIMIT.search(text)) and not (prompt is not None and via_agy_call.LIMIT.search(prompt))
+
+
+def reset_clause(text):
+    """The sentence naming when agy's quota resets, from the time agy gave in text, if any."""
     reset = RESET_RE.search(text)
     reset = (reset.group(1) or reset.group(2)).strip() if reset else None
-    die("agy is out of quota (RESOURCE_EXHAUSTED or 429). %s Stop the batch here; the assets without a candidate "
-        "can be made later with generate --missing. Nothing was written"
-        % ("It resets: %s." % reset if reset else "agy gave no reset time; try again later."),
-        QUOTA)
+    return reset, "It resets: %s." % reset if reset else "agy gave no reset time; try again later."
+
+
+def quota_stop(text, prompt=None):
+    """Stop with exit QUOTA when text shows a quota error, naming the reset time when agy gave one."""
+    if is_quota(text, prompt):
+        die("agy is out of quota (RESOURCE_EXHAUSTED or 429). %s Stop the batch here; the assets without a "
+            "candidate can be made later with generate --missing. Nothing was written" % reset_clause(text)[1],
+            QUOTA)
+
+
+def agy_allowed(project):
+    """Stop, sending nothing, unless the project's outbound allow-list lists agy."""
+    try:
+        code, result = via_outbound.decide(project, "agy")
+    except via_outbound.Bad as e:
+        die("%s. Nothing was sent" % e)
+    if code != via_outbound.ALLOWED:
+        die("%s. Nothing was sent" % result["reason"], code)
+
+
+PROBE = "a plain light grey square, 64x64 pixels, nothing else"
+UNAVAILABLE = 22  # agy not installed or not signed in: the code via_agy_call.py's own command line uses
+
+
+def probe_image(project, timeout):
+    """(report, exit code) of one tiny generate_image call; see probe-image at the top of this file."""
+    agy_allowed(project)
+    started = via_agy_call.now()
+    asked = IMAGE_PROMPT % PROBE
+    try:
+        reply = via_agy_call.call(asked, timeout, skip=(project,), draw=True)
+    except via_agy_call.AgyUnavailable as e:
+        return {"image": "unavailable", "reset": None, "detail": str(e)}, UNAVAILABLE
+    except via_agy_call.AgyError as e:  # an AgyLimit comes from agy's own stderr, which never echoes the prompt
+        said, quota = str(e), isinstance(e, via_agy_call.AgyLimit) or is_quota(str(e), asked)
+    else:
+        found = via_agy_call.image_file(reply, started)
+        if found:
+            try:
+                os.unlink(found[0])
+                gone = "it was deleted"
+            except OSError:  # agy's own folder: a file we cannot remove is left to agy
+                gone = "it could not be deleted from agy's folder"
+            return {"image": "ok", "reset": None, "detail": "agy made a test image; %s." % gone}, 0
+        said = "agy made no image. Raw reply: %s" % reply["response"]
+        quota = is_quota(reply["response"], asked)
+    if quota:
+        reset, clause = reset_clause(said)
+        return {"image": "quota", "reset": reset, "detail": "agy's image quota is used up. %s" % clause}, QUOTA
+    return {"image": "unknown", "reset": None, "detail": said[:400]}, 0
 
 
 def spec_row(project, name):
@@ -1085,13 +1141,8 @@ def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False):
     if missing and has_candidate(project, key, name):
         return {"skipped": name, "reason": "it already has a pending or approved candidate"}
     row = spec_row(project, name)
+    agy_allowed(project)
     files = read_refs(refs)
-    try:
-        code, result = via_outbound.decide(project, "agy")
-    except via_outbound.Bad as e:
-        die("%s. Nothing was sent" % e)
-    if code != via_outbound.ALLOWED:
-        die("%s. Nothing was sent" % result["reason"], code)
     started = via_agy_call.now()
     try:
         asked = (IMAGE_PROMPT if kind == "image" else SVG_PROMPT) % prompt.strip()
@@ -1171,9 +1222,16 @@ def main():
     g.add_argument("--ref", action="append", default=[], help="a style reference image (up to %d)" % MAX_REFS)
     g.add_argument("--missing", action="store_true", help="skip the name when it already has a pending or "
                    "approved candidate in the review gallery")
+    pr = sub.add_parser("probe-image")
+    pr.add_argument("--project", default=".")
+    pr.add_argument("--timeout", type=int, default=120)
     args = ap.parse_args()
     project = os.path.realpath(args.project)
     try:
+        if args.cmd == "probe-image":
+            report, code = probe_image(project, args.timeout)
+            emit(report)
+            sys.exit(code)
         if args.cmd == "generate":
             prompt = args.prompt
             if prompt is None:

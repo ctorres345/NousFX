@@ -15,6 +15,8 @@ python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_setup.py" --atlassian <present|
 ```
 Substitute the real plugin path for `${CLAUDE_PLUGIN_ROOT}` in the command, because the variable is not set inside Bash. The script detects agy (installed or not; it is never started), Gemini (key source only, never the key), the Obsidian vault, simulators and emulators, then creates or refreshes `~/.config/nousfx/via.json`.
 
+Only when the user asks to check image generation (`/via setup --image`), also run `python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_assets.py" probe-image --project "<project root>"`. It uses one image of agy's quota, so never run it otherwise. Report its `image` status (ok, quota with the `reset` time, unavailable, unknown) as an extra row in the table.
+
 ## 3. Locked skills
 Third-party skills are installed only from the lock (`${CLAUDE_PLUGIN_ROOT}/skills.lock.json`): a pinned commit and a checksum for each, verified before anything is written.
 1. Run `python3 -I -B "${CLAUDE_PLUGIN_ROOT}/scripts/via_skills.py" plan`. Show the user its output: what it would fetch (repo, folder, commit) and any collision. A collision means a folder with the same name is already there and was not installed by this tool. It is never touched; tell the user and move on.

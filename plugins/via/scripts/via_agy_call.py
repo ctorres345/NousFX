@@ -200,7 +200,13 @@ def kill_group(proc):
 
 
 def image(reply, started):
-    """(bytes, extension) of the first image named in the reply text that sits in this conversation's brain
+    """(bytes, extension) of the image image_file finds, or None."""
+    found = image_file(reply, started)
+    return found[1:] if found else None
+
+
+def image_file(reply, started):
+    """(path, bytes, extension) of the first image named in the reply text that sits in this conversation's brain
     folder, is a regular file written during this call, is under MAX_IMAGE bytes and whose content is really a
     PNG, JPEG or WebP (the extension comes from the content). None when there is none. Never lists the folder."""
     root = os.path.realpath(brain_dir(reply["conversation_id"])) + os.sep
@@ -220,7 +226,7 @@ def image(reply, started):
             data = f.read(MAX_IMAGE + 1)
         ext = image_type(data)
         if ext and len(data) <= MAX_IMAGE:
-            return data, ext
+            return path, data, ext
     return None
 
 
