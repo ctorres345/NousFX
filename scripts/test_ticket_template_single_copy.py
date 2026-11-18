@@ -32,6 +32,11 @@ class TicketTemplate(unittest.TestCase):
         self.assertIn("Proof:", text)
         self.assertIn("Proof: manual:", text)
 
+    def test_a_quota_limited_manual_proof_names_a_backup(self):  # NFX-177
+        text = read(SOURCE)
+        self.assertIn("Proof: manual: the step Backup: ", text)
+        self.assertRegex(text, r"(?m)^- A manual proof that needs a quota-limited or paid service .* adds `Backup: <proof>`")
+
 
 class AssetsDeclaration(unittest.TestCase):
     """NFX-165: tickets declare asset needs with a section and the needs-assets label."""

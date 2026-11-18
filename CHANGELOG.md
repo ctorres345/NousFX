@@ -14,6 +14,9 @@
 ### Via
 - Phone shots are laid out at the phone's real width (NFX-169). Headless Chrome's window is at least 500 px wide, so `via_capture.py` phone shots were a 500 px layout with the right 110 px cut off. They now go through Chrome's DevTools pipe: the page loads at 390x844 CSS px as a mobile viewport (a page with no viewport meta tag is laid out 980 px wide and scaled down, as on a real phone), and the PNG is 780x1688 (2x). Desktop shots are unchanged. On Windows phone shots keep the old window size.
 
+### Tickets
+- A manual proof that needs a quota-limited or paid service (agy images, the Gemini API, a store review) names a backup: `Proof: manual: <step> Backup: <proof>`, such as a recorded output or a stubbed run, which counts when the service is unavailable (NFX-177). The ticket template and its ready check describe it, and `prove.py attest` lists the backup under its step. The PR's proof table says which one ran.
+
 ## 1.3.1 (2026-11-17)
 
 ### Via assets (NFX-159)

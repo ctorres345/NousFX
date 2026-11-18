@@ -10,6 +10,10 @@ LIST is a Markdown file taken from the ticket's acceptance criteria (a PR table'
 they are not read). Every line with `Proof:` is one proof:
     Proof: `command`        run at the repo top level; must exit 0 and leave the working tree unchanged
     Proof: manual: <step>   listed by attest, never run and never counted
+    Proof: manual: <step> Backup: <other proof>
+                            the same, with a backup that counts when the step needs a quota-limited or paid service
+                            that is unavailable (NFX-177); attest lists both, and the PR's proof table says which ran
+                            ` Backup:` is reserved in a manual step: an older step that uses it is split there
 Any other `Proof:` line is refused, so a typo cannot drop a criterion. Prose such as a `Proof:` in backticks is not
 a proof line.
 
@@ -36,6 +40,7 @@ DEFAULT_TIMEOUT = 600
 PROOF_LINE = re.compile(r"(?<![-`\w])Proof:[ \t]*(.*?)[ \t]*$")
 COMMAND = re.compile(r"`([^`]*)`\.?")
 MANUAL = "manual:"
+BACKUP = re.compile(r"\s+Backup:\s*")
 KIND = "proof"
 
 
@@ -86,8 +91,11 @@ def read_list(path):
         rest = m.group(1)
         if rest.startswith(MANUAL):
             step = rest[len(MANUAL):].strip()
-            if not step:
+            parts = BACKUP.split(" " + step)
+            if not parts[0].strip():
                 raise Refused(f"line {number}: `Proof: manual:` names no step")
+            if len(parts) > 2 or (len(parts) == 2 and not parts[1].strip()):
+                raise Refused(f"line {number}: a manual proof takes one `Backup:` that names the backup proof")
             proofs.append(("manual", step))
             continue
         c = COMMAND.fullmatch(rest)
@@ -181,7 +189,10 @@ def attest(args):
     for text in commands:
         print(f"  proof: {text}")
     for text in manual:
-        print(f"  manual: {text} (not run)")
+        step, *backup = BACKUP.split(text, 1)
+        print(f"  manual: {step} (not run)")
+        if backup:
+            print(f"    backup: {backup[0]}")
     return 0
 
 
