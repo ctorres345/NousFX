@@ -3,6 +3,7 @@
 
 Usage: via_assets_review.py add     --key KEY --name NAME --file RAW [--conversation-id ID] [--prompt-file FILE]
                                     [--project DIR]
+       via_assets_review.py import  --key KEY --name NAME --file FILE --origin TEXT [--project DIR]
        via_assets_review.py approve --key KEY --name NAME [--project DIR]
        via_assets_review.py reject  --key KEY --name NAME --note TEXT [--project DIR]
        via_assets_review.py status  --key KEY [--project DIR]
@@ -16,7 +17,9 @@ state and note.
 
 States: pending (a candidate waits for review), approved, rejected (with a note). `add` takes a file that
 `via_assets.py generate` wrote (only from that ticket's raw-output folder) for a name in design/assets.toml, and
-makes it the pending candidate; adding to a rejected or pending name is the regenerate step: the attempt count
+makes it the pending candidate. `import` does the same for an image made outside Via (the Gemini app, by hand)
+from any folder, with the same checks plus a real image header, and records --origin in the state, the gallery
+card and the log. Adding or importing to a rejected or pending name is the regenerate step: the attempt count
 goes up and only that asset changes. `approve` copies the candidate to the asset's `source` and runs `convert`
 for that name only, so it lands in the platform folders. `reject` needs a note. Nothing is committed: the user
 commits the assets, design/assets.toml and the log design/asset-log/<KEY>.md, which every command appends to.
@@ -28,10 +31,11 @@ kept and send it to `via_second_opinion.py`. SVG candidates are listed under `ca
 `via_capture.py` for those.
 
 Stdout is JSON. Exit 0 on success, 1 when the input is wrong or the step is refused (the reason goes to stderr as
-"Stopped: ..."; nothing was changed), 2 on a secret-shaped note or prompt.
+"Stopped: ..."; nothing was changed), 2 on a secret-shaped note, prompt or origin.
 """
 import argparse
 import html
+import io
 import json
 import os
 import re
@@ -51,6 +55,9 @@ RASTER = via_assets.RASTER_EXT
 MAX_FILE = 16 * 1024 * 1024
 MAX_NOTE = 500
 MAX_PROMPT_IN_LOG = 600
+MAX_ORIGIN = 200
+MAX_PIXELS = 89478485  # Pillow's decompression-bomb limit, so approve never trips it
+MAGIC = {".png": b"\x89PNG\r\n\x1a\n", ".jpg": b"\xff\xd8\xff", ".webp": b"RIFF"}
 CANDIDATE_RE = re.compile(r"[a-z0-9_]+-[0-9]+\.(svg|png|jpg|jpeg|webp)")  # <name>-<attempt>.<ext>, as add writes
 
 
@@ -88,6 +95,7 @@ def entry_ok(a):
             and isinstance(a.get("file"), str) and CANDIDATE_RE.fullmatch(a["file"]) is not None
             and type(a.get("attempt")) is int and a["attempt"] > 0 and type(a.get("svg_findings", 0)) is int
             and "note" in a and (a["note"] is None or isinstance(a["note"], str))
+            and (a.get("origin") is None or isinstance(a["origin"], str))
             and isinstance(a.get("history", []), list) and all(isinstance(h, dict) for h in a.get("history", [])))
 
 
@@ -151,27 +159,11 @@ def entry(spec, name):
 # --- commands ---
 
 def cmd_add(project, args):
-    spec = load(project)
-    asset = entry(spec["rows"], args.name)
     raw_root = via_assets.raw_dir(project, args.key)
     src = os.path.abspath(args.file)
     if os.path.islink(src) or not via_assets.inside(src, raw_root) or not os.path.isfile(src):
         die("%s is not a file that `generate` wrote for %s (it must be inside %s). Nothing was changed."
             % (args.file, args.key, raw_root))
-    ext = os.path.splitext(src)[1].lower()
-    if (asset["kind"] == "svg") != (ext == ".svg") or (ext != ".svg" and ext not in RASTER):
-        die("%s is a %s asset, and %s is not. Nothing was changed." % (args.name, asset["kind"], args.file))
-    data = via_agy_call.read_file(src)
-    if len(data) > MAX_FILE:
-        die("%s is over %d bytes. Nothing was changed." % (args.file, MAX_FILE))
-    findings = 0
-    if ext == ".svg":
-        root, _, problem = via_assets.parse_svg_bytes(data)
-        found = [] if root is None else via_assets.svg_findings(root, args.name, spec["palette"], "android" in
-                                                                  asset["platforms"])
-        if problem or {f["rule"] for f in found} & via_assets.UNSAFE_SVG:
-            die("%s breaks the SVG safety rules. Generate it again. Nothing was changed." % args.file)
-        findings = len(found)
     prompt = None
     if args.prompt_file:
         try:
@@ -182,6 +174,47 @@ def cmd_add(project, args):
     conv = args.conversation_id or ""
     if conv and not re.fullmatch(r"[A-Za-z0-9-]{1,64}", conv):
         die("--conversation-id is not an agy conversation id. Nothing was changed.")
+    return admit(project, args, src, conv=conv, prompt=prompt)
+
+
+def cmd_import(project, args):
+    """An image made outside Via (the Gemini app, by hand): the same checks as `add`, from any folder."""
+    origin = checked_text(args.origin, "The origin", MAX_ORIGIN)
+    src = os.path.abspath(args.file)
+    if os.path.islink(src) or not os.path.isfile(src):
+        die("%s is a symlink or not a file. Nothing was changed." % args.file)
+    return admit(project, args, src, origin=origin)
+
+
+def admit(project, args, src, conv="", prompt=None, origin=None):
+    """Check one file against its assets.toml row and make it the asset's pending candidate."""
+    spec = load(project)
+    asset = entry(spec["rows"], args.name)
+    ext = os.path.splitext(src)[1].lower()
+    if (asset["kind"] == "svg") != (ext == ".svg") or (ext != ".svg" and ext not in RASTER):
+        die("%s is a %s asset, and %s is not. Nothing was changed." % (args.name, asset["kind"], args.file))
+    try:
+        if os.path.getsize(src) > MAX_FILE:
+            die("%s is over %d bytes. Nothing was changed." % (args.file, MAX_FILE))
+        data = via_agy_call.read_file(src)
+    except (OSError, via_agy_call.AgyError) as e:
+        die("cannot read %s (%s). Nothing was changed." % (args.file, getattr(e, "strerror", None) or e))
+    if len(data) > MAX_FILE:
+        die("%s is over %d bytes. Nothing was changed." % (args.file, MAX_FILE))
+    findings = 0
+    if ext == ".svg":
+        root, _, problem = via_assets.parse_svg_bytes(data)
+        found = [] if root is None else via_assets.svg_findings(root, args.name, spec["palette"], "android" in
+                                                                  asset["platforms"])
+        if problem or {f["rule"] for f in found} & via_assets.UNSAFE_SVG:
+            die("%s breaks the SVG safety rules. Generate it again. Nothing was changed." % args.file)
+        findings = len(found)
+    else:
+        size = via_assets.image_size(io.BytesIO(data)) if data.startswith(MAGIC[ext.replace(".jpeg", ".jpg")]) else None
+        if size is None:
+            die("%s is not a readable %s image. Nothing was changed." % (args.file, ext[1:].upper()))
+        if size[0] * size[1] > MAX_PIXELS:
+            die("%s is %dx%d, over %d pixels. Nothing was changed." % (args.file, size[0], size[1], MAX_PIXELS))
 
     state = load_state(project, args.key)
     old = state["assets"].get(args.name)
@@ -194,13 +227,13 @@ def cmd_add(project, args):
     via_assets.write_atomic(os.path.join(base, name), data)
     history = (old or {}).get("history", [])
     if old:
-        history.append({k: old.get(k) for k in ("attempt", "state", "note", "conversation_id")})
+        history.append({k: old.get(k) for k in ("attempt", "state", "note", "conversation_id", "origin")})
     state["assets"][args.name] = {"kind": asset["kind"], "file": name, "state": "pending", "note": None,
-                                  "attempt": attempt, "conversation_id": conv or None, "svg_findings": findings,
-                                  "history": history}
+                                  "attempt": attempt, "conversation_id": conv or None, "origin": origin,
+                                  "svg_findings": findings, "history": history}
+    how = ", agy conversation %s" % conv if conv else ", imported from %s" % origin if origin else ""
     log(project, args.key, "`%s` attempt %d (%s)%s: pending.%s" % (
-        args.name, attempt, asset["kind"], ", agy conversation %s" % conv if conv else "",
-        " Prompt: %s" % prompt if prompt else ""))
+        args.name, attempt, asset["kind"], how, " Prompt: %s" % prompt if prompt else ""))
     save(project, args.key, state, spec["rows"])
     return report(project, args.key, state, args.name)
 
@@ -433,6 +466,7 @@ def gallery(state, rows):
                  '<p class="meta">%s</p>' % e(row.get("usage", "")) if row.get("usage") else "",
                  '<p class="meta">Attempt %d%s</p>' % (a["attempt"], " · %d SVG finding(s)" % a["svg_findings"]
                                                         if a.get("svg_findings") else ""),
+                 '<p class="meta origin">From: %s</p>' % e(a["origin"]) if a.get("origin") else "",
                  '<span class="badge %s">%s</span>' % (a["state"], a["state"].capitalize())]
         if a["state"] == "rejected" and a.get("note"):
             parts.append('<p class="note">%s</p>' % e(a["note"]))
@@ -473,6 +507,10 @@ def main():
         p.add_argument("--name", required=True)
         if cmd == "reject":
             p.add_argument("--note", required=True)
+    i = sub.add_parser("import", parents=[common])
+    i.add_argument("--name", required=True)
+    i.add_argument("--file", required=True)
+    i.add_argument("--origin", required=True)
     sub.add_parser("status", parents=[common])
     s = sub.add_parser("shots", parents=[common])
     s.add_argument("--run-dir", required=True)
@@ -480,7 +518,7 @@ def main():
     if not via_assets.KEY_RE.match(args.key):
         die("--key %r is not a ticket key such as APP-7. Nothing was changed." % args.key)
     project = os.path.realpath(args.project)
-    via_assets.emit({"add": cmd_add, "approve": cmd_approve, "reject": cmd_reject, "status": cmd_status,
+    via_assets.emit({"add": cmd_add, "import": cmd_import, "approve": cmd_approve, "reject": cmd_reject, "status": cmd_status,
                      "shots": cmd_shots}[args.cmd](project, args))
 
 

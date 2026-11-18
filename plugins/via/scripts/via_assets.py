@@ -48,7 +48,9 @@ rule (parse, DOCTYPE, script, embedded content) stops with exit 1 and nothing is
 Pillow. Prints {"path", "kind", "conversation_id", "findings"}; exit 1 with "Stopped: ..." when agy fails.
 """
 import argparse
+import contextlib
 import fnmatch
+import io
 import json
 import os
 import re
@@ -244,8 +246,8 @@ def targets(spec, asset, project):
 # --- image sizes from headers (stdlib only) ---
 
 def image_size(path):
-    """(width, height) of a PNG, JPEG or WebP file as it displays (a JPEG's EXIF rotation applied), or None when the
-    header cannot be read or names a zero size."""
+    """(width, height) of a PNG, JPEG or WebP file (a path, or an open binary file such as io.BytesIO) as it
+    displays (a JPEG's EXIF rotation applied), or None when the header cannot be read or names a zero size."""
     size = _header_size(path)
     return size if size and size[0] > 0 and size[1] > 0 else None
 
@@ -273,7 +275,7 @@ def _header_size(path):
     exif = xmp = size = None
     seen_exif = False
     try:
-        with open(path, "rb") as f:
+        with (contextlib.nullcontext(path) if isinstance(path, io.IOBase) else open(path, "rb")) as f:
             head = f.read(64)
             if head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR":
                 return struct.unpack(">II", head[16:24])
