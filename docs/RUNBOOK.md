@@ -11,6 +11,7 @@ The steps I repeat by hand for NousFX. Each one changes my own machine only, exc
 | Installing or updating Via | [Install or update Via](#install-or-update-via) |
 | Something broke after a sync | [Roll back a sync](#roll-back-a-sync) |
 | About once a week | [Check token usage](#check-token-usage) |
+| Monday, when the weekly skills report says `UPDATES` or `ERRORS` | [Update pinned skills](#update-pinned-skills) |
 | Every ticket in a Jira version is Done | [Cut a release](#cut-a-release) |
 
 ## How it fits together
@@ -257,6 +258,80 @@ python3 -I scripts/usage-report.py --days 14
 ```
 
 Look at average context per session and Fable cost. The baseline from 2026-10-19 was about $277 over 14 days, with cache reads at 60–66% of it.
+
+## Update pinned skills
+
+The outside skills in `harness/skills.lock.json` and the `android` CLI go stale without a sign. A weekly task runs `check`, which only reads. Applying an update is a normal session under a ticket where I read the diff first. A bump touches `harness/`, a tier 3 path, so nothing here is unattended.
+
+1. Read the weekly report, or run the check by hand:
+
+   ```bash
+   cat ~/Releases/NousFX/skills-check/latest.md
+   python3 -I -B scripts/nousfx_skills_update.py check
+   ```
+
+   The first line says what happened:
+
+   | First line | Meaning |
+   |---|---|
+   | `NO UPDATES` | every pinned skill is as pinned and the `android` CLI is the latest build |
+   | `UPDATES: N changed` | N skills (or the `android` CLI) differ upstream; the names are in the lines below |
+   | `ERRORS: N could not be checked (...)` | an upstream was unreachable, a pin was force-pushed away, a folder was removed, an upstream tree was refused (`could not stage`: a symlink or an odd file name, so read it before anything else), or the `android` lookup failed. It is never reported as `NO UPDATES`, so a scheduler that cannot reach GitHub shows up here |
+
+   The last line of the report is `checked: <UTC time>`. If it is older than a week the schedule is not running (a missing script, an interpreter that does not start, the agent not loaded): treat that as an error, whatever line 1 says. A run that dies midway leaves `ERRORS: the check did not finish`.
+
+   Under each changed skill: the diff size, then a `flag:` line for each piece of executable or behavior surface: a non-Markdown file added or changed (`[script]` for code), a `!` command line in `SKILL.md`, a frontmatter change (`description`, `allowed-tools`, `disable-model-invocation` come first) and each new URL.
+2. For a skill I want, open a ticket (label `harness`).
+3. On `cesar/<KEY>`, bump the skills I picked. It prints the full diff and the same flags, then writes the new commit and sha256 for those skills only, or nothing if any step fails:
+
+   ```bash
+   python3 -I -B scripts/nousfx_skills_update.py bump <skill>...
+   python3 -I -B scripts/nousfx_skills_update.py bump <skill> --commit <sha>   # an older commit instead of the HEAD
+   ```
+
+   It refuses a commit that is not in the upstream HEAD history (another branch, or a fork's commit), and prints `WARNING` when the pinned commit left that history (a force-push), because then the diff may hold more than the last change.
+
+4. Read every flagged line before the PR. A new script, a `!` command, a wider `allowed-tools` or a new URL is a reason to stop and look at the file, not to skim.
+5. Check, then PR:
+
+   ```bash
+   python3 -B scripts/nousfx_sync.py --check --summary
+   python3 -B scripts/run_checks.py
+   ```
+
+   Then `review-loop` and the PR. After the merge, [Update after a merge](#update-after-a-merge) installs the new files.
+6. The `android` CLI is not in the lock. When the report says a newer build is published, I run `android update` myself.
+
+### Weekly schedule
+
+A macOS LaunchAgent runs `check` every Monday at 09:00 (a run missed while the Mac sleeps happens at wake) and writes the report outside the repo. It never writes the lock and never opens a PR. Save this as `~/Library/LaunchAgents/com.nousfx.skills-check.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.nousfx.skills-check</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>mkdir -p "$HOME/Releases/NousFX/skills-check" &amp;&amp; export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" &amp;&amp; /usr/bin/python3 -I -B "$HOME/Projects/NousFX/scripts/nousfx_skills_update.py" check --report "$HOME/Releases/NousFX/skills-check/latest.md" &gt;"$HOME/Releases/NousFX/skills-check/last-run.log" 2&gt;&amp;1</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+</dict>
+</plist>
+```
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nousfx.skills-check.plist   # turn it on
+launchctl kickstart -k gui/$(id -u)/com.nousfx.skills-check                             # run it once now
+launchctl print gui/$(id -u)/com.nousfx.skills-check | head -20                         # list it and its last exit code
+launchctl bootout gui/$(id -u)/com.nousfx.skills-check                                  # turn it off
+```
+
+The job runs the script from the main checkout, so it works only after the PR that added the script is merged and that checkout is updated. An exit code of 1 means updates, 2 means errors; both still write the report. The skill repos are public, so `git` needs no GitHub login; a failure to reach them shows as `ERRORS` in `latest.md`.
 
 ## Cut a release
 
