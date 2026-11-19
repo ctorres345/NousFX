@@ -84,6 +84,22 @@ class ReviewLoopSplit(unittest.TestCase):
         with open(os.path.join(ROOT, "claude", "skills", "project-setup", "SKILL.md"), encoding="utf-8") as f:
             self.assertIn("`references/*.md`", f.read())
 
+    def test_the_test_fail_check_is_named_with_its_step_and_its_no_finding(self):
+        skill = read("SKILL.md")
+        self.assertIn("## Test-fail check\n", skill)
+        stub = skill.split("## Test-fail check\n")[1].split("\n")[0]
+        for word in ("references/testfail.md", "after Step 0", "Record the review"):
+            self.assertIn(word, stub)
+        ref = read("references", "testfail.md")
+        self.assertTrue(ref.startswith("Read this after Step 0"))
+        for word in ("scripts/testfail.py run", "testfail.py attest", "Tests-Fail-Without:", "AC-Proof:"):
+            self.assertIn(word, ref)
+        no_row = [l for l in ref.splitlines() if l.startswith("| `no` |")]
+        self.assertEqual(len(no_row), 1)
+        for word in ("`med` finding", "pure-refactor"):
+            self.assertIn(word, no_row[0])
+        self.assertTrue(os.path.isfile(os.path.join(LOOP_DIR, "scripts", "testfail.py")))
+
     def test_record_the_review_still_names_the_final_argon_call(self):
         self.assertIn("make the final Argon call", read("SKILL.md"))
 

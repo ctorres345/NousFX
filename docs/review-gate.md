@@ -126,6 +126,27 @@ at most N turns.
 - `manual:0` means the goal fails while a manual proof is left, so a hands-off run needs command proofs only.
 - Every finding then has a disposition (`fix-now`, `follow-up` or `note`, see the review-loop skill); the PR body carries the follow-up drafts and the notes.
 
+### Test-fail stamp and the Tests-Fail-Without line (NFX-190)
+
+`claude/skills/review-loop/scripts/testfail.py` shows whether the tests in a diff fail without the change, so a reviewer no longer guesses.
+
+```
+testfail.py run ──► diff vs base: test files and production files (docs and lockfiles are neither)
+                     │ no test file or no production file: n/a
+                     └─► temporary clone outside the repo (git clone --shared, ignored files not copied)
+                          ├─ run [check] with the change ── fails ──► baseline-fail
+                          └─ restore every changed non-test file to base, docs too (added ones deleted), run [check] again
+                              passes ──► no   fails, names a new test ──► yes   fails, names none ──► build
+                              (a name the passing run also printed does not count)
+testfail.py attest ──► stamp MAC, tree, branch, base, check and config match? ──► Tests-Fail-Without: <verdict> <tree> base:<hash>
+```
+
+- Exit 0 for `yes` and `n/a`, 1 for `no`, `build` and `baseline-fail`, 2 for a refusal (timeout, detached HEAD, no `[check]` command, a tree that changed during the run, an unreadable base); `attest` exits like the run it attests. `build` is never proof: a build or import error does not show a test fails. A timeout is a refusal with the same `[check] timeout` as `--mark`, never a pass.
+- The check command is the gate's own: the default branch's `.nousfx/project.toml` when it has one. Two optional keys in `[check]` are read from the same copy: `tests = ["glob", ...]` (default `test_*`, `*_test.*`, a `tests/` folder) and `failure_pattern = "regex"` (group 1 names a failing test; the default covers unittest, pytest, go, cargo and Gradle). The gate ignores them.
+- The real working tree and index are not written: trees are hashed from a temporary index seeded from HEAD without stat data (so every file is hashed again and tracked files that match `.gitignore` stay in), git runs with `GIT_OPTIONAL_LOCKS=0`, literal pathspecs and no inherited `GIT_DIR`, and a run that finds the tree changed refuses. The clone runs no git hooks (`core.hooksPath` points at an empty folder) and is removed in `finally`.
+- The stamp (`claude-testfail-pass` in the git dir, `kind: "testfail"`) is signed with the pass stamp's key and binds tree, branch, base, command, source, timeout, config and verdict. The gate hook does not read it. Put the `Tests-Fail-Without:` line in the PR body next to `AC-Proof:`.
+- Limits: it proves the tests failed without the production files on this tree, not that they are good tests. A pure refactor passes legitimately (`no` is waivable with a stated reason). The check runs twice, so a slow suite doubles. The stamp key is same-user readable, like the other stamps.
+
 ### In CI
 
 - `review-gate.py run-check --ref origin/<base>` reads the command from the base branch and runs it in the PR checkout. The workflow takes the gate from the base branch too, so a PR cannot change the command or the script that reads it.
@@ -315,5 +336,5 @@ This is a guardrail against a mistaken or lazy agent, not against someone editin
 - It does not prove the review was good, or that findings were fixed beyond the mark's count.
 - A skip passes. The log shows the reason so a human can see it.
 - The gate script comes from the base branch, so a PR cannot weaken the check on itself. A change to the gate takes effect only after it merges.
-- Locally, sync makes the honor system harder to fake, not impossible (NFX-101). Deny rules keep Claude's file tools off the marker, the pass stamp, the proof stamp, the stamp key and the branch-name exception (`claude-review-ok`, `claude-review-check-pass`, `claude-proof-pass`, `claude-review-stamp-key`, `claude-branch-ok`, in any git dir). Ask rules make `--skip`, `--tier-override` and `--allow-branch` prompt you, even in auto or bypass mode. Block and usage messages no longer print a ready-made waiver command (`--skip`, `--tier-override`, `--allow-branch`). Known limits: the ask rules match command text, so `python3 -c`, a copy of the gate, `eval`, a variable holding the flag, quotes inside it or a glob for the path get past them, and the stamp key is same-user 0600, so a signature on the marker would prove nothing. The control is CI plus branch protection (on this repo, `main` requires `check`, admins included, since 2026-11-08).
+- Locally, sync makes the honor system harder to fake, not impossible (NFX-101). Deny rules keep Claude's file tools off the marker, the pass stamp, the proof stamp, the stamp key and the branch-name exception (`claude-review-ok`, `claude-review-check-pass`, `claude-proof-pass`, `claude-testfail-pass`, `claude-review-stamp-key`, `claude-branch-ok`, in any git dir). Ask rules make `--skip`, `--tier-override` and `--allow-branch` prompt you, even in auto or bypass mode. Block and usage messages no longer print a ready-made waiver command (`--skip`, `--tier-override`, `--allow-branch`). Known limits: the ask rules match command text, so `python3 -c`, a copy of the gate, `eval`, a variable holding the flag, quotes inside it or a glob for the path get past them, and the stamp key is same-user 0600, so a signature on the marker would prove nothing. The control is CI plus branch protection (on this repo, `main` requires `check`, admins included, since 2026-11-08).
 - Real enforcement needs a human reviewer or a trusted runner that does the review. Branch protection plus this check only makes skipping visible. The check command (above) adds one real proof: the tests ran and passed on this tree.
