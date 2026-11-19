@@ -71,7 +71,7 @@ TOOLS = nousfx_mcp.TOOLS
 RULES_BUDGET = 6400  # bytes of generated rules (header excluded), local layers included; warn only (NFX-78; 6144 until NFX-158)
 # Bytes of harness/AGENTS.md + the Claude overlay, what every Claude session loads. A ratchet that test_rules_single_copy
 # enforces and --check --summary reports beside RULES_BUDGET; one constant, so the two cannot drift (NFX-96, NFX-133).
-CLAUDE_RULES_BUDGET = 3846  # 50 bytes over the rules at NFX-186 (wave pointer); 3775 at NFX-158, 3339 at NFX-133
+CLAUDE_RULES_BUDGET = 3913  # 50 bytes over the rules at NFX-191 (decision-log pointer); 3846 at NFX-186, 3775 at NFX-158
 MIN_REPEAT_WORDS = 6  # a local sentence this long that is also in a harness source is a repeat
 
 SECRET_PATTERNS = [

@@ -99,4 +99,4 @@ After recording, or deciding not to, print a table with one row per finding that
 | ID | severity | disposition | reason or ticket draft |
 |---|---|---|---|
 
-Then print: tier and reviewer, rounds used, findings fixed, findings rejected (with reason), findings skipped: low confidence, findings still open, Gemini checks (calls made, findings, real, wrong, or why skipped), Security skills (run, findings, real, wrong, or why skipped), Fable offers (made, accepted or declined, outcome), and test status.
+Log decisions with this skill's `scripts/session_report.py decide`; `render` reports. Then print: tier and reviewer, rounds used, findings fixed, findings rejected (with reason), findings skipped: low confidence, findings still open, Gemini checks (calls made, findings, real, wrong, or why skipped), Security skills (run, findings, real, wrong, or why skipped), Fable offers (made, accepted or declined, outcome), and test status.

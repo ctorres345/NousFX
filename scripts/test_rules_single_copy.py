@@ -75,6 +75,14 @@ class SingleCopy(unittest.TestCase):
         for rel in ("harness/AGENTS.md", "harness/overlays/claude.overlay.md"):
             self.assertIn(read(os.path.join(ROOT, rel)).replace("<prefix>", "ana").strip("\n"), built)
 
+    def test_the_decision_log_pointers_exist(self):
+        # NFX-191: the rules and the two skills that run at the end name the script; its steps live in the script.
+        for rel in ("harness/overlays/claude.overlay.md", "claude/skills/review-loop/SKILL.md",
+                    "claude/skills/after-merge/SKILL.md"):
+            self.assertIn("session_report.py", read(os.path.join(ROOT, rel)), rel)
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "claude", "skills", "review-loop", "scripts",
+                                                    "session_report.py")))
+
     def test_the_branch_rule_names_the_prefix_placeholder(self):
         self.assertIn("`<prefix>/<KEY>`", read(os.path.join(ROOT, "harness", "AGENTS.md")))
 
