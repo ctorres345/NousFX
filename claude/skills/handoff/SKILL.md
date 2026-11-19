@@ -48,3 +48,11 @@ Prefer the memory folder's parent whenever you know it: the recipe can differ fr
 - Writing there is refused (a permission prompt declined or blocked): write the note to the OS temp directory and do not try again that session. Never fall back to a worktree path.
 
 Finish by printing the full path of the file written; for the temp folder add that a new session will not find it on its own. Then suggest: run `/clear` (or open a new thread) and start the next session with "continue from <the path just printed>".
+
+## Waves (2 or more tickets)
+
+Each ticket gets its own fresh session, so no session works several tickets in a row and gets compacted. Never start the next ticket in the same session, even when it looks small.
+
+- **Cloud project threads:** one thread per ticket. Ask the coordinator for one thread each, with the Worktree option on; project threads otherwise share the main folder, so give it to at most one thread. Check `git branch --show-current` before each commit.
+- **Terminal or desktop:** finish the current ticket, run `/handoff`, then tell the user to open a new session (or `/clear`) for the next ticket.
+- **Mac-bound tickets** (Via, `env-emulator`; only one Remote Control session per Mac folder): run them one at a time, also inside a project-thread wave (this case wins over the first). After each ticket, write the `/handoff` note, then tell the user to stop and restart the session before the next one.

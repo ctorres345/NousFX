@@ -149,7 +149,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 
 ### 5. Keep sessions cheap
 - `/handoff` writes `~/.claude/projects/<key>/handoff.md`, beside the project's Claude Code memory and outside the repo, so the next session, in the main checkout or any worktree, starts from a short note instead of a huge context. Why worktree sessions keep durable files outside the repo is in [docs/worktrees.md](docs/worktrees.md).
-- One task per session. Use `/compact focus on <topic>` at milestones.
+- One task per session. For a wave (2 or more tickets), each ticket gets its own fresh session; the three cases are in the `handoff` skill. Use `/compact focus on <topic>` at milestones.
 - `python3 -I scripts/usage-report.py --days 14` shows where tokens go.
 
 ## What's in the repo

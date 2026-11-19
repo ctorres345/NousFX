@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Rules
+- Waves get one fresh session per ticket (NFX-186). `harness/AGENTS.md` has one pointer line for both tools; the `handoff` skill holds the three cases (cloud project threads, terminal or desktop, Mac-bound tickets). "One task per session." left the Claude overlay so the rule lives in one place, and `CLAUDE_RULES_BUDGET` is reset to 3846 (the shared rules' 3796 bytes + 50).
+
 ### Via assets
 - A free image source outside agy (NFX-179): `/via assets` step 3c has Claude make the images on gemini.google.com in Chrome, with no paid API call and no manual step, then import them for the gallery, Argon and approve. One Gem per app holds the style, one chat per ticket is named `<KEY> <short title>`, and each image is saved with Gemini's download button: the one new `Gemini_Generated_Image_*` file in `~/Downloads` is moved to `~/Downloads/via/<KEY>/` and imported by exact path. The Gemini Mac app is not used: it has no download, and its files are sandboxed. `via_assets.py prompts --key KEY` prints the context message (brief, palette, set layouts, web design tokens) and one prompt per open image row with no candidate yet, each the same art prompt generate sends agy. It sends nothing, and stops on an unknown or SVG row, a linked or unreadable `design/brief.md`, or a secret-shaped value in its input or output.
 - Approve several assets with one paste (NFX-181). Each pending card in the review gallery has a Select box, and a bar above the cards has "Select all pending" and "Copy approve selected", which copies `approve a, b, c` in page order. Claude reads that as one approval per name. The page still only writes to the clipboard, and rejects stay one card at a time, each with its note.
