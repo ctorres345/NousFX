@@ -30,6 +30,7 @@ CLI_VERSION = "0.4.5"
 MODEL = "gemini-4-argon"
 AGY_MODEL = "gemini-4-argon-medium"
 AGY_TIMEOUT = 600
+VIA_TIMEOUT = 30  # seconds for a via_outbound.py answer; it reads one small file and runs one git call
 VIA_SCRIPTS = os.path.join(HERE, "..", "..", "..", "..", "plugins", "via", "scripts")
 MAX_BYTES = 200000  # the most diff text one call may send
 STRIP_ENV = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
@@ -220,9 +221,18 @@ def _via(script, *args, timeout=30):
             return None
 
 
+def _outbound(*args):
+    """Asks via_outbound.py about this project. Stops with exit 3 when it cannot run or does not answer in time, so a
+    stalled answer is never read as "not allowed" or "no code paths" (NFX-203)."""
+    r = _via("via_outbound.py", *args, "--project", os.getcwd(), timeout=VIA_TIMEOUT)
+    if r is None:
+        stop(3, "Stopped: via_outbound.py did not answer in %d s (it would not start, or the machine is too busy). "
+                "Try again. Nothing was sent." % VIA_TIMEOUT)
+    return r
+
+
 def _allowed(dest):
-    r = _via("via_outbound.py", "check", "--dest", dest, "--project", os.getcwd())
-    code = r.returncode if r else -1
+    code = _outbound("check", "--dest", dest).returncode
     if code not in (0, 20):
         stop(3, "Stopped: could not read the outbound allow-list (via_outbound.py exit %d). Nothing was sent." % code)
     return code == 0
@@ -234,8 +244,8 @@ def plan_route():
     if not (route["agy"] or route["gemini"]):
         stop(4, "Stopped: this project is not allow-listed for agy or gemini in ~/.config/nousfx/via.json. "
                 "Nothing was sent.")
-    listed = _via("via_outbound.py", "paths", "--dest", "agy" if route["agy"] else "gemini", "--project", os.getcwd())
-    paths = [os.fsdecode(p) for p in listed.stdout.split(b"\0") if p] if listed and listed.returncode == 0 else []
+    listed = _outbound("paths", "--dest", "agy" if route["agy"] else "gemini")
+    paths = [os.fsdecode(p) for p in listed.stdout.split(b"\0") if p] if listed.returncode == 0 else []
     if not paths:
         stop(4, "Stopped: the allow-list entry names no gemini_code_paths. Nothing was sent.")
     route["paths"] = paths

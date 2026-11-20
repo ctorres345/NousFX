@@ -507,6 +507,7 @@ class ViaCaptureTest(unittest.TestCase):
             req = urllib.request.Request(server.origin + "/sw.js", headers={"Service-Worker": "script"})
             with self.assertRaises(urllib.error.HTTPError) as got:
                 urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req)
+            got.exception.close()  # an unclosed 502 leaves a ResourceWarning that reads like a failure in the log
             self.assertEqual(got.exception.code, 502)
             self.assertTrue(server.errors)
         finally:
@@ -906,6 +907,76 @@ def png_pixels(path, last_row):
 
 
 REQUIRE_CHROME = "--require-chrome" in sys.argv  # a proof run: no Chrome is a failure, not a skip
+CHROME_TIMED_OUT = "(TimeoutError)"  # how via_capture.py says the browser did not finish a shot in time
+
+
+def machine_busy():
+    """True when the 1-minute load average is above the CPU count, so the cores are oversubscribed."""
+    try:
+        return os.getloadavg()[0] > (os.cpu_count() or 1)
+    except (AttributeError, OSError):  # no load average (Windows): never call it busy, so a hang still fails
+        return False
+
+
+def once_more_on_timeout(attempt, require_chrome, busy=machine_busy):
+    """Runs attempt() and returns its CompletedProcess. A real Chrome that ran out of time (exit 4, TimeoutError) gets
+    one more try: a loaded machine can starve a fresh Chrome profile past the 60 s limit (NFX-203). A second timeout
+    skips the test only while busy() says the machine is oversubscribed, and never on a --require-chrome proof run.
+    Otherwise the result goes back to fail the caller's assert, so a shot that hangs every time on an idle machine,
+    a wrong picture or another error still fails."""
+    r = attempt()
+    if r.returncode == 4 and CHROME_TIMED_OUT in r.stderr:
+        r = attempt()
+        if r.returncode == 4 and CHROME_TIMED_OUT in r.stderr and not require_chrome and busy():
+            raise unittest.SkipTest("real Chrome timed out twice on a busy machine (load above the CPU count): "
+                                    + r.stderr.strip())
+    return r
+
+
+class OnceMoreOnTimeoutTest(unittest.TestCase):
+    """The retry around real Chrome shots retries only a timeout, and only once."""
+
+    TIMEOUT = subprocess.CompletedProcess([], 4, "", "Stopped: the browser failed on home-dark-phone.png "
+                                                     "(TimeoutError). No screenshots were kept.\n")
+    OK = subprocess.CompletedProcess([], 0, "{}", "")
+
+    def attempts(self, *results):
+        calls = []
+
+        def attempt():
+            calls.append(1)
+            return results[len(calls) - 1]
+        return attempt, calls
+
+    def test_a_timeout_then_a_shot_passes(self):
+        attempt, calls = self.attempts(self.TIMEOUT, self.OK)
+        self.assertIs(once_more_on_timeout(attempt, False, busy=lambda: False), self.OK)
+        self.assertEqual(len(calls), 2)
+
+    def test_two_timeouts_on_a_busy_machine_skip_with_the_reason(self):
+        attempt, calls = self.attempts(self.TIMEOUT, self.TIMEOUT)
+        with self.assertRaisesRegex(unittest.SkipTest, r"timed out twice on a busy machine.*home-dark-phone\.png"):
+            once_more_on_timeout(attempt, False, busy=lambda: True)
+        self.assertEqual(len(calls), 2)
+
+    def test_two_timeouts_still_fail_on_an_idle_machine_or_a_proof_run(self):
+        for require_chrome, busy in ((False, False), (True, True)):
+            with self.subTest(require_chrome=require_chrome, busy=busy):
+                attempt, calls = self.attempts(self.TIMEOUT, self.TIMEOUT)
+                try:
+                    r = once_more_on_timeout(attempt, require_chrome, busy=lambda: busy)
+                except unittest.SkipTest:  # raised here it would skip this test, not fail it
+                    self.fail("two timeouts skipped instead of failing")
+                self.assertEqual(r.returncode, 4)
+                self.assertEqual(len(calls), 2)
+
+    def test_any_other_failure_is_not_retried(self):
+        for other in (subprocess.CompletedProcess([], 4, "", "the browser wrote nothing for home-light-phone.png."),
+                      subprocess.CompletedProcess([], 1, "", "Traceback (TimeoutError)"), self.OK):
+            with self.subTest(stderr=other.stderr):
+                attempt, calls = self.attempts(other)
+                self.assertIs(once_more_on_timeout(attempt, False, busy=lambda: True), other)
+                self.assertEqual(len(calls), 1)
 
 
 @unittest.skipIf(via_capture_browser() is None and not REQUIRE_CHROME, "no Chrome or Chromium here")
@@ -930,12 +1001,16 @@ class RealBrowserTest(unittest.TestCase):
         write(os.path.join(repo, "index.html"), first or self.PAGE % width)
         write(os.path.join(repo, "next.html"), self.PAGE % width)
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        r = subprocess.run([sys.executable, VIA_RUN, "init", "--project", repo], capture_output=True, text=True)
-        run_dir = json.loads(r.stdout)["run_dir"]
-        r = subprocess.run([sys.executable, CAPTURE, "--run-dir", run_dir, "--project", repo, "--screen=home=index.html"],
-                           capture_output=True, text=True, timeout=600)
+        run_dirs = []
+
+        def attempt():  # each try gets a run folder of its own
+            r = subprocess.run([sys.executable, VIA_RUN, "init", "--project", repo], capture_output=True, text=True)
+            run_dirs.append(json.loads(r.stdout)["run_dir"])
+            return subprocess.run([sys.executable, CAPTURE, "--run-dir", run_dirs[-1], "--project", repo,
+                                   "--screen=home=index.html"], capture_output=True, text=True, timeout=600)
+        r = once_more_on_timeout(attempt, REQUIRE_CHROME)
         self.assertEqual(r.returncode, 0, r.stderr)
-        return run_dir
+        return run_dirs[-1]
 
     @unittest.skipIf(os.name != "posix", "phone emulation uses the DevTools pipe, POSIX only")
     def test_a_phone_shot_is_laid_out_at_390_px_and_nothing_is_cropped(self):
