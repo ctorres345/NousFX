@@ -9,10 +9,15 @@ Prints one line per suite as it finishes and exits 1 if any failed. Output of a 
 `--fail-fast` stops after the first failure and ends the suites still running (a quick local loop); the review
 gate never passes it, so a stamp is always a full pass. Suites must not write inside the repo: they run side by side, and
 some read the real tree (test_ui_review_retired.py greps it).
+The whole run holds one machine-wide suite slot (NFX-217, claude/skills/review-loop/scripts/suite_slot.py): when other
+sessions already run N full suites, it prints "waiting for a suite slot (k of N busy)" to stderr and waits. A run
+started inside a slot (the gate's stamp under testfail.py, or a suite that runs this script) does not take a second.
 """
 import argparse
 import concurrent.futures
+import contextlib
 import glob
+import importlib.util
 import json
 import os
 import subprocess
@@ -23,6 +28,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATTERNS = ["claude/hooks/test_*.py", "scripts/test_*.py", "plugins/via/scripts/test_*.py",
             "claude/skills/*/scripts/test_*.py"]
+SLOT = os.path.join(ROOT, "claude", "skills", "review-loop", "scripts", "suite_slot.py")
 
 
 def parse_args(argv):
@@ -89,8 +95,25 @@ def run(path, running, stop, lock):
     return path, subprocess.CompletedProcess(proc.args, proc.returncode, out, err), time.monotonic() - start
 
 
+def suite_slot_hold():
+    """The machine-wide suite slot, or no limit with a note when the helper cannot be loaded."""
+    try:
+        spec = importlib.util.spec_from_file_location("suite_slot", SLOT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.hold()
+    except Exception as e:  # a missing or broken helper must not stop the checks
+        print(f"note: no suite slot limit: cannot load {SLOT} ({e})", file=sys.stderr)
+        return contextlib.nullcontext()
+
+
 def main(argv):
     args = parse_args(argv)
+    with suite_slot_hold():
+        return run_all(args)
+
+
+def run_all(args):
     suites = sorted(p for pat in PATTERNS for p in glob.glob(os.path.join(ROOT, pat)))
     if not suites:
         print("FAIL: no test suites found")
