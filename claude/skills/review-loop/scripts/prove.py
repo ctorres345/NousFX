@@ -29,8 +29,10 @@ never runs anything: it checks that stamp against the current tree and list, the
 Exit 0 prints the line; exit 2 prints a reason to stderr and nothing to stdout.
 
 Proofs are self-asserted. They come from a list the branch author controls and CI does not re-run them; see
-docs/review-gate.md. The stamp helpers are the review gate's (claude/hooks/review-gate.py), found next to this
-skill's folder, so the install layout ~/.claude/{hooks,skills} and the repo layout claude/{hooks,skills} both work.
+docs/review-gate.md. The stamp helpers are the review gate's, loaded from the gate --mark runs: ~/.claude/hooks, else
+the cloud copy in the git dir, else (in a NousFX checkout only) claude/hooks next to the skills folder. A project's
+own .claude/hooks copy is never loaded (NFX-214; gate_paths, and "Where prove.py and testfail.py load the gate" in
+docs/review-gate.md).
 """
 import argparse
 import contextlib
@@ -38,6 +40,7 @@ import hashlib
 import importlib.util
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -58,16 +61,74 @@ def fail(message):
     return 2
 
 
-def load_gate():
-    """The review gate module next to this skill: the abspath first (the installed ~/.claude copy, whatever the
-    skill folder links to), then the realpath (a repo checkout)."""
-    paths = []
-    for me in (os.path.abspath(__file__), os.path.realpath(__file__)):
+def home_dir():
+    """The home from the user record, not $HOME: a repo's committed settings `env` block can set HOME (NFX-214).
+    Windows has no pwd, so there it is USERPROFILE, which that block can also set; so can PYTHONPATH, on every OS,
+    for a script run as `python3 -B` (a stated limit in docs/review-gate.md). "" when unknown: never the cwd."""
+    try:
+        import pwd
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except ImportError:
+        home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    return os.path.realpath(home) if home and os.path.isabs(home) else ""
+
+
+def gate_paths(cwd):
+    """Where the review gate may come from, reader first (NFX-214; the rule via_run.py follows, NFX-207), as
+    (path, kind) pairs, plus the trusted paths a refusal names. The gate --mark runs comes first:
+      installed  <home>/.claude/hooks/review-gate.py
+      cloud      <git-dir>/nousfx-gate/current/hooks/review-gate.py, the default branch's copy the project hook
+                 extracts when there is no ~/.claude. git runs with every GIT_* variable dropped: a committed
+                 settings `env` block could point GIT_DIR at a fake git dir in the repo.
+      checkout   only in a NousFX checkout: the gate next to the skills folder, abspath then realpath. A project copy
+                 sits in .claude/skills/review-loop/scripts, and its sibling .claude/hooks/review-gate.py is a repo
+                 file the branch under review can edit, so it is never a candidate. The checkout is told by the
+                 invoked path: the folder holding skills/ and hooks/ is named `claude` (NousFX's source layout) for
+                 both the abspath and the realpath. Projects, ~/.claude and anything else are `.claude` or another
+                 name; a committed link from .claude/skills into a claude/ folder still has a `.claude` abspath."""
+    home = home_dir()
+    installed = os.path.join(home or "<home>", ".claude", "hooks", "review-gate.py")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    # A committed folder that looks like a bare repo is not a git dir: --show-toplevel fails inside any git dir,
+    # and safe.bareRepository=explicit (git 2.38+) refuses bare discovery as a second layer.
+    try:
+        r = subprocess.run(["git", "-c", "safe.bareRepository=explicit", "rev-parse", "--absolute-git-dir",
+                            "--show-toplevel"], cwd=cwd, env=env, capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=30)
+        git_dir = (r.stdout.splitlines() + [""])[0] if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        git_dir = ""  # not a repo, or no git: no cloud copy to find
+    cloud = os.path.join(git_dir or "<git-dir>", "nousfx-gate", "current", "hooks", "review-gate.py")
+    paths = ([(installed, "installed")] if home else []) + ([(cloud, "cloud")] if git_dir else [])
+    roots = [os.path.normpath(os.path.join(os.path.dirname(me), "..", "..", ".."))
+             for me in (os.path.abspath(__file__), os.path.realpath(__file__))]
+    if all(os.path.basename(root) == "claude" for root in roots):
         # normpath, so the `..` steps are taken in the path as written: the OS would walk them through a symlink
-        paths.append(os.path.normpath(os.path.join(os.path.dirname(me), "..", "..", "..", "hooks", "review-gate.py")))
-    path = next((p for p in paths if os.path.isfile(p)), None)
-    if path is None:
-        raise Refused("cannot find review-gate.py next to the skills folder; re-run the sync")
+        paths += [(os.path.join(root, "hooks", "review-gate.py"), "checkout") for root in roots]
+    return paths, (installed, cloud)
+
+
+def find_gate(cwd):
+    """The first gate in gate_paths() that exists, as (path, kind). None found: refuse, naming the trusted paths."""
+    paths, (installed, cloud) = gate_paths(cwd)
+    found = next(((p, kind) for p, kind in paths if os.path.isfile(p)), None)
+    if found is None:
+        raise Refused(f"no trusted review gate: looked for {installed} and {cloud}. The repo's own "
+                      ".claude/hooks/review-gate.py is never loaded: it is code under review. Re-run the NousFX sync "
+                      "(in a cloud session, any Bash call lets the project hook extract the default branch's gate)")
+    return found
+
+
+def too_old_hint(kind):
+    if kind == "cloud":
+        return "the default branch's gate is older than this script; merge the gate change first"
+    return "re-run the sync"
+
+
+def load_gate(cwd=None):
+    """The trusted review gate module (gate_paths). A gate that exists but cannot load, or lacks the proof stamp,
+    refuses: the next candidate is never tried."""
+    path, kind = find_gate(cwd or os.getcwd())
     spec = importlib.util.spec_from_file_location("review_gate_for_prove", path)
     module = importlib.util.module_from_spec(spec)
     try:
@@ -75,7 +136,7 @@ def load_gate():
     except Exception as e:
         raise Refused(f"cannot load {path}: {e}") from None
     if not hasattr(module, "PROOF_STAMP_FILE"):
-        raise Refused(f"{os.path.normpath(path)} is too old for prove.py (no proof stamp); re-run the sync")
+        raise Refused(f"{path} is too old for prove.py (no proof stamp); {too_old_hint(kind)}")
     return module
 
 

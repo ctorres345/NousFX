@@ -3,7 +3,8 @@
 Run: python3 -B claude/skills/review-loop/scripts/test_testfail.py
 
 Seam: the script's CLI, its printed verdict and exit code. Each test builds a throwaway git repo under a temp dir whose
-check command is one line (`python3 -B -m unittest -q`); the real repo and HOME are never touched.
+check command is one line (`python3 -B -m unittest -q`); the real repo and HOME are never touched. The CLI runs with an
+empty temp home (gate_lookup_cases), so it never loads the real ~/.claude gate (NFX-214).
 """
 import atexit
 import hashlib
@@ -14,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+from gate_lookup_cases import GateLookupCases, run_script
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TESTFAIL = os.path.join(HERE, "testfail.py")
@@ -74,8 +77,7 @@ class Base(unittest.TestCase):
         self.write("test_calc.py", COVERING)
 
     def tf(self, *args, env=None):
-        return subprocess.run([sys.executable, "-B", TESTFAIL, *args], cwd=self.repo, capture_output=True, text=True,
-                              stdin=subprocess.DEVNULL, timeout=120, env=env)
+        return run_script([TESTFAIL, *args], cwd=self.repo, env=env)
 
     def run_base(self, env=None):
         return self.tf("run", "--base", self.base, env=env)
@@ -418,6 +420,29 @@ class Config(Base):
         r = self.run_base()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.verdict(r), "yes")
+
+
+
+class GateLookup(GateLookupCases, unittest.TestCase):
+    """NFX-214: a project copy never loads the repo's own .claude/hooks/review-gate.py."""
+    SCRIPT = TESTFAIL
+    GATE_NAMES = ("trusted_check = run_check = write_stamp = valid_stamp = worktree_tree = None\n"
+                  "TESTFAIL_STAMP_FILE = 'claude-testfail-pass'")
+
+    def test_the_lookup_is_the_same_in_prove_and_testfail(self):
+        """The lookup is copied in both scripts (a shared file would not reach projects); keep the copies identical."""
+        import ast
+
+        def lookup(path):
+            with open(path, encoding="utf-8") as f:
+                src = f.read()
+            names = ("home_dir", "gate_paths", "find_gate", "too_old_hint")
+            return {n.name: ast.get_source_segment(src, n) for n in ast.parse(src).body
+                    if isinstance(n, ast.FunctionDef) and n.name in names}
+
+        mine = lookup(TESTFAIL)
+        self.assertEqual(len(mine), 4)
+        self.assertEqual(mine, lookup(os.path.join(HERE, "prove.py")))
 
 
 if __name__ == "__main__":

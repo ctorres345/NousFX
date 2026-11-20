@@ -2,7 +2,8 @@
 """Tests for prove.py (NFX-105), the script that runs a ticket's proofs and stamps them.
 Run: python3 -B claude/skills/review-loop/scripts/test_prove.py
 
-Each test runs the CLI in a throwaway git repo under a temp dir; the real repo and HOME are never touched.
+Each test runs the CLI in a throwaway git repo under a temp dir; the real repo and HOME are never touched. The CLI
+runs with an empty temp home (gate_lookup_cases), so it never loads the real ~/.claude gate (NFX-214).
 """
 import json
 import os
@@ -12,6 +13,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+from gate_lookup_cases import GateLookupCases, run_script
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROVE = os.path.join(HERE, "prove.py")
@@ -46,8 +49,7 @@ class Base(unittest.TestCase):
         return path
 
     def prove(self, *args):
-        return subprocess.run([sys.executable, "-B", PROVE, *args], cwd=self.repo, capture_output=True, text=True,
-                              stdin=subprocess.DEVNULL, timeout=120)
+        return run_script([PROVE, *args], cwd=self.repo)
 
     def stamp_path(self):
         return os.path.join(self.repo, ".git", "claude-proof-pass")
@@ -348,42 +350,21 @@ class GateFiles(unittest.TestCase):
         self.assertEqual(gate.STAMP_FILE, "claude-review-check-pass")
         self.assertEqual(gate.PROOF_STAMP_FILE, "claude-proof-pass")
 
-    def test_a_symlinked_skill_folder_loads_the_installed_gate(self):
-        """~/.claude/skills/review-loop links into a repo; the gate must come from ~/.claude/hooks, not the repo."""
-        with tempfile.TemporaryDirectory() as tmp:
-            home, repo = os.path.join(tmp, "home"), os.path.join(tmp, "repo")
-            os.makedirs(os.path.join(home, "skills"))
-            os.makedirs(os.path.join(home, "hooks"))
-            shutil.copytree(os.path.join(HERE, ".."), os.path.join(repo, "claude", "skills", "review-loop"))
-            os.makedirs(os.path.join(repo, "claude", "hooks"))
-            marks = {}
-            for where, mark in ((home, "installed"), (os.path.join(repo, "claude"), "repo")):
-                with open(os.path.join(where, "hooks", "review-gate.py"), "w") as f:
-                    f.write(f"PROOF_STAMP_FILE = 'x'\nMARK = '{mark}'\n")
-                marks[mark] = where
-            os.symlink(os.path.join(repo, "claude", "skills", "review-loop"), os.path.join(home, "skills", "review-loop"))
-            code = ("import importlib.util,sys\n"
-                    "spec = importlib.util.spec_from_file_location('p', sys.argv[1]); m = importlib.util.module_from_spec(spec)\n"
-                    "spec.loader.exec_module(m); print(m.load_gate().MARK)")
-            r = subprocess.run([sys.executable, "-B", "-c", code, os.path.join(home, "skills", "review-loop", "scripts", "prove.py")],
-                               capture_output=True, text=True, timeout=60)
-        self.assertEqual(r.stdout.strip(), "installed", r.stderr)
 
-    def test_a_gate_without_named_stamps_is_refused(self):
-        """An old installed gate raises TypeError on name=; prove.py says to re-run the sync instead."""
-        with tempfile.TemporaryDirectory() as tmp:
-            hooks = os.path.join(tmp, "hooks")
-            scripts = os.path.join(tmp, "skills", "review-loop", "scripts")
-            os.makedirs(hooks)
-            os.makedirs(scripts)
-            with open(os.path.join(hooks, "review-gate.py"), "w") as f:
-                f.write("STAMP_FILE = 'claude-review-check-pass'\n")
-            with open(PROVE, encoding="utf-8") as src, open(os.path.join(scripts, "prove.py"), "w") as dst:
-                dst.write(src.read())
-            r = subprocess.run([sys.executable, "-B", os.path.join(scripts, "prove.py"), "attest", "x.md"], cwd=tmp,
-                               capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("sync", r.stderr)
+class GateLookup(GateLookupCases, unittest.TestCase):
+    """NFX-214: a project copy never loads the repo's own .claude/hooks/review-gate.py."""
+    SCRIPT = PROVE
+    GATE_NAMES = "PROOF_STAMP_FILE = 'claude-proof-pass'"
+
+    def test_lint_needs_no_gate_and_runs_as_review_loop_calls_it(self):
+        """Plain `python3 -B` (no stand-in interpreter), outside any repo, with no gate anywhere near the copy."""
+        script = self.copy_script(os.path.join(self.tmp, "plain", ".claude", "skills", "review-loop", "scripts"))
+        path = os.path.join(self.tmp, "proofs.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(ac("`true`"))
+        r = subprocess.run([sys.executable, "-B", script, "lint", path], cwd=self.tmp, capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
 
 
 def load_gate():
