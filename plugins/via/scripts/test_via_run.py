@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -83,13 +84,15 @@ class ViaRunTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout.strip()
 
-    def run_cli(self, *args, env=None):
+    def run_cli(self, *args, env=None, home=None):
+        """home: a user home to run under (th.python), for tests that must not see the installed ~/.claude."""
         base = {k: v for k, v in os.environ.items() if k != "VIA_UNATTENDED"}
-        return subprocess.run([sys.executable, SCRIPT, *args, "--project", self.repo],
+        python = [th.python(home), "-I", "-B"] if home else [sys.executable]
+        return subprocess.run([*python, SCRIPT, *args, "--project", self.repo],
                               capture_output=True, text=True, env={**base, **(env or {})})
 
-    def ok(self, *args):
-        r = self.run_cli(*args)
+    def ok(self, *args, home=None):
+        r = self.run_cli(*args, home=home) if home else self.run_cli(*args)  # JiraRouteTest's run_cli has no home
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
 
@@ -107,8 +110,9 @@ class ViaRunTest(unittest.TestCase):
         return {f["id"]: f["status"] for f in merged["findings"]}
 
     def worktree_tree(self):
-        """An independent oracle for the tree `pass` records (test_pass_matches_the_review_gate checks
-        it against the gate itself)."""
+        """An independent oracle for the tree `pass` records in simple states (the gate's own worktree_tree, which
+        `pass` calls since NFX-207, is checked by test_pass_records_the_same_tree_the_review_gate_computes and by
+        scripts/test_worktree_tree_parity.py for the states where a copy of the index goes stale)."""
         index = os.path.join(self.repo, ".git", "index")
         with tempfile.TemporaryDirectory() as d:
             tmp = os.path.join(d, "index")
@@ -271,16 +275,52 @@ class ViaRunTest(unittest.TestCase):
     def test_pass_records_the_same_tree_the_review_gate_computes(self):
         gate = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "claude", "hooks",
                             "review-gate.py")
-        if not os.path.exists(gate):
-            self.skipTest("the review gate is not next to this plugin")
+        self.assertTrue(os.path.exists(gate), "the review gate is not next to this plugin")  # pass needs it now
         write(os.path.join(self.repo, "app", "Home.kt"), "fun Home() { /* dirty */ }\n")
         write(os.path.join(self.repo, "app", "New.kt"), "fun New() {}\n")
         spec = importlib.util.spec_from_file_location("review_gate", gate)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         run_dir, _, _ = self.merge(record([]))
-        self.ok("pass", run_dir)
+        with tempfile.TemporaryDirectory() as home:  # no installed gate: pass uses the checkout's, the one under test
+            self.ok("pass", run_dir, home=home)
         self.assertEqual(self.pass_record()["tree"], module.worktree_tree(self.repo))
+
+    def test_an_installed_plugin_uses_the_installed_gate_and_records_nothing_without_one(self):
+        # NFX-207: the marketplace copy has no NousFX checkout around it, so it finds the gate in ~/.claude/hooks
+        here = os.path.dirname(os.path.abspath(__file__))
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            scripts, home = os.path.join(d, "cache", "via", "1.0", "scripts"), os.path.join(d, "home")
+            shutil.copytree(here, scripts, ignore=shutil.ignore_patterns("test_*", "__pycache__"))
+            os.makedirs(home)
+            run_dir, _, _ = self.merge(record([]))
+
+            def installed_pass():
+                return subprocess.run([th.python(home), "-I", "-B", os.path.join(scripts, "via_run.py"), "pass",
+                                       run_dir, "--project", self.repo], capture_output=True, text=True)
+            r = installed_pass()  # Via without NousFX: nothing reads the record, so it is skipped, not an error
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("No review gate installed", r.stderr)
+            self.assertFalse(json.loads(r.stdout)["recorded"])
+            self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "via-check-ok")))
+            gate = os.path.join(here, "..", "..", "..", "claude", "hooks", "review-gate.py")
+            # a cloud session has no ~/.claude: the project hook extracts main's gate into the git dir
+            extracted = os.path.join(self.repo, ".git", "nousfx-gate", "k1", "hooks")
+            os.makedirs(extracted)
+            shutil.copy(gate, extracted)
+            os.symlink("k1", os.path.join(self.repo, ".git", "nousfx-gate", "current"))
+            r = installed_pass()
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.pass_record()["tree"], self.worktree_tree())
+            os.remove(os.path.join(self.repo, ".git", "via-check-ok"))
+            hooks = os.path.join(home, ".claude", "hooks")
+            os.makedirs(hooks)
+            shutil.copy(gate, hooks)
+            shutil.rmtree(os.path.join(self.repo, ".git", "nousfx-gate"))
+            r = installed_pass()
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.pass_record()["tree"], self.worktree_tree())
 
     def test_pass_counts_open_high_and_med_findings_that_are_not_ticketed(self):
         run_dir, _, _ = self.merge(record([
