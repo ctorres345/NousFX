@@ -36,6 +36,10 @@ OLD_GEMINI = [
     "762aec61f18826a8ca05cfcec4c59f828d7e44a288e281d7207f044a5bcb5656",
     "8a27a2006ac826da45346beb6b183b01be3cec8b78f4c04fd7cefd43d03f9e1c",
 ]
+# NFX-210: the body of "Record the review" as it stood in SKILL.md before the move (0245037).
+OLD_RECORD = [
+    "aa77d5e26d0d609addbc870d60c0b935875da97772606214f8b9dfa9076953a9",
+]
 
 
 def read(*parts):
@@ -52,7 +56,7 @@ class ReviewLoopSplit(unittest.TestCase):
         self.assertLess(os.path.getsize(os.path.join(LOOP_DIR, "SKILL.md")), MAX_BYTES)
 
     def test_no_moved_line_is_lost(self):
-        for name, old in (("fable", OLD_FABLE), ("gemini", OLD_GEMINI)):
+        for name, old in (("fable", OLD_FABLE), ("gemini", OLD_GEMINI), ("record", OLD_RECORD)):
             with self.subTest(ref=name):
                 self.assertEqual([h for h in old if h not in digests(read("references", name + ".md"))], [])
 
@@ -79,6 +83,27 @@ class ReviewLoopSplit(unittest.TestCase):
         self.assertTrue(gemini_first.startswith("Read this on"))
         for word in ("`ui` is true", "Tier 3", "final Argon call"):
             self.assertIn(word, gemini_first)
+
+    def test_record_body_left_skill(self):
+        # NFX-210: the steps live only in references/record.md; MAX_BYTES stays the only size limit.
+        skill = read("SKILL.md")
+        self.assertEqual([h for h in OLD_RECORD if h in digests(skill)], [])
+        for phrase in ("where `<gate>` is the gate path printed in the gate's block message", "--findings <open high count"):
+            self.assertNotIn(phrase, skill)
+            self.assertIn(phrase, read("references", "record.md"))
+
+    def test_record_stub_names_the_step_and_its_commands(self):
+        skill = read("SKILL.md")
+        self.assertIn("## Record the review (last step)\n", skill)
+        stub = skill.split("## Record the review (last step)\n")[1].split("\n")[0]
+        for word in ("references/record.md", "Last step of every run", "before Open the PR",
+                     "(after any Fable final pass) make the final Argon call", "`run-check --stamp`",
+                     "`prove.py`", "`--mark`", "`gh pr create`"):
+            self.assertIn(word, stub)
+        record = read("references", "record.md")
+        self.assertTrue(record.startswith("Read this at the last step of every run"))
+        for word in ("Record the review", "before Open the PR", "--mark"):
+            self.assertIn(word, record.split("\n")[0])
 
     def test_project_setup_installs_the_references(self):
         with open(os.path.join(ROOT, "claude", "skills", "project-setup", "SKILL.md"), encoding="utf-8") as f:
