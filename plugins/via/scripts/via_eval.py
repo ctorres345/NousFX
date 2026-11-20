@@ -38,9 +38,10 @@ LEDGER = os.path.join("docs", "design", "via.md")
 TIMEOUT = 120
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 ALLOW_KEY = "acme/app"
-# The only git subcommands Via may run: it reads git and hashes the tree (`add` and `write-tree` on a copy of
-# the index), nothing more. Anything else, a commit or a writer added later, fails the never-commits case.
-GIT_ALLOWED = {"rev-parse", "add", "write-tree", "check-ignore"}
+# The only git subcommands Via may run: it reads git and hashes the tree with the review gate's worktree_tree
+# (`ls-files` reads the index; `update-index`, `add` and `write-tree` run on a temporary index), nothing more.
+# Anything else, a commit or a writer added later, fails the never-commits case, which also checks the real index.
+GIT_ALLOWED = {"rev-parse", "ls-files", "update-index", "add", "write-tree", "check-ignore"}
 GIT_VALUE_FLAGS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 GIT_SHIM = '#!/bin/sh\nprintf \'%%s\\037\' "$@" >> "%s"\nprintf \'\\n\' >> "%s"\nexec "%s" "$@"\n'
 
@@ -233,8 +234,9 @@ def check_unattended_reject(case, scripts, tmp):
 
 
 def git_state(repo):
+    # ls-files -v: the skip-worktree and assume-unchanged bits count as the index too
     return {"HEAD": git(repo, "rev-parse", "HEAD"), "branch": git(repo, "symbolic-ref", "-q", "HEAD"),
-            "refs": git(repo, "for-each-ref"), "index": git(repo, "ls-files", "-s"),
+            "refs": git(repo, "for-each-ref"), "index": git(repo, "ls-files", "-s", "-v"),
             "stash": git(repo, "stash", "list"), "config": git(repo, "config", "--local", "--list")}
 
 
@@ -267,7 +269,10 @@ def check_never_commits(case, scripts, tmp):
     via.ok("route", run_dir, unattended=True)
     via.ok("route", run_dir)
     write(os.path.join(repo, "app", "Settings.kt"), "fun Settings() { /* fixed */ }\n")  # the fix-now edit
-    via.ok("pass", run_dir)
+    out = via.ok("pass", run_dir)
+    # with no review gate (Via without NousFX, or a copy of the scripts on a machine with no ~/.claude), pass
+    # records nothing by design; otherwise it must have hashed the tree, so its git calls are in the log
+    expect(out.get("tree") or out.get("recorded") is False, "pass neither recorded a tree nor said why not")
     after = git_state(repo)
     changed = [k for k in before if before[k] != after[k]]
     calls = [line.split("\037")[:-1] for line in read(log).splitlines() if line] if os.path.exists(log) else []

@@ -313,7 +313,8 @@ def worktree_tree(cwd):
     keeps its stat data, and a same-size edit right after a commit can look unchanged there (NFX-198). So the
     temporary index gets the real index's entries (path, mode, blob, stage) without stat data, and add -A hashes
     every file again. Tracked stays what the real index says: files that match .gitignore, `git add -f` and
-    `git rm --cached` count as staged, on an unborn branch too."""
+    `git rm --cached` count as staged, on an unborn branch too. The one copy (NFX-207): testfail.py, prove.py and
+    Via's via_run.py load this file and call it, so every recorded tree is the one the gate computes."""
     folder = tempfile.mkdtemp(prefix="review-gate-index-")  # private (0700): nobody can plant an index in it
     try:
         env = {**os.environ, "GIT_INDEX_FILE": os.path.join(folder, "index")}

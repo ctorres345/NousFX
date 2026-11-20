@@ -98,7 +98,7 @@ def load_gate():
     module = importlib.util.module_from_spec(spec)
     with refusing(f"cannot load {path}"):
         spec.loader.exec_module(module)
-    for name in ("trusted_check", "run_check", "write_stamp", "valid_stamp", "TESTFAIL_STAMP_FILE"):
+    for name in ("trusted_check", "run_check", "write_stamp", "valid_stamp", "TESTFAIL_STAMP_FILE", "worktree_tree"):
         if not hasattr(module, name):
             raise Refused(f"{os.path.normpath(path)} is too old for testfail.py ({name} missing); re-run the sync")
     return module
@@ -173,26 +173,6 @@ def split(tier, top, base, globs):
     return tests, production, restore
 
 
-def worktree_tree(cwd):
-    """Tree hash of the working tree from a fresh temporary index, so every file is hashed again. A copy of the real
-    index keeps its stat data, and a same-size edit made right after a commit can look unchanged there (git's stat
-    shortcut); a verdict must not rest on that. The gate's worktree_tree (NFX-198) seeds from the real index
-    instead, so the two differ when the index holds staged ignored paths or skip-worktree bits."""
-    fd, tmp = tempfile.mkstemp(prefix="testfail-index-")
-    os.close(fd)
-    os.remove(tmp)  # git creates it
-    try:
-        # Seed from HEAD so tracked files that match .gitignore stay in; read-tree keeps no stat data, so add -A still
-        # hashes every file again.
-        git(["read-tree", "HEAD"], cwd, {"GIT_INDEX_FILE": tmp})
-        git(["add", "-A"], cwd, {"GIT_INDEX_FILE": tmp})
-        return git(["write-tree"], cwd, {"GIT_INDEX_FILE": tmp}).strip()
-    finally:
-        for path in (tmp, tmp + ".lock"):
-            with contextlib.suppress(OSError):
-                os.remove(path)
-
-
 Setup = collections.namedtuple("Setup", "top check globs pattern base branch tree fields")
 
 
@@ -214,7 +194,7 @@ def setup(gate, base):
         branch = gate.current_branch(top)
         if branch == "HEAD":
             raise Refused("HEAD is detached, and a test-fail stamp covers only the branch it was recorded on")
-        tree = worktree_tree(top)
+        tree = gate.worktree_tree(top)  # the gate's own hash (NFX-207), so the gate can reproduce the stamp tree
     config = json.dumps([check["command"], check["timeout"], globs, pattern.pattern], sort_keys=True)
     fields = {"kind": KIND, "tree": tree, "branch": branch, "base": base, "command": check["command"],
               "source": check["source"], "timeout": check["timeout"],
@@ -302,7 +282,8 @@ def run(args):
             verdict, named, detail = run_in_copy(gate, s, restore)
     else:
         verdict, named, detail = "n/a", [], ""
-    after = worktree_tree(s.top)
+    with refusing("cannot hash the working tree"):
+        after = gate.worktree_tree(s.top)
     if after != s.tree:
         moved = git(["diff-tree", "-r", "--name-only", s.tree, after], s.top).split()
         raise Refused(f"the working tree changed during the run ({', '.join(moved[:5]) or 'unknown'}); "

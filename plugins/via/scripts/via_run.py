@@ -25,6 +25,7 @@ import argparse
 import collections
 import hashlib
 import html
+import importlib.util
 import itertools
 import json
 import os
@@ -38,6 +39,7 @@ import time
 import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # -I leaves the script folder off sys.path
+import via_home  # noqa: E402
 import via_outbound  # noqa: E402
 
 RUN_AREA = os.path.join(".via", "runs")
@@ -45,6 +47,7 @@ IGNORE_LINE = ".via/"
 LEDGER = os.path.join("docs", "design", "via.md")
 START, END = "<!-- via:ledger:start -->", "<!-- via:ledger:end -->"
 PASS_FILE = "via-check-ok"
+NO_GATE = "No review gate installed; this pass isn't recorded (only the NousFX gate reads it)."
 # A finding whose source, rule or issue says one of these is an accessibility finding: it is never pending (fail closed).
 A11Y_WORDS = ("accessib", "a11y", "contrast", "touch target", "touch-target", "screen reader", "screen-reader",
               "talkback", "voiceover", "focus", "content description", "content-description", "alt text")
@@ -136,23 +139,41 @@ def git(args, cwd, env=None):
     return r.stdout.strip()
 
 
-def worktree_tree(cwd):
-    """Tree hash of the working tree on a copy of the index, the same way the review gate does it."""
-    index = os.path.abspath(os.path.join(cwd, git(["rev-parse", "--git-path", "index"], cwd)))
-    fd, tmp = tempfile.mkstemp(prefix="via-run-index-")
-    os.close(fd)
+def load_gate(project):
+    """The review gate module, which reads the pass record and owns the one tree hash (NFX-207). The gate that will
+    read the record comes first, so Via records the tree that gate computes: the installed ~/.claude/hooks copy, then
+    in a cloud session with no ~/.claude the default branch's copy the project hook extracts into
+    <git-dir>/nousfx-gate/current, then the copy in a NousFX checkout next to this plugin (tests with an empty home).
+    None when there is no gate: Via also runs without NousFX, and then nothing reads the record. A gate that cannot
+    load stops the run."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    paths = [os.path.join(via_home.home_dir(), ".claude", "hooks", "review-gate.py"),
+             os.path.join(git(["rev-parse", "--absolute-git-dir"], project), "nousfx-gate", "current", "hooks",
+                          "review-gate.py"),
+             os.path.normpath(os.path.join(here, "..", "..", "..", "claude", "hooks", "review-gate.py"))]
+    path = next((p for p in paths if os.path.isfile(p)), None)
+    if path is None:
+        return None
+    spec = importlib.util.spec_from_file_location("review_gate_for_via", path)
+    module = importlib.util.module_from_spec(spec)
+    saved = list(sys.path)
     try:
-        if os.path.exists(index):
-            with open(index, "rb") as src, open(tmp, "wb") as dst:
-                dst.write(src.read())
-        else:
-            os.remove(tmp)  # git creates it
-        env = {**os.environ, "GIT_INDEX_FILE": tmp}
-        git(["add", "-A"], cwd, env)
-        return git(["write-tree"], cwd, env)
+        spec.loader.exec_module(module)
+    except Exception as e:
+        die("cannot load %s (%s). Nothing was recorded." % (path, e))
     finally:
-        if os.path.exists(tmp):
-            os.remove(tmp)
+        sys.path[:] = saved  # the gate puts its folder first; no later import here may resolve from it
+    if not hasattr(module, "worktree_tree"):
+        die("%s is too old for Via (no worktree_tree). Re-run the NousFX sync. Nothing was recorded." % path)
+    return module
+
+
+def current_tree(gate, cwd):
+    """Tree hash of the working tree, from the review gate's own function, so the gate computes the same tree."""
+    try:
+        return gate.worktree_tree(cwd)
+    except Exception as e:  # RuntimeError from git, or the gate's timeout
+        die("cannot hash the working tree (%s). Nothing was recorded." % (str(e) or type(e).__name__))
 
 
 # --- run record ---
@@ -674,16 +695,20 @@ def cmd_pass(project, args):
                            if isinstance(i, str) and i in ledger and is_open(ledger[i]) and not ledger[i].get("ticket")]
         except (OSError, ValueError, AttributeError):
             earlier = []
-    tree = worktree_tree(project)
+    counts = {"findings_open": open_count, "pending_human": len(pending_ids), "pending_ids": pending_ids}
+    if not unattended():
+        counts["earlier_pending"] = earlier
+    gate = load_gate(project)
+    if gate is None:
+        print(NO_GATE, file=sys.stderr)
+        emit({"recorded": False, "note": NO_GATE, **counts})
+        return
+    tree = current_tree(gate, project)
     marker = marker_path(project)
     write_atomic(marker, json.dumps({"tree": tree, "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
                                      "run": run_dir, "findings_open": open_count,
                                      "pending_human": len(pending_ids), "pending_ids": pending_ids}))
-    out = {"tree": tree, "findings_open": open_count, "pending_human": len(pending_ids),
-           "pending_ids": pending_ids, "path": marker}
-    if not unattended():
-        out["earlier_pending"] = earlier
-    emit(out)
+    emit({"tree": tree, **counts, "path": marker})
 
 
 def marker_path(project):
