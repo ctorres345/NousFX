@@ -9,9 +9,10 @@ What a repo gets, besides its MCP files (nousfx_mcp.py) and agy plugin manifest 
   (note only)          a line when .nousfx/project.toml has no [check] command (NFX-54): the review gate
                        cannot record a review without one. Sync never invents a command.
   shared copies        .claude/hooks (gate and parser), .claude/agents/<name>.md for agents NousFX ships,
-                       .claude/skills/review-loop (SKILL.md, scripts/tier.py, references/*.md): refreshed only when the repo already
-                       has them (NFX-98); references/*.md are also created when SKILL.md is there, so the stubs never
-                       dangle. project-setup picks which; a stale copy is drift, a missing one is not (except those).
+                       .claude/skills/review-loop (SKILL.md and the references/*.md and scripts/*.py it names): refreshed
+                       only when the repo already has them (NFX-98); the named files are also created when SKILL.md is
+                       there, so it never dangles (NFX-114, NFX-211). project-setup picks which; a stale copy is drift, a
+                       missing one is not (except those).
 
 Rules:
 - A file the repo wrote by hand is never replaced on its own. Sync shows the diff, says how to confirm
@@ -45,17 +46,16 @@ COPIES = {
     os.path.join(".claude", "hooks", "git_refs.py"): os.path.join("claude", "hooks", "git_refs.py"),
     os.path.join(".claude", "skills", "review-loop", "SKILL.md"):
         os.path.join("claude", "skills", "review-loop", "SKILL.md"),
-    os.path.join(".claude", "skills", "review-loop", "scripts", "tier.py"):
-        os.path.join("claude", "skills", "review-loop", "scripts", "tier.py"),
-    os.path.join(".claude", "skills", "review-loop", "references", "fable.md"):
-        os.path.join("claude", "skills", "review-loop", "references", "fable.md"),
-    os.path.join(".claude", "skills", "review-loop", "references", "gemini.md"):
-        os.path.join("claude", "skills", "review-loop", "references", "gemini.md"),
-    os.path.join(".claude", "skills", "review-loop", "references", "security.md"):
-        os.path.join("claude", "skills", "review-loop", "references", "security.md"),
 }
-# These follow the repo's SKILL.md copy: created when it exists, so a stub never points at a missing file (NFX-114).
-FOLLOW_SKILL = frozenset(os.path.join(".claude", "skills", "review-loop", "references", n) for n in ("fable.md", "gemini.md", "security.md"))
+# Every file the review-loop SKILL.md names, or a reference it names (NFX-114, NFX-211). They follow the repo's SKILL.md
+# copy: created when it exists, so it never points at a missing file, and a missing one is drift.
+# scripts/test_review_loop_skill_refs.py fails when SKILL.md names a file that is not here.
+SKILL_FILES = (("references", "fable.md"), ("references", "gemini.md"), ("references", "security.md"),
+               ("references", "testfail.md"), ("scripts", "tier.py"), ("scripts", "testfail.py"),
+               ("scripts", "prove.py"), ("scripts", "session_report.py"))
+COPIES.update({os.path.join(".claude", "skills", "review-loop", *f): os.path.join("claude", "skills", "review-loop", *f)
+               for f in SKILL_FILES})
+FOLLOW_SKILL = frozenset(os.path.join(".claude", "skills", "review-loop", *f) for f in SKILL_FILES)
 SKILL_COPY = os.path.join(".claude", "skills", "review-loop", "SKILL.md")
 # git_refs.py follows the repo's gate copy: the NFX-108 gate and tier.py refuse without it, so a repo that has the gate
 # gets it too, and a missing one is drift.
