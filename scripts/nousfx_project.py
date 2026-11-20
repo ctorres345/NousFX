@@ -51,7 +51,8 @@ COPIES = {
 # copy: created when it exists, so it never points at a missing file, and a missing one is drift.
 # scripts/test_review_loop_skill_refs.py fails when SKILL.md names a file that is not here.
 SKILL_FILES = (("references", "fable.md"), ("references", "gemini.md"), ("references", "security.md"),
-               ("references", "testfail.md"), ("scripts", "tier.py"), ("scripts", "testfail.py"),
+               ("references", "testfail.md"), ("references", "record.md"),
+               ("scripts", "tier.py"), ("scripts", "testfail.py"),
                ("scripts", "prove.py"), ("scripts", "session_report.py"))
 COPIES.update({os.path.join(".claude", "skills", "review-loop", *f): os.path.join("claude", "skills", "review-loop", *f)
                for f in SKILL_FILES})

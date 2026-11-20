@@ -133,8 +133,10 @@ class ReviewLoopSkill(unittest.TestCase):
         self.assertRegex(self.text, r"(?i)before rejecting a `high`.{0,200}evidence")
 
     def test_findings_count_excludes_low_confidence_med(self):
-        self.assertIn(COUNT, self.text)
-        self.assertNotIn("high/med", self.text)
+        # NFX-210: the `--mark` line moved to references/record.md.
+        record = read("claude", "skills", "review-loop", "references", "record.md")
+        self.assertIn(COUNT, record)
+        self.assertNotIn("high/med", self.text + record)
 
     def test_corrected_quote_reopens_a_rejection(self):
         self.assertIn("a corrected quote that is in the file or the diff counts", self.text)
