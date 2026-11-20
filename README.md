@@ -45,6 +45,8 @@ Via is my designer skill, named after Octavia, one of my cats. It audits UI, sho
 
 ### Quickstart
 
+This installs Via for all my projects. For one project, see [Pick where Via works](#pick-where-via-works).
+
 ```bash
 claude plugin marketplace add ctorres345/NousFX
 ```
@@ -60,6 +62,28 @@ Then, inside Claude Code, run `/reload-plugins` and:
 ```
 
 `/via setup` checks which integrations you have (Gemini, Jira, Figma, Obsidian, simulators, a browser, design skills), says why each matters and links the fix. It saves the result to `~/.config/nousfx/via.json`, which holds statuses and paths only, never keys. Running it again changes nothing when nothing changed.
+
+### Pick where Via works
+
+| I want Via in... | Scope | Who gets it |
+|---|---|---|
+| All my projects | `user` (default) | Only me |
+| One project, shared with my team | `project` | Everyone on the project, after they trust the folder and accept the install prompt |
+| One project, only for me | `local` | Only me, not shared |
+
+Not sure? Use `user`.
+
+For `project` or `local`, run both install commands inside that project's folder and add `--scope project` (or `--scope local`) to each. For example, for one shared project:
+
+```bash
+claude plugin marketplace add ctorres345/NousFX --scope project
+claude plugin install via@nousfx --scope project
+```
+
+Then run `/reload-plugins` and `/via setup` as above.
+
+- `~/.config/nousfx/via.json` is always mine alone, whichever scope I pick.
+- Update and uninstall take the same `--scope` as the install. The steps are in the [RUNBOOK](docs/RUNBOOK.md#install-or-update-via).
 
 ### An example run
 
@@ -110,7 +134,7 @@ python3 -B plugins/via/scripts/via_eval.py
 
 [`plugins/via/evals/cases.json`](plugins/via/evals/cases.json) lists each case as a sample prompt and the behavior I expect: routing (fix now, ticket or reject), the fresh-context fallback when Gemini is missing, unattended runs that change nothing, and Via never committing. The runner checks each one on a throwaway git repo, with no model calls and nothing sent out, and prints `ok` or `FAIL` per case. `--only <id>` runs one case and `--json` prints the results as JSON. `scripts/run_checks.py` runs it too, through `test_via_eval.py`. It does not score visual quality.
 
-A plugin can ship hooks that run code on your machine. Via 0.4.0 has none, but read `plugins/via/` before you install a later version. Want to add a skill of your own? See [CONTRIBUTING.md](CONTRIBUTING.md).
+A plugin can ship hooks that run code on your machine. Via 0.4.0 has none, but read `plugins/via/` before you install a later version, especially at `project` scope, where it runs for everyone on the project. Want to add a skill of your own? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## How to use it day to day
 

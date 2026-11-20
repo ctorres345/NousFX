@@ -195,7 +195,17 @@ Results (a dash means not run yet; each cell gets a date when it is):
 
 Via comes from the marketplace in this repo; sync does not install it.
 
-1. Add the marketplace (first time only). From GitHub:
+1. Pick the scope. Not sure? Use `user`.
+
+   | Scope | Via works in | Shared with the team |
+   |---|---|---|
+   | `user` (default) | All my projects | No |
+   | `project` | One project | Yes, through that project's `.claude/settings.json` |
+   | `local` | One project | No, it stays in `.claude/settings.local.json` |
+
+   For `project` or `local`, I run every command below inside that project's folder and add `--scope project` (or `--scope local`) to `marketplace add`, `install`, `update` and `uninstall`. Update and uninstall must use the same scope as the install. `marketplace update` takes no scope.
+
+2. Add the marketplace (first time only). From GitHub:
 
    ```bash
    claude plugin marketplace add ctorres345/NousFX
@@ -207,7 +217,7 @@ Via comes from the marketplace in this repo; sync does not install it.
    claude plugin marketplace add ./
    ```
 
-2. Install (first time only):
+3. Install (first time only):
 
    ```bash
    claude plugin install via@nousfx
@@ -223,9 +233,9 @@ Via comes from the marketplace in this repo; sync does not install it.
    claude plugin update via@nousfx
    ```
 
-3. In a Claude Code session run `/reload-plugins`, then `/via setup`. Check the table lists each integration and ends with the `Via integrations:` line.
-4. Run `/via setup` again. The answer must say the config is `unchanged`.
-5. To remove it: `claude plugin uninstall via`. `~/.config/nousfx/via.json` stays (and so does an old `~/.claude/via.json`, which `/via setup` copied once); delete them by hand if I want them gone. If I once hand-copied `via_outbound.py` into `~/.claude/plugins/cache/nousfx/via/0.4.0/scripts/`, I delete that copy: the Argon script now finds the script in the repo and never reads the cache.
+4. In a Claude Code session run `/reload-plugins`, then `/via setup`. Check the table lists each integration and ends with the `Via integrations:` line.
+5. Run `/via setup` again. The answer must say the config is `unchanged`.
+6. To remove it: `claude plugin uninstall via` (with the same scope). `~/.config/nousfx/via.json` stays and is the same for every scope (and so does an old `~/.claude/via.json`, which `/via setup` copied once); delete them by hand if I want them gone. If I once hand-copied `via_outbound.py` into `~/.claude/plugins/cache/nousfx/via/0.4.0/scripts/`, I delete that copy: the Argon script now finds the script in the repo and never reads the cache.
 
 Before releasing a change, run `python3 plugins/via/scripts/test_via_setup.py`, `python3 plugins/via/scripts/test_via_run.py` and `claude plugin validate . --strict`.
 
