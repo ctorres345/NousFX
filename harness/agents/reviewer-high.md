@@ -21,5 +21,6 @@ Output one finding per line, exactly:
 - severity is `high`, `med`, or `low`.
 - confidence is a whole number 0-100: how sure you are the problem is real. Under 60 means a guess; say so by scoring it.
 - quoted code is the one line that shows the problem, copied exactly from the file or the diff (a removed line keeps its `-`; for missing code, the line next to the gap; the first line if several). It comes last, so a `|` inside it is fine.
+- Optionally, after your findings, one last line `habit: <repeated pattern> | <check that would catch it>`. Never add it to `NO FINDINGS`, which stays exact.
 
 If there is nothing worth fixing, output exactly `NO FINDINGS` and nothing else.

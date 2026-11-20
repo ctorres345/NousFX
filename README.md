@@ -169,7 +169,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/skills/review-loop/` | `/review-loop`: review-fix loop, rounds set by the risk tier (max 5), never commits |
 | `claude/skills/gemini-review/` | `/gemini-review`: second-opinion code review through `gemini-api`. `scripts/argon_review.py` is the Argon UI second opinion that `review-loop` calls; the project must be on the outbound allow-list in `~/.config/nousfx/via.json`. In that allow-list mode, Argon runs through agy when the project lists `agy`, and falls back to the billed key only when agy is at its limit, missing or signed out, and the project lists `gemini`. `scripts/gemini_common.py` holds the safety checks both Gemini scripts share; they run on macOS and Windows |
 | `claude/skills/handoff/` | `/handoff`: session handoff note |
-| `claude/skills/after-merge/` | Runs after a confirmed merge: deletes the branches, moves the Jira ticket to Done, runs `/handoff` |
+| `claude/skills/after-merge/` | Runs after a confirmed merge: deletes the branches, moves the Jira ticket to Done, renders the report, runs the retro once a wave is done, runs `/handoff` |
 | `claude/skills/jira-sync/` | `/jira-sync <KEY>`: read-only audit of a Jira board against its repo, plus a next-up list. Applies only approved fixes |
 | `claude/skills/prototype-fidelity/` | Rules for work based on an approved prototype: tickets, implementing, review, PR |
 | `claude/skills/project-setup/` | Sets up or audits a repo with the shared workflow |

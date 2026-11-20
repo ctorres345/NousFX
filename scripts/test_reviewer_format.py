@@ -65,6 +65,25 @@ class BreakItQuestion(unittest.TestCase):
             self.assertIn(word, text, word)
 
 
+HABIT = ("- Optionally, after your findings, one last line `habit: <repeated pattern> | <check that would catch it>`. "
+         "Never add it to `NO FINDINGS`, which stays exact.")
+
+
+class HabitLine(unittest.TestCase):
+    """NFX-192: an optional habit line feeds the retro; `NO FINDINGS` stays exact."""
+
+    def test_every_reviewer_names_the_optional_habit_line(self):
+        for name in NAMES:
+            with self.subTest(name=name):
+                self.assertIn(HABIT, read("harness", "agents", name + ".md").splitlines())
+
+    def test_review_loop_keeps_habit_lines_out_of_the_count_and_in_the_pr_body(self):
+        loop = read("claude", "skills", "review-loop", "SKILL.md")
+        self.assertIn("A `habit:` line is not a finding.", loop)
+        self.assertIn("every round's `habit:` lines under \"Habits\"", loop)
+        self.assertIn("or `NO FINDINGS`; optional `habit:` line)", loop)
+
+
 class ReviewLoopSkill(unittest.TestCase):
     def setUp(self):
         self.text = read("claude", "skills", "review-loop", "SKILL.md")

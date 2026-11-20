@@ -6,7 +6,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOOP_DIR = os.path.join(ROOT, "claude", "skills", "review-loop")
-MAX_BYTES = 16200  # NFX-190: was 16100; ANI-194: was 14900 (NFX-124: was 14500); room for the Open the PR step, inline so every project copy has it
+MAX_BYTES = 16300  # NFX-192: was 16200 (Cesar chose raising over trimming); NFX-190: was 16100; ANI-194: was 14900 (NFX-124: was 14500); room for the Open the PR step, inline so every project copy has it
 
 # SHA-256 of every non-blank line of the two sections as they stood in SKILL.md before the move (ff401cf).
 OLD_FABLE = [
