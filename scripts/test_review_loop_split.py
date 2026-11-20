@@ -36,9 +36,11 @@ OLD_GEMINI = [
     "762aec61f18826a8ca05cfcec4c59f828d7e44a288e281d7207f044a5bcb5656",
     "8a27a2006ac826da45346beb6b183b01be3cec8b78f4c04fd7cefd43d03f9e1c",
 ]
-# NFX-210: the body of "Record the review" as it stood in SKILL.md before the move (0245037).
+# NFX-210: the body of "Record the review" as it stood in SKILL.md before the move (0245037). NFX-218 rewrote its
+# "the check command itself still runs" sentence (a proof now reuses a matching check stamp), so the hash is of
+# that edited line; a later edit to it updates this hash the same way, with its ticket.
 OLD_RECORD = [
-    "aa77d5e26d0d609addbc870d60c0b935875da97772606214f8b9dfa9076953a9",
+    "54df02fed1b11bd96f4db2a068f7f970c03476fbb5f05cdcf06a10d5df7035a1",
 ]
 
 

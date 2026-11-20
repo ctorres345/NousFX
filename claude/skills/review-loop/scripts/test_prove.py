@@ -18,6 +18,7 @@ from gate_lookup_cases import GateLookupCases, run_script
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROVE = os.path.join(HERE, "prove.py")
+GATE = os.path.join(HERE, "..", "..", "..", "hooks", "review-gate.py")
 sys.dont_write_bytecode = True
 
 LINE = re.compile(r"^AC-Proof: (\d+)/(\d+) manual:(\d+) ([0-9a-f]{40,64}) ([0-9a-f]{64})$", re.M)
@@ -218,6 +219,154 @@ class Lint(Base):
                            stdin=subprocess.DEVNULL, timeout=60, env={**os.environ, "PYTHONIOENCODING": "cp1252"})
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn(b"line 1:", r.stdout)
+
+
+class ReuseCheckStamp(Base):
+    """NFX-218: a proof that is exactly the [check] command reuses a matching `run-check --stamp` stamp."""
+
+    def setUp(self):
+        super().setUp()
+        self.counter = os.path.join(self.outside, "check-runs")
+        self.check = f"echo ran >> '{self.counter}'"
+        self.set_check(self.check)
+
+    def set_check(self, command):
+        os.makedirs(os.path.join(self.repo, ".nousfx"), exist_ok=True)
+        with open(os.path.join(self.repo, ".nousfx", "project.toml"), "w", encoding="utf-8") as f:
+            f.write(f'[check]\ncommand = "{command}"\ntimeout = 60\n')
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "NFX-1: check")
+
+    def runs(self):
+        try:
+            with open(self.counter) as f:
+                return len(f.read().splitlines())
+        except FileNotFoundError:
+            return 0
+
+    def stamp(self):
+        r = run_script([GATE, "run-check", "--stamp"], cwd=self.repo)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), 1)
+        os.remove(self.counter)
+
+    def run_list(self, *proofs):
+        r = self.prove("run", self.write_list(ac(*proofs)))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r
+
+    def test_a_proof_equal_to_the_check_command_is_reused_and_counted(self):
+        self.stamp()
+        tree = self.git("rev-parse", "HEAD^{tree}")
+        r = self.run_list("`true`", f"`{self.check}`")
+        self.assertEqual(self.runs(), 0, "the check command ran again")
+        self.assertIn(f"proof 2: reused check stamp {tree[:10]}", r.stdout)
+        self.assertIn("2/2 proofs passed", r.stdout)
+        a = self.prove("attest", self.write_list(ac("`true`", f"`{self.check}`")))
+        self.assertEqual(a.returncode, 0, a.stderr)
+        self.assertIn("AC-Proof: 2/2 manual:0", a.stdout)
+
+    def test_the_check_stamp_is_left_for_the_mark(self):
+        self.stamp()
+        self.run_list(f"`{self.check}`")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, ".git", "claude-review-check-pass")))
+
+    def test_the_check_command_listed_twice_is_reused_twice(self):
+        self.stamp()
+        r = self.run_list(f"`{self.check}`", f"`{self.check}`")
+        self.assertEqual(self.runs(), 0)
+        self.assertIn("proof 1: reused", r.stdout)
+        self.assertIn("proof 2: reused", r.stdout)
+
+    def test_a_later_failing_proof_still_fails_after_a_reuse(self):
+        self.stamp()
+        r = self.prove("run", self.write_list(ac(f"`{self.check}`", "`false`")))
+        self.assertEqual(r.returncode, 2)
+        self.assertFalse(os.path.exists(self.stamp_path()))
+
+    def test_without_a_stamp_the_proof_runs(self):
+        r = self.run_list(f"`{self.check}`")
+        self.assertEqual(self.runs(), 1)
+        self.assertNotIn("reused", r.stdout)
+
+    def test_a_stale_stamp_after_a_tree_change_is_not_reused(self):
+        self.stamp()
+        with open(os.path.join(self.repo, "b.txt"), "w") as f:
+            f.write("b\n")
+        self.run_list(f"`{self.check}`")
+        self.assertEqual(self.runs(), 1)
+
+    def test_a_stamp_from_another_branch_is_not_reused(self):
+        self.stamp()
+        self.git("checkout", "-q", "-b", "cesar/NFX-2")
+        self.run_list(f"`{self.check}`")
+        self.assertEqual(self.runs(), 1)
+
+    def test_a_proof_that_only_resembles_the_check_command_runs(self):
+        self.stamp()
+        for proof in (f"{self.check}; true", f"echo ran  >> '{self.counter}'"):
+            with self.subTest(proof=proof):
+                r = self.run_list(f"`{proof}`")
+                self.assertNotIn("reused", r.stdout)
+        self.assertEqual(self.runs(), 2)
+
+    def move_default_branch_check(self, command):
+        """Point origin/main at a commit whose [check] is `command`; the branch, its tree and HEAD stay as they are."""
+        self.git("checkout", "-q", "-b", "elsewhere")
+        self.set_check(command)
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.git("checkout", "-q", "cesar/NFX-1")
+
+    def test_a_check_command_changed_on_the_default_branch_is_not_reused(self):
+        """Only the trusted command changes (a fetch moves origin/main): same tree, same branch."""
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.stamp()
+        tree = self.git("rev-parse", "HEAD^{tree}")
+        other = f"echo other >> '{self.counter}'"
+        self.move_default_branch_check(other)
+        self.assertEqual(self.git("rev-parse", "HEAD^{tree}"), tree)
+        for proof in (other, self.check):
+            with self.subTest(proof=proof):
+                r = self.run_list(f"`{proof}`")
+                self.assertNotIn("reused", r.stdout)
+        self.assertEqual(self.runs(), 2)
+
+    def test_a_stamp_of_the_default_branch_check_is_reused(self):
+        """The control for the test above: a stamp made after the move matches the moved command."""
+        other = f"echo other >> '{self.counter}'"
+        self.move_default_branch_check(other)
+        self.stamp()
+        r = self.run_list(f"`{other}`")
+        self.assertIn("reused check stamp", r.stdout)
+        self.assertEqual(self.runs(), 0)
+
+    def test_a_forged_check_stamp_is_not_reused(self):
+        self.stamp()
+        path = os.path.join(self.repo, ".git", "claude-review-check-pass")
+        with open(path) as f:
+            stamp = json.load(f)
+        stamp["mac"] = "0" * 64
+        with open(path, "w") as f:
+            json.dump(stamp, f)
+        self.run_list(f"`{self.check}`")
+        self.assertEqual(self.runs(), 1)
+
+    def test_a_gate_without_the_stamp_helper_runs_the_proof(self):
+        """A project's installed gate that predates stamp_fields: the proof runs as before."""
+        home = os.path.join(self._tmp.name, "home")
+        hooks = os.path.join(home, ".claude", "hooks")
+        os.makedirs(hooks)
+        real = os.path.realpath(GATE)
+        for tail, reused in (("", True), ("del stamp_fields\n", False)):  # the first is the control: the wrapper works
+            with self.subTest(old_gate=not reused):
+                with open(os.path.join(hooks, "review-gate.py"), "w") as f:
+                    f.write(f"import sys\nsys.path.insert(0, {os.path.dirname(real)!r})\n"
+                            f"exec(compile(open({real!r}).read(), {real!r}, 'exec'))\n{tail}")
+                self.stamp()
+                r = run_script([PROVE, "run", self.write_list(ac(f"`{self.check}`"))], cwd=self.repo, home=home)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual("reused check stamp" in r.stdout, reused, r.stdout)
+                self.assertEqual(self.runs(), 0 if reused else 1)
 
 
 class Attest(Base):
