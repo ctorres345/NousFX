@@ -5,7 +5,8 @@ Python only, standard library only; runs the same on macOS and Windows.
 
     python3 -B tier.py [--base HASH] [--base-ref BRANCH] [--labels fable-review,size-L] [--cwd DIR]
 
-Prints one JSON object: {"tier", "reasons", "ui", "security", "stats"}. "security" lists the security skills the
+Prints one JSON object: {"tier", "reasons", "ui", "fallback", "security", "gates", "stats"}. "gates" lists human
+gates (NFX-200: a changed byte cap, see CAP_NAMES), each also in "reasons" as "Gate: ...". "security" lists the security skills the
 diff calls for (NFX-124): agentic-actions-auditor for a path under .github/workflows/, sharp-edges for a security
 keyword in a code file's path or changed lines. It is empty when none applies. Exits 2 (nothing on stdout) when the branch has no
 merge base with the default branch; any other error gives Tier 2 with the reason, never a lower tier.
@@ -66,6 +67,13 @@ UI_FOLDERS = ("ui", "screens", "screen", "theme", "compose", "composables", "wid
 UI_NATIVE_EXTENSIONS = (".kt", ".java", ".dart", ".swift")
 UI_NAME_ENDINGS = ("Screen", "View", "Theme", "Activity", "Fragment", "Widget", "Page")
 UI_RES = re.compile(r"/res/(layout|drawable|values|font|mipmap|anim|menu|navigation)[^/]*/[^/]+\.xml$")
+
+# NFX-200: byte caps a ticket must not change on its own. Name -> the file it lives in, or "test" for any test file
+# (Python only: test_*.py, *_test.py). A change of its assigned value (`=`, `+=`, ...) is a human gate; reads are
+# not, nor is arithmetic at a read site. The retro adds new names here.
+CAP_NAMES = (("CLAUDE_RULES_BUDGET", "scripts/nousfx_sync.py"), ("RULES_BUDGET", "scripts/nousfx_sync.py"),
+             ("MAX_BYTES", "test"))
+CAP_MESSAGE = "cap change: needs Cesar's yes; consider moving text to references/"
 
 TINY_LINES, TINY_FILES, TINY_HUNKS = 20, 2, 3
 SMALL_LINES, SMALL_FILES, SMALL_HUNKS = 150, 5, 10
@@ -170,6 +178,31 @@ def is_ui(path, lines=None):
     return not lines or any(COMPOSABLE.search(x) for x in lines)
 
 
+def is_test_file(path):
+    name = norm(path).rsplit("/", 1)[-1]
+    return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
+
+
+def cap_values(name, lines):
+    """The values `name` is assigned in `lines` (comments dropped), sorted: `NAME = 3913  # why` gives ["3913"],
+    `NAME += 100` gives ["+100"]."""
+    pattern = re.compile(r"^\s*%s\s*(?::[^=]*)?([-+*/]?)=(?!=)(.*)$" % re.escape(name))
+    return sorted(m.group(1) + m.group(2).split("#")[0].strip() for m in map(pattern.match, lines) if m)
+
+
+def cap_gates(files):
+    """NFX-200: one gate per cap whose assigned value differs between the removed and the added lines of a file."""
+    gates = []
+    for x in files:
+        path = norm(x["path"])
+        for name, where in CAP_NAMES:
+            if path != where and not (where == "test" and is_test_file(path)):
+                continue
+            if cap_values(name, x["added"]) != cap_values(name, x.get("removed_lines", [])):
+                gates.append("%s (%s in %s)" % (CAP_MESSAGE, name, x["path"]))
+    return gates
+
+
 def norm_labels(labels):
     return {str(x).strip().lower() for x in labels}
 
@@ -231,8 +264,10 @@ def classify(files, labels=(), project_paths=()):
     if ui_path and tier < 1:
         tier = 1
         reasons.append("Tier 1: UI change (%s)" % ui_path)
+    gates = cap_gates(files)  # a gate never changes the tier; it is printed with the reasons so the loop stops to ask
+    reasons += ["Gate: " + g for g in gates]
     return {"tier": tier, "reasons": reasons, "ui": ui_path is not None, "fallback": False,
-            "security": security_skills(files), "stats": stats}
+            "security": security_skills(files), "gates": gates, "stats": stats}
 
 
 # ---- git layer -------------------------------------------------------------------------------------------------
@@ -445,7 +480,7 @@ def fallback(reason, labels, base=None):
     else:
         tier = bump_size_l(2, reasons, labels)
     # "fallback": the diff was not read, so "ui": False is unknown, not "no UI" (NFX-20: the Via gate fails closed).
-    return {"tier": tier, "reasons": reasons, "ui": False, "fallback": True, "security": [],
+    return {"tier": tier, "reasons": reasons, "ui": False, "fallback": True, "security": [], "gates": [],
             "stats": {"lines": 0, "files": 0, "hunks": 0, "base": base}}
 
 
