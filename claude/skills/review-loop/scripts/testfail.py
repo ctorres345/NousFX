@@ -174,9 +174,10 @@ def split(tier, top, base, globs):
 
 
 def worktree_tree(cwd):
-    """Tree hash of the working tree from a fresh temporary index, so every file is hashed again. The gate's
-    worktree_tree starts from a copy of the real index, and a same-size edit made right after a commit can look
-    unchanged there (git's stat shortcut); a verdict must not rest on that."""
+    """Tree hash of the working tree from a fresh temporary index, so every file is hashed again. A copy of the real
+    index keeps its stat data, and a same-size edit made right after a commit can look unchanged there (git's stat
+    shortcut); a verdict must not rest on that. The gate's worktree_tree (NFX-198) seeds from the real index
+    instead, so the two differ when the index holds staged ignored paths or skip-worktree bits."""
     fd, tmp = tempfile.mkstemp(prefix="testfail-index-")
     os.close(fd)
     os.remove(tmp)  # git creates it

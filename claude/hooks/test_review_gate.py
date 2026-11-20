@@ -991,6 +991,87 @@ class TreeOnce(Base):
             self.assertEqual(len(calls), 2)  # nothing is kept from one evaluation to the next
 
 
+class TreeOnDisk(Base):
+    """NFX-198: the tree the gate stamps is the tree on disk, never one git's stat shortcut kept from the index."""
+
+    def write_at(self, name, text, ns):
+        path = os.path.join(self.repo, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.utime(path, ns=(ns, ns))
+
+    def test_a_same_size_edit_right_after_a_commit_changes_the_tree(self):
+        # ctime cannot be set back, so turn its check off; with the mtime pinned too, the edited file's stat matches
+        # the index entry exactly, as a same-size edit in the commit's own second does on a coarse clock.
+        self.sh("git", "config", "core.trustctime", "false", cwd=self.repo)
+        old = time.time_ns() - 100 * 10**9
+        self.write_at("f.txt", "aaaa", old)
+        self.commit(self.repo)
+        gate = load_gate()
+        committed = gate.head_tree(self.repo)
+        self.write_at("f.txt", "bbbb", old)
+        self.assertNotEqual(gate.worktree_tree(self.repo), committed)
+
+    def test_a_tracked_file_that_matches_gitignore_still_counts(self):
+        self.write_at("a.log", "one", time.time_ns())
+        self.commit(self.repo)
+        self.write_at(".gitignore", "*.log\n", time.time_ns())
+        self.commit(self.repo)
+        gate = load_gate()
+        committed = gate.head_tree(self.repo)
+        self.assertEqual(gate.worktree_tree(self.repo), committed)  # a.log stays in
+        self.write_at("a.log", "two, longer", time.time_ns())
+        self.write_at("b.log", "new and ignored", time.time_ns())
+        edited = gate.worktree_tree(self.repo)
+        self.assertNotEqual(edited, committed)
+        names = subprocess.run(["git", "ls-tree", "--name-only", edited], cwd=self.repo, check=True,
+                               capture_output=True, text=True).stdout.split()
+        self.assertIn("a.log", names)
+        self.assertNotIn("b.log", names)
+
+    def test_a_force_added_ignored_file_counts_before_its_commit(self):
+        # what is staged is tracked too: the mark made before the commit must match the commit's tree
+        self.write_at(".gitignore", "*.log\n", time.time_ns())
+        self.commit(self.repo)
+        self.write_at("n.log", "new", time.time_ns())
+        self.sh("git", "add", "-f", "n.log", cwd=self.repo)
+        marked = load_gate().worktree_tree(self.repo)
+        self.commit(self.repo)
+        self.assertEqual(marked, load_gate().head_tree(self.repo))
+
+    def test_a_subfolder_hashes_the_whole_repo(self):
+        # the hook's cwd can be any folder of the repo; tracked ignored files outside it still count
+        self.write_at("keep.log", "kept", time.time_ns())
+        os.makedirs(os.path.join(self.repo, "sub"))
+        self.write_at(os.path.join("sub", "s.log"), "in sub", time.time_ns())
+        self.commit(self.repo)
+        self.write_at(".gitignore", "*.log\n", time.time_ns())
+        self.commit(self.repo)
+        gate = load_gate()
+        self.assertEqual(gate.worktree_tree(os.path.join(self.repo, "sub")), gate.head_tree(self.repo))
+
+    def test_local_edits_hidden_by_skip_worktree_or_assume_unchanged_stay_out(self):
+        # those bits mean "never commit this edit", so the tree must still match the commit that follows
+        self.write_at("a.cfg", "shared", time.time_ns())
+        self.write_at("b.cfg", "shared", time.time_ns())
+        self.commit(self.repo)
+        self.sh("git", "update-index", "--skip-worktree", "a.cfg", cwd=self.repo)
+        self.sh("git", "update-index", "--assume-unchanged", "b.cfg", cwd=self.repo)
+        self.write_at("a.cfg", "my local value", time.time_ns())
+        self.write_at("b.cfg", "my local value", time.time_ns())
+        gate = load_gate()
+        self.assertEqual(gate.worktree_tree(self.repo), gate.head_tree(self.repo))
+
+    def test_an_unborn_branch_hashes_its_files(self):
+        repo = self.make_repo("unborn", commit=False)
+        with open(os.path.join(repo, "x.txt"), "w", encoding="utf-8") as f:
+            f.write("x")
+        tree = load_gate().worktree_tree(repo)
+        names = subprocess.run(["git", "ls-tree", "--name-only", tree], cwd=repo, check=True,
+                               capture_output=True, text=True).stdout.split()
+        self.assertEqual(names, ["x.txt"])
+
+
 class FakeProc:
     """A Popen stand-in whose first wait() times out, like a check that never ends."""
     pid = 4242

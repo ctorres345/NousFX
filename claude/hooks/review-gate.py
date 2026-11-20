@@ -72,6 +72,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -252,8 +253,9 @@ Blocked: branch "{branch}" is not named {prefix}/<JIRA-KEY> (for example {prefix
 """
 
 
-def git(args, cwd, env=None, strip=True):
+def git(args, cwd, env=None, strip=True, data=None):
     """git's stdout (stripped unless strip=False, for `-z` output whose first path may start with a space).
+    data: bytes for stdin; stdout then comes back as unstripped bytes, so no path is decoded.
     RuntimeError when git fails, GateTimeout when it does not answer in time."""
     timeout = 30
     if DEADLINE is not None:
@@ -262,11 +264,13 @@ def git(args, cwd, env=None, strip=True):
             raise GateTimeout(TIMED_OUT)
     try:
         r = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True,
-                           text=True, timeout=timeout)
+                           text=data is None, input=data, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise GateTimeout(TIMED_OUT) from None
     if r.returncode != 0:
-        raise RuntimeError(r.stderr.strip())
+        raise RuntimeError((r.stderr if data is None else r.stderr.decode("utf-8", "replace")).strip())
+    if data is not None:
+        return r.stdout
     return r.stdout.strip() if strip else r.stdout
 
 
@@ -305,23 +309,34 @@ def current_branch(cwd):
 
 
 def worktree_tree(cwd):
-    """Tree hash of the working tree, computed on a copy of the index (real one untouched)."""
-    index = git_path("index", cwd)
-    fd, tmp = tempfile.mkstemp(prefix="review-gate-index-")
-    os.close(fd)
+    """Tree hash of the working tree from a fresh temporary index (real one untouched). A copy of the real index
+    keeps its stat data, and a same-size edit right after a commit can look unchanged there (NFX-198). So the
+    temporary index gets the real index's entries (path, mode, blob, stage) without stat data, and add -A hashes
+    every file again. Tracked stays what the real index says: files that match .gitignore, `git add -f` and
+    `git rm --cached` count as staged, on an unborn branch too."""
+    folder = tempfile.mkdtemp(prefix="review-gate-index-")  # private (0700): nobody can plant an index in it
     try:
-        if os.path.exists(index):
-            with open(index, "rb") as src, open(tmp, "wb") as dst:
-                dst.write(src.read())
-        else:
-            os.remove(tmp)  # git creates it
-        env = {**os.environ, "GIT_INDEX_FILE": tmp}
-        git(["add", "-A"], cwd, env)
-        return git(["write-tree"], cwd, env)
+        env = {**os.environ, "GIT_INDEX_FILE": os.path.join(folder, "index")}
+        top = git(["rev-parse", "--show-toplevel"], cwd)  # ls-files in a subfolder lists only that folder
+        # each record: "<tag> <mode> <blob> <stage>\t<path>"; the tag is S for skip-worktree, lowercase for
+        # assume-unchanged. --index-info drops both bits, and without them add -A would take the local edits they
+        # keep out of every commit, so they are set again.
+        records = [r for r in git(["ls-files", "--stage", "-v", "-z"], top, data=b"").split(b"\0") if r]
+        git(["update-index", "-z", "--index-info"], top, env, data=b"".join(r[2:] + b"\0" for r in records))
+        hidden = {"--skip-worktree": [], "--assume-unchanged": []}
+        for r in records:
+            path = r.split(b"\t", 1)[1]
+            if r[:1].upper() == b"S":
+                hidden["--skip-worktree"].append(path)
+            if r[:1].islower():
+                hidden["--assume-unchanged"].append(path)
+        for flag, paths in hidden.items():
+            if paths:
+                git(["update-index", "-z", flag, "--stdin"], top, env, data=b"\0".join(paths) + b"\0")
+        git(["add", "-A"], top, env)
+        return git(["write-tree"], top, env)
     finally:
-        for path in (tmp, tmp + ".lock"):  # git leaves the lock when the budget kills it mid-add
-            if os.path.exists(path):
-                os.remove(path)
+        shutil.rmtree(folder, ignore_errors=True)  # with the lock git leaves when the budget kills it mid-add
 
 
 def head_tree(cwd):
