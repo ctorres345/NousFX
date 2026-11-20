@@ -5,6 +5,7 @@ Run: python3 -B claude/skills/review-loop/scripts/test_testfail.py
 Seam: the script's CLI, its printed verdict and exit code. Each test builds a throwaway git repo under a temp dir whose
 check command is one line (`python3 -B -m unittest -q`); the real repo and HOME are never touched.
 """
+import atexit
 import hashlib
 import os
 import re
@@ -17,6 +18,10 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 TESTFAIL = os.path.join(HERE, "testfail.py")
 sys.dont_write_bytecode = True
+# NFX-217: testfail.py and run_checks.main take a suite slot; keep these runs off the machine-wide slots.
+_SLOTS = tempfile.mkdtemp(prefix="nousfx-test-slots-")
+atexit.register(shutil.rmtree, _SLOTS, True)
+os.environ.setdefault("NOUSFX_SUITE_SLOT_DIR", _SLOTS)
 
 CHECK = "python3 -B -m unittest -q"
 BUGGY = "def add(a, b):\n    return a - b\n"

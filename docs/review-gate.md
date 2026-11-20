@@ -63,7 +63,7 @@ A mark now means the tests passed, not only that a reviewer was satisfied. `--ma
   timeout = 1800   # seconds, optional
   ```
 - The gate never adds `--fail-fast` to `scripts/run_checks.py`, so a stamp or mark always means a full pass.
-- `scripts/run_checks.py` waits for a machine-wide suite slot first ("Suite slots" below).
+- The gate takes a machine-wide suite slot before it starts the command, so `timeout` counts the run, not the wait ("Suite slots" below).
 - The command runs through the shell at the repo top level, with `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR` removed and `PYTHONDONTWRITEBYTECODE=1`. Its output goes to `claude-review-check.log` in the git dir. A refusal prints the last 40 lines and the path.
 - Where it is read from: `origin/HEAD`, else `origin/main`, else `origin/master` (one rule, `git_refs.py`, shared with `tier.py`; locally `origin/HEAD` is trusted as `git remote set-head origin -a` set it, and CI is the control, so the rule is not limited to main/master and `develop`/`trunk` repos work). A branch cannot edit its own check to `true`. When that branch has the file, it wins, even if the file has no usable `[check]` (then the mark is refused). Only when the default branch has no `.nousfx/project.toml` at all (the PR that adds it), or no default branch can be found, does the mark use the working-tree file, and it says so. That local fallback is a convenience; CI never uses it. The anchor is the local remote-tracking state (`origin/HEAD` counts only when it points at another `refs/remotes/origin/` ref, and nothing is fetched), so a stale clone or a shell user can still steer the local mark. CI is the real check.
 - A refused mark deletes the older one, so a stale good mark cannot carry a failing run through.
@@ -156,18 +156,19 @@ testfail.py attest ──► stamp MAC, tree, branch, base, check and config mat
 Parallel sessions on one machine share N slots for full suites, so a stamp or a test-fail verdict is not decided by machine load. `claude/skills/review-loop/scripts/suite_slot.py` holds them.
 
 ```
-run_checks.py ─────────────┐
+gate run_check (--mark, run-check) ──────────┐
+run_checks.py (run by hand) ──────────────────┤
 testfail.py run (after the clone, both runs) ─┴─► a slot free? ── yes ──► run, release on exit (kill -9 too)
                                                     │ no
                                                     └─► "waiting for a suite slot (k of N busy)" on stderr, then wait
 ```
 
 - N = max(1, CPUs // 4): 3 on a 12-CPU Mac. `NOUSFX_SUITE_SLOTS=<n>` overrides it; a bad value falls back with a note.
-- One lock file per slot in `~/Library/Caches/nousfx/suite-slots` (macOS) or `$XDG_CACHE_HOME`/`~/.cache` (Linux); `NOUSFX_SUITE_SLOT_DIR` overrides it. A slot is an exclusive `flock`, which the kernel drops when the holder exits in any way, so a killed run never leaves a slot behind. The file holds the holder's PID.
-- One slot per process tree: the holder exports `NOUSFX_SUITE_SLOT_HELD=<pid>:<file>`. The check that testfail.py starts, and a suite that runs `run_checks.py`, see a live holder there and take no second slot, so nothing waits on its own parent.
+- One lock file per slot in `~/Library/Caches/nousfx/suite-slots` (macOS) or `$XDG_CACHE_HOME`/`~/.cache` (Linux), with the home folder from the user record, not `$HOME`, so a suite that moves `HOME` shares the same slots; `NOUSFX_SUITE_SLOT_DIR` overrides it. A slot is an exclusive `flock`, which the kernel drops when the holder exits in any way, so a killed run never leaves a slot behind. The file holds the holder's PID.
+- One slot per process tree: the holder exports `NOUSFX_SUITE_SLOT_HELD=<pid>:<file>`. The check the gate or testfail.py starts (usually `run_checks.py`), and a suite that runs `run_checks.py`, see a live holder there and take no second slot, so nothing waits on its own parent.
 - No limit, with a one-line note, on Windows (no `flock`), when the folder cannot be made, or when a project copy of testfail.py has no `suite_slot.py` next to it (re-run the sync).
-- A stuck wait means a live run holds every slot: `cat` the slot files for the PIDs. Deleting a file does not free a held slot.
-- Limit: for `--mark` and `run-check --stamp`, the wait happens inside `run_checks.py`, so it counts toward `[check] timeout`. testfail.py waits before it starts the check, so its wait does not.
+- A stuck wait means a live run holds every slot: `cat` the slot files for the PIDs, and stop that run if it hangs. Never delete a slot file or the folder: the holder keeps running on the removed file, so one more suite gets in (a waiter re-makes the folder and carries on).
+- The `[check] timeout` starts after the slot is held: the gate's `run_check` takes it before it starts the command, and testfail.py before its first run. The gate loads `suite_slot.py` from `../skills/review-loop/scripts` next to it; CI and the cloud copy have none, so they run with no limit and a note.
 
 ### In CI
 

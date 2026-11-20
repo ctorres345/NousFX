@@ -28,8 +28,7 @@ reads it (the default branch's copy when it has one):
 A finished run writes a signed stamp in the git dir (claude-testfail-pass) binding tree, branch, base, check and
 config. `attest` never runs anything: it prints the same line, with run's exit code, for a stamp that matches the
 current tree, else exits 2.
-Both clone runs hold one machine-wide suite slot (suite_slot.py, NFX-217), taken after the clone: while other sessions
-run N full suites, it waits and says so on stderr. The check runs inside that slot and takes no second one.
+Both clone runs hold one machine-wide suite slot, taken after the clone (NFX-217; rules in suite_slot.py).
 The real working tree and index are never written; a run that finds the tree changed refuses. Same trust limits as
 prove.py: see docs/review-gate.md.
 """

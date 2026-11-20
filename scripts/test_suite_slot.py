@@ -5,12 +5,18 @@ Seams: the run_checks.py and testfail.py CLIs, run as subprocesses, and suite_sl
 NOUSFX_SUITE_SLOT_DIR at a temp dir and drops NOUSFX_SUITE_SLOT_HELD, so it never touches the real slots and never
 inherits the slot of the run_checks.py that runs it.
 """
+import contextlib
+import importlib.util
+import io
 import os
+import queue
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -22,6 +28,18 @@ sys.dont_write_bytecode = True
 import suite_slot  # noqa: E402
 
 WAITING = "waiting for a suite slot (1 of 1 busy)"
+# A child process that takes the slot with suite_slot.hold() and runs BODY inside it.
+CHILD = "import os, sys, time; sys.path.insert(0, sys.argv[1]); import suite_slot\nwith suite_slot.hold():\n    {body}\n"
+
+
+def first_line(stream, timeout=30):
+    """The next line of a child's pipe, or "" when none comes within `timeout` seconds."""
+    lines = queue.Queue()
+    threading.Thread(target=lambda: lines.put(stream.readline()), daemon=True).start()
+    try:
+        return lines.get(timeout=timeout).strip()
+    except queue.Empty:
+        return ""
 
 
 class Base(unittest.TestCase):
@@ -32,27 +50,39 @@ class Base(unittest.TestCase):
         self.slots = os.path.join(self.tmp, "slots")
         self.env = {k: v for k, v in os.environ.items() if k != suite_slot.ENV_HELD}
         self.env.update({suite_slot.ENV_DIR: self.slots, suite_slot.ENV_SLOTS: "1"})
-        self._saved_env = dict(os.environ)
-        self.addCleanup(self._restore_env)
+        saved = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
         os.environ.clear()
         os.environ.update(self.env)
 
-    def _restore_env(self):
-        os.environ.clear()
-        os.environ.update(self._saved_env)
+    def start(self, args, env=None, cwd=None):
+        proc = subprocess.Popen(args, env=env or self.env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, stdin=subprocess.DEVNULL)
+        self.addCleanup(self.stop, proc)
+        return proc
+
+    def child(self, body, env=None):
+        """Start a process that runs `body` while it holds a slot."""
+        return self.start([sys.executable, "-B", "-c", CHILD.format(body=body), SKILL_SCRIPTS], env=env)
 
     def holder(self):
         """A separate process that takes the slot, says so, and sleeps until killed."""
-        code = ("import sys, time; sys.path.insert(0, sys.argv[1]); import suite_slot\n"
-                "with suite_slot.hold():\n    print('held', flush=True)\n    time.sleep(120)\n")
-        proc = subprocess.Popen([sys.executable, "-B", "-c", code, SKILL_SCRIPTS], env=self.env,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
-        self.addCleanup(self._stop, proc)
-        self.assertEqual(proc.stdout.readline().strip(), "held", proc.stderr.read() if proc.poll() is not None else "")
+        proc = self.child("print('held', flush=True); time.sleep(120)")
+        self.assertEqual(first_line(proc.stdout), "held")
         return proc
 
+    def assert_waiting(self, proc):
+        """proc printed the wait line and has not run its body."""
+        self.assertEqual(first_line(proc.stderr), WAITING)
+        self.assertIsNone(proc.poll())
+
+    def assert_slot_free(self):
+        fd, _, _ = suite_slot.try_slot(self.slots, 1)
+        self.assertIsNotNone(fd, "the slot is still taken")
+        suite_slot.release(fd)
+
     @staticmethod
-    def _stop(proc):
+    def stop(proc):
         if proc.poll() is None:
             proc.kill()
         proc.wait()
@@ -73,30 +103,31 @@ class RunChecksWaits(Base):
         shutil.copy(os.path.join(SKILL_SCRIPTS, "suite_slot.py"), dest)
         self.marks = os.path.join(self.tmp, "marks")
         os.makedirs(self.marks)
+        self.release = os.path.join(self.tmp, "release")  # the suite runs until the test makes it: no timing race
         with open(os.path.join(repo, "scripts", "test_sleep.py"), "w") as f:
             f.write("import os, sys, time\n"
                     f"mark = os.path.join({self.marks!r}, str(os.getppid()))\n"
                     "open(mark + '.start', 'w').write(repr(time.time()))\n"
-                    "time.sleep(1.5)\n"
+                    "deadline = time.time() + 30\n"
+                    f"while not os.path.exists({self.release!r}) and time.time() < deadline:\n"
+                    "    time.sleep(0.05)\n"
                     "open(mark + '.end', 'w').write(repr(time.time()))\n")
         return os.path.join(repo, "scripts", "run_checks.py")
 
     def test_two_concurrent_runs_never_overlap_and_the_second_waits_then_passes(self):
         script = self.make_repo()
-        first = subprocess.Popen([sys.executable, "-B", script], env=self.env, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
-        self.addCleanup(self._stop, first)
+        first = self.start([sys.executable, "-B", script])
         deadline = time.time() + 30
         while not os.listdir(self.marks) and time.time() < deadline:  # the first suite is running
             time.sleep(0.05)
-        second = subprocess.Popen([sys.executable, "-B", script], env=self.env, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
-        self.addCleanup(self._stop, second)
+        second = self.start([sys.executable, "-B", script])
+        line = first_line(second.stderr)  # read before the first run may end, so the wait cannot be missed
+        open(self.release, "w").close()
         out1, err1 = first.communicate(timeout=60)
         out2, err2 = second.communicate(timeout=60)
         self.assertEqual(first.returncode, 0, out1 + err1)
         self.assertEqual(second.returncode, 0, out2 + err2)
-        self.assertIn(WAITING, err2)
+        self.assertEqual(line, WAITING)
         self.assertNotIn("waiting", err1)
 
         def span(pid):
@@ -111,28 +142,18 @@ class KilledHolder(Base):
 
     def test_a_slot_held_by_a_process_killed_with_sigkill_is_free_again(self):
         proc = self.holder()
-        fd, busy = suite_slot.try_slot(self.slots, 1)
-        self.assertIsNone(fd)
-        self.assertEqual(busy, 1)
+        self.assertEqual(suite_slot.try_slot(self.slots, 1), (None, None, 1))
         proc.send_signal(signal.SIGKILL)
         proc.wait()
-        fd, path = suite_slot.try_slot(self.slots, 1)
-        self.assertIsNotNone(fd, "the killed holder's slot was not reclaimed")
-        suite_slot.release(fd)
+        self.assert_slot_free()
 
     def test_a_waiter_gets_the_slot_once_the_holder_is_killed(self):
-        proc = self.holder()
-        code = ("import sys; sys.path.insert(0, sys.argv[1]); import suite_slot\n"
-                "with suite_slot.hold():\n    print('ran', flush=True)\n")
-        waiter = subprocess.Popen([sys.executable, "-B", "-c", code, SKILL_SCRIPTS], env=self.env,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
-        self.addCleanup(self._stop, waiter)
-        time.sleep(1.5)
-        self.assertIsNone(waiter.poll(), "the waiter ran while the slot was held")
-        proc.send_signal(signal.SIGKILL)
+        holder = self.holder()
+        waiter = self.child("print('ran', flush=True)")
+        self.assert_waiting(waiter)
+        holder.send_signal(signal.SIGKILL)
         out, err = waiter.communicate(timeout=30)
         self.assertEqual(out.strip(), "ran", err)
-        self.assertIn(WAITING, err)
 
     def test_a_leftover_slot_file_naming_a_dead_pid_does_not_block(self):
         os.makedirs(self.slots)
@@ -140,60 +161,41 @@ class KilledHolder(Base):
                               text=True).stdout.strip()
         with open(os.path.join(self.slots, "slot-0.lock"), "w") as f:
             f.write(dead)
-        err = self.hold_in_child()
+        out, err = self.child("pass").communicate(timeout=10)
         self.assertNotIn("waiting", err)
-
-    def hold_in_child(self, env=None):
-        code = ("import sys; sys.path.insert(0, sys.argv[1]); import suite_slot\n"
-                "with suite_slot.hold():\n    pass\n")
-        r = subprocess.run([sys.executable, "-B", "-c", code, SKILL_SCRIPTS], env=env or self.env,
-                           capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        return r.stderr
 
 
 class Nesting(Base):
     """A process tree takes one slot: a child of the holder runs inside it (no deadlock at N=1)."""
-
-    def child(self, env):
-        code = ("import os, sys; sys.path.insert(0, sys.argv[1]); import suite_slot\n"
-                "with suite_slot.hold():\n    print(os.getpid(), os.environ.get(suite_slot.ENV_HELD, ''), flush=True)\n")
-        return subprocess.run([sys.executable, "-B", "-c", code, SKILL_SCRIPTS], env=env, capture_output=True,
-                              text=True, timeout=10, stdin=subprocess.DEVNULL)
+    REPORT = "print(os.getpid(), os.environ.get(suite_slot.ENV_HELD, ''), flush=True)"
 
     def test_a_child_of_the_holder_does_not_take_a_second_slot(self):
         with suite_slot.hold():
             marker = os.environ[suite_slot.ENV_HELD]
             self.assertTrue(marker.startswith(f"{os.getpid()}:"))
-            r = self.child(dict(os.environ))
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertNotIn("waiting", r.stderr)
-        self.assertEqual(r.stdout.split()[1], marker)  # it ran inside the parent's slot
+            out, err = self.child(self.REPORT, env=dict(os.environ)).communicate(timeout=10)
+        self.assertNotIn("waiting", err)
+        self.assertEqual(out.split()[1], marker)  # it ran inside the parent's slot
         self.assertNotIn(suite_slot.ENV_HELD, os.environ)  # released and unset after the block
 
     def test_a_marker_whose_holder_is_gone_counts_for_nothing(self):
         proc = self.holder()
-        with open(os.path.join(self.slots, "slot-0.lock")) as f:
+        lock = os.path.join(self.slots, "slot-0.lock")
+        with open(lock) as f:
             self.assertEqual(f.read(), str(proc.pid))
-        env = dict(self.env, **{suite_slot.ENV_HELD: f"{proc.pid}:{os.path.join(self.slots, 'slot-0.lock')}"})
+        env = dict(self.env, **{suite_slot.ENV_HELD: f"{proc.pid}:{lock}"})
         proc.send_signal(signal.SIGKILL)
         proc.wait()
-        r = self.child(env)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        child_pid, marker = r.stdout.split()
+        out, err = self.child(self.REPORT, env=env).communicate(timeout=10)
+        child_pid, marker = out.split()
         self.assertTrue(marker.startswith(f"{child_pid}:"), marker)  # it took a slot of its own
 
-    def test_a_marker_from_an_unrelated_live_process_that_holds_no_slot_counts_for_nothing(self):
-        env = dict(self.env, **{suite_slot.ENV_HELD: f"{os.getpid()}:{os.path.join(self.slots, 'slot-0.lock')}"})
-        proc = self.holder()  # holds slot 0 with its own PID, not ours
-        code = ("import sys; sys.path.insert(0, sys.argv[1]); import suite_slot\n"
-                "with suite_slot.hold():\n    pass\n")
-        waiter = subprocess.Popen([sys.executable, "-B", "-c", code, SKILL_SCRIPTS], env=env,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
-        self.addCleanup(self._stop, waiter)
-        time.sleep(1.5)
-        self.assertIsNone(waiter.poll(), "a forged marker let the waiter skip the slot")
-        self._stop(proc)
+    def test_a_marker_from_a_live_process_that_holds_no_slot_counts_for_nothing(self):
+        lock = os.path.join(self.slots, "slot-0.lock")
+        holder = self.holder()  # holds slot 0 with its own PID, not ours
+        waiter = self.child("pass", env=dict(self.env, **{suite_slot.ENV_HELD: f"{os.getpid()}:{lock}"}))
+        self.assert_waiting(waiter)
+        self.stop(holder)
         waiter.communicate(timeout=30)
         self.assertEqual(waiter.returncode, 0)
 
@@ -233,13 +235,11 @@ class TestfailRuns(Base):
             f.write(text)
 
     def start_testfail(self):
-        return subprocess.Popen([sys.executable, "-B", os.path.join(SKILL_SCRIPTS, "testfail.py"), "run", "--base",
-                                 self.base], cwd=self.repo, env=self.env, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
+        return self.start([sys.executable, "-B", os.path.join(SKILL_SCRIPTS, "testfail.py"), "run", "--base",
+                           self.base], cwd=self.repo)
 
     def test_both_clone_runs_run_inside_one_slot_that_testfail_holds(self):
         proc = self.start_testfail()
-        self.addCleanup(self._stop, proc)
         out, err = proc.communicate(timeout=120)
         self.assertEqual(proc.returncode, 0, out + err)
         self.assertIn("Tests-Fail-Without: yes", out)
@@ -249,17 +249,93 @@ class TestfailRuns(Base):
         self.assertEqual(markers[0], markers[1])
         self.assertTrue(markers[0].startswith(f"{proc.pid}:"), markers)
 
+    def test_one_slot_is_held_across_both_runs_not_taken_per_run(self):
+        import testfail
+        gate = load_gate(os.path.join(ROOT, "claude", "hooks", "review-gate.py"))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "NFX-1: change")
+        busy, takes, real_try = [], [], suite_slot.try_slot
+
+        def counting_try(directory, n):
+            got = real_try(directory, n)
+            takes.append(got[0] is not None)
+            return got
+
+        class FakeGate:  # takes no slot itself, so only testfail's own hold can make the slot busy
+            @staticmethod
+            def run_check(copy, check, log):
+                fd, _, _ = real_try(self.slots, 1)
+                busy.append(fd is None)
+                if fd is not None:
+                    suite_slot.release(fd)
+                open(log, "w").close()
+                return (len(busy) == 1, "" if len(busy) == 1 else "exited with 1")
+
+        os.makedirs(self.slots, exist_ok=True)  # so a free slot reads as free, not as a missing folder
+        suite_slot.try_slot = counting_try
+        self.addCleanup(setattr, suite_slot, "try_slot", real_try)
+        s = testfail.Setup(self.repo, {"command": "true", "timeout": 60}, None, re.compile(testfail.DEFAULT_PATTERN, re.M),
+                           self.base, "cesar/NFX-1", gate.worktree_tree(self.repo), {})
+        testfail.run_in_copy(FakeGate, s, ["calc.py"])
+        self.assertEqual(busy, [True, True], "the slot was free during a clone run")
+        self.assertEqual(takes, [True], "testfail took the slot more than once")
+        self.assert_slot_free()
+
     def test_testfail_waits_for_a_busy_slot_then_gives_its_verdict(self):
         holder = self.holder()
         proc = self.start_testfail()
-        self.addCleanup(self._stop, proc)
-        time.sleep(2)
+        self.assert_waiting(proc)
         self.assertFalse(os.path.exists(self.log), "the check ran while another process held the only slot")
-        self._stop(holder)
+        self.stop(holder)
         out, err = proc.communicate(timeout=120)
         self.assertEqual(proc.returncode, 0, out + err)
-        self.assertIn(WAITING, err)
         self.assertIn("Tests-Fail-Without: yes", out)
+
+
+def load_gate(path):
+    spec = importlib.util.spec_from_file_location(f"gate_{abs(hash(path))}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class GateRunCheck(Base):
+    """review-gate.py run_check (--mark, run-check --stamp, testfail) takes the slot before its [check] timeout starts."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(self.repo)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+        self.seen = os.path.join(self.tmp, "seen")
+        self.check = {"command": f"{sys.executable} -B -c \"import os; open({self.seen!r}, 'w').write("
+                                 f"os.environ.get('{suite_slot.ENV_HELD}', '-'))\"", "timeout": 3}
+
+    def test_the_timeout_starts_after_the_wait_and_the_check_runs_inside_the_slot(self):
+        gate = load_gate(os.path.join(ROOT, "claude", "hooks", "review-gate.py"))
+        holder = self.holder()
+        threading.Timer(4, self.stop, [holder]).start()  # longer than the check's 3 s timeout
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            ok, why = gate.run_check(self.repo, self.check, os.path.join(self.tmp, "check.log"))
+        self.assertTrue(ok, why)
+        self.assertIn(WAITING, err.getvalue())
+        with open(self.seen) as f:
+            self.assertTrue(f.read().startswith(f"{os.getpid()}:"))  # so run_checks.py there takes no second slot
+
+    def test_a_gate_with_no_skill_folder_next_to_it_runs_with_no_limit_and_a_note(self):
+        hooks = os.path.join(self.tmp, "lone", "hooks")
+        os.makedirs(hooks)
+        shutil.copy(os.path.join(ROOT, "claude", "hooks", "review-gate.py"), hooks)
+        gate = load_gate(os.path.join(hooks, "review-gate.py"))
+        self.holder()  # would block a gate that found the helper
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            ok, why = gate.run_check(self.repo, self.check, os.path.join(self.tmp, "check.log"))
+        self.assertTrue(ok, why)
+        self.assertIn("no suite slot limit", err.getvalue())
+        with open(self.seen) as f:
+            self.assertEqual(f.read(), "-")
 
 
 class Release(Base):
@@ -267,16 +343,12 @@ class Release(Base):
         with self.assertRaises(RuntimeError):
             with suite_slot.hold():
                 raise RuntimeError("suite crashed")
-        fd, _ = suite_slot.try_slot(self.slots, 1)
-        self.assertIsNotNone(fd)
-        suite_slot.release(fd)
+        self.assert_slot_free()
 
 
 class Degrades(Base):
     def run_hold(self):
-        import io
-        out = io.StringIO()
-        ran = []
+        out, ran = io.StringIO(), []
         with suite_slot.hold(out=out):
             ran.append(True)
         return ran, out.getvalue()
@@ -297,19 +369,40 @@ class Degrades(Base):
         self.assertEqual(ran, [True])
         self.assertIn("no suite slot limit: cannot use", out)
 
+    def test_a_slot_file_that_is_a_symlink_is_never_followed(self):
+        victim = os.path.join(self.tmp, "victim.txt")
+        with open(victim, "w") as f:
+            f.write("keep me")
+        os.makedirs(self.slots)
+        os.symlink(victim, os.path.join(self.slots, "slot-0.lock"))
+        ran, out = self.run_hold()
+        self.assertEqual(ran, [True])
+        self.assertIn("no suite slot limit: cannot use", out)
+        with open(victim) as f:
+            self.assertEqual(f.read(), "keep me")
+
+    def test_a_waiter_survives_the_slot_folder_being_removed(self):
+        self.holder()
+        waiter = self.child("print('ran', flush=True)")
+        self.assert_waiting(waiter)
+        shutil.rmtree(self.slots)  # a cache cleaner; the holder keeps its lock on the removed file
+        out, err = waiter.communicate(timeout=30)
+        self.assertEqual(waiter.returncode, 0, err)
+        self.assertEqual(out.strip(), "ran", err)
+        self.assertNotIn("Traceback", err)
+
     def test_slot_count_default_and_override(self):
-        cpus = os.cpu_count() or 1
-        self.assertEqual(suite_slot.slot_count({}), max(1, cpus // 4))
+        default = max(1, (os.cpu_count() or 1) // 4)
+        self.assertEqual(suite_slot.slot_count({}), default)
         self.assertEqual(suite_slot.slot_count({suite_slot.ENV_SLOTS: "2"}), 2)
-        import io
         note = io.StringIO()
         for bad in ("0", "-1", "two"):
-            self.assertEqual(suite_slot.slot_count({suite_slot.ENV_SLOTS: bad}, out=note), max(1, cpus // 4))
+            self.assertEqual(suite_slot.slot_count({suite_slot.ENV_SLOTS: bad}, out=note), default)
         self.assertEqual(note.getvalue().count("is not a whole number"), 3)
 
-    def test_the_default_folder_is_outside_any_repo_under_the_user_cache(self):
-        path = suite_slot.slot_dir({})
-        self.assertTrue(path.startswith(os.path.expanduser("~")), path)
+    def test_the_default_folder_is_under_the_user_cache_whatever_home_says(self):
+        path = suite_slot.slot_dir({"HOME": self.tmp, "XDG_CACHE_HOME": ""})
+        self.assertFalse(path.startswith(self.tmp), path)  # a suite that moves HOME still shares the slots
         self.assertTrue(path.endswith(os.path.join("nousfx", "suite-slots")), path)
 
 

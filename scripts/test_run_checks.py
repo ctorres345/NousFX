@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Tests for scripts/run_checks.py (NFX-134): cheap suites first, FAIL shown at once, optional --fail-fast."""
+import atexit
 import contextlib
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -11,6 +13,11 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import run_checks  # noqa: E402
+
+# NFX-217: testfail.py and run_checks.main take a suite slot; keep these runs off the machine-wide slots.
+_SLOTS = tempfile.mkdtemp(prefix="nousfx-test-slots-")
+atexit.register(shutil.rmtree, _SLOTS, True)
+os.environ.setdefault("NOUSFX_SUITE_SLOT_DIR", _SLOTS)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
