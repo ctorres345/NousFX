@@ -99,6 +99,7 @@ CHECK_TIMEOUT = 1800
 CHECK_LOG = "claude-review-check.log"
 STAMP_FILE = "claude-review-check-pass"  # in the git dir, written only by `run-check --stamp` (NFX-97)
 PROOF_STAMP_FILE = "claude-proof-pass"  # in the git dir, written only by prove.py (NFX-105); the gate never reads it
+TESTFAIL_STAMP_FILE = "claude-testfail-pass"  # in the git dir, written only by testfail.py (NFX-190); the gate never reads it
 STAMP_KEY = "claude-review-stamp-key"
 GIT_ENV_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
 

@@ -61,6 +61,9 @@ Read `references/gemini.md` for UI changes or Tier 3, and before Record's final 
 ## Security skills
 Read `references/security.md` on the first round when `tier.py`'s `security` list is not empty. If `tier.py` failed or printed no `security` key, none runs: say so in the report.
 
+## Test-fail check
+Read `references/testfail.md` after Step 0 and in Record the review.
+
 ## Dispositions
 When the loop ends, every finding has one outcome. `rejected` is not a disposition: it means the finding was not real (step 4 records the reason). Every real finding gets exactly one of:
 - `fix-now`: in scope and cheap (touches files already in the diff, no new design decision). A `high`, or a `med` at 60 or more, is always `fix-now`; if the loop ends with one still unfixed, report it as open and count it in `--findings`. A `med` under 60 is never `fix-now`: it is a `follow-up` or a `note`.
