@@ -145,6 +145,79 @@ class Run(Base):
         self.assertEqual(r.returncode, 2)
 
 
+class Lint(Base):
+    """NFX-208: `lint` checks a ticket's Proof: lines with run's parser, before any code exists."""
+
+    def lint(self, text):
+        return self.prove("lint", self.write_list(text))
+
+    def test_lines_run_cannot_read_are_named_with_their_number(self):
+        for bad in ("same", "manual, look at it", "the gate's test suite passes", "manual: x Backup:"):
+            with self.subTest(bad=bad):
+                r = self.lint(ac("`true`") + f"- [ ] Other. Proof: {bad}\n")
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("line 2:", r.stdout)
+
+    def test_every_bad_line_is_listed_not_only_the_first(self):
+        r = self.lint(ac("same", "`true`", "manual, x"))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("line 1:", r.stdout)
+        self.assertIn("line 3:", r.stdout)
+        self.assertNotIn("line 2:", r.stdout)
+
+    def test_runnable_proofs_pass(self):
+        for good in ("`true`", "`true`.", "manual: open the app", "manual: call the API Backup: `true`"):
+            with self.subTest(good=good):
+                r = self.lint(ac(good))
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_list_of_only_manual_proofs_passes(self):
+        """run refuses a list with nothing to run; a ticket whose proofs are all manual is still valid."""
+        self.assertEqual(self.lint(ac("manual: look at it", "manual: tap it")).returncode, 0)
+
+    def test_a_file_with_no_proof_lines_passes(self):
+        """ticket-check flags a criterion with no Proof: on its own; lint judges only the lines that exist."""
+        for text in ("", "no proofs here\n", "Each criterion ends in a `Proof:` line.\n"):
+            with self.subTest(text=text):
+                self.assertEqual(self.lint(text).returncode, 0)
+
+    def test_a_quoted_example_in_prose_is_refused_like_run_does(self):
+        """Shared parser: a quoted "Proof: same" is a proof line to run too, so ticket-check says to backtick it."""
+        r = self.lint('Seen: "Proof: same" in NFX-198.\n')
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("line 1:", r.stdout)
+
+    def test_lint_and_run_agree_on_each_line(self):
+        for proof in ("`true`", "same", "manual, x", "manual:", "``", "", "pytest x", "manual: a Backup: b Backup: c"):
+            with self.subTest(proof=proof):
+                text = ac("`true`", proof)
+                self.assertEqual(self.lint(text).returncode == 0, self.prove("run", self.write_list(text)).returncode == 0)
+
+    def test_lint_never_runs_a_proof_or_writes_a_stamp(self):
+        r = self.lint(ac("`touch ran.txt`"))
+        self.assertEqual(r.returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "ran.txt")))
+        self.assertFalse(os.path.exists(self.stamp_path()))
+
+    def test_lint_works_outside_a_repo(self):
+        path = self.write_list(ac("same"))
+        r = subprocess.run([sys.executable, "-B", PROVE, "lint", path], cwd=self.outside, capture_output=True,
+                           text=True, stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("line 1:", r.stdout)
+
+    def test_a_missing_file_is_refused(self):
+        self.assertEqual(self.prove("lint", os.path.join(self.outside, "nope.md")).returncode, 2)
+
+    def test_non_ascii_ticket_text_on_a_narrow_pipe_still_lists_the_line(self):
+        """Windows pipes default to the locale code page; Jira text has arrows and emoji."""
+        path = self.write_list(ac("same → 🚀"))
+        r = subprocess.run([sys.executable, "-B", PROVE, "lint", path], cwd=self.outside, capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=60, env={**os.environ, "PYTHONIOENCODING": "cp1252"})
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn(b"line 1:", r.stdout)
+
+
 class Attest(Base):
     def run_ok(self, text, **kw):
         path = self.write_list(text, **kw)

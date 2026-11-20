@@ -63,6 +63,8 @@ Severity is `blocks`, `should fix` or `nit`. Nits never block.
 
 If an acceptance criterion has no `Proof:` line, flag it as a gap.
 
+Lint the `Proof:` lines too. Save the acceptance criteria (the text `prove.py run` will read) to a scratchpad file, then run `python3 -B <review-loop skill folder>/scripts/prove.py lint <file>` (Claude Code: `~/.claude/skills/review-loop`; `python` on Windows). Each `line N:` it prints is a refused line: one gap row each, severity `blocks`, fix: rewrite it as `` `command` `` or `manual: <step>`. In an example, put a backtick right before `Proof:` (`` `Proof: same` ``), or lint refuses it too. Save the file as UTF-8. Exit 2 with no `line N:` rows means lint did not run: report "lint did not run: <its stderr>", never clean. If the script is missing, say so and go on.
+
 ## Step 3: verify before acting
 
 Check each gap against the code yourself. Mark each one:
