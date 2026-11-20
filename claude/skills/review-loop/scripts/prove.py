@@ -22,6 +22,10 @@ a proof line.
 "line N: why" and exits 2, else exits 0. A list with only manual proofs passes, since `run`'s no-command rule is
 about the list, not a line.
 
+A command proof that is exactly the trusted `[check]` command is not run again when a valid `run-check --stamp` stamp
+matches the tree, branch and check, as --mark matches it (NFX-218, reusable_check): `run` prints
+"proof N: reused check stamp <tree>" and counts it as passed. In every other case the proof runs.
+
 `run` stops at the first failing proof (exit 2, no stamp). When all pass, it writes a signed stamp in the git dir
 (claude-proof-pass) that binds the working-tree hash, the branch and a hash of the normalized proofs. `attest`
 never runs anything: it checks that stamp against the current tree and list, then prints
@@ -210,6 +214,21 @@ def prepare(gate, cwd):
         raise Refused(f"cannot read the repo here: {e}") from None
 
 
+def reusable_check(gate, cwd, tree, branch):
+    """The trusted [check] command when a valid `run-check --stamp` stamp matches this tree, branch and check, else
+    None (NFX-218). The match is --mark's own: the gate's trusted_check, stamp_fields and valid_stamp. Read once,
+    before any proof runs, since a proof is branch code. Anything missing or failing (a gate that predates
+    stamp_fields, no git_refs.py next to it, no [check]) means None: the proof runs as before. The stamp is left in
+    place for --mark."""
+    try:
+        check, _ = gate.trusted_check(cwd)
+        if check and gate.valid_stamp(cwd, gate.stamp_fields(tree, branch, check), gate.STAMP_FILE):
+            return check["command"]
+    except Exception:
+        pass
+    return None
+
+
 def run(args):
     cwd = os.getcwd()
     gate = load_gate()
@@ -227,9 +246,13 @@ def run(args):
     except Exception as e:
         raise Refused(f"cannot read the stamp key: {e}") from None
     commands, manual = split(proofs)
+    stamped = reusable_check(gate, cwd, tree, branch)
     try:
         for i, command in enumerate(commands, 1):
             print(f"Proof {i}/{len(commands)}: {command}", flush=True)
+            if command == stamped:
+                print(f"proof {i}: reused check stamp {tree[:10]}", flush=True)
+                continue
             check = {"command": command, "timeout": args.timeout, "source": "proof list"}
             ok, why = gate.run_verified(cwd, check, tree)
             if not ok:
