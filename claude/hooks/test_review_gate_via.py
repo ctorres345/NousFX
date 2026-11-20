@@ -227,7 +227,7 @@ class ViaBase(Base):
             f.write(text)
 
     def wtree(self):
-        """The working tree's tree hash, the way the gate and via_run.py compute it (a copy of the index)."""
+        """The working tree's tree hash, the way via_run.py computes it (a copy of the index)."""
         idx = os.path.join(self.tmp, "idx")
         shutil.copy(os.path.join(self.repo, ".git", "index"), idx)
         env = {**os.environ, "GIT_INDEX_FILE": idx}
