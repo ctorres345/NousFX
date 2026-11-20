@@ -22,6 +22,8 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file_
 SKILLS = os.path.join(REPO_ROOT, "claude", "skills")
 SCRIPT = os.path.join(SKILLS, "gemini-review", "scripts", "argon_review.py")
 KEY = "acme/app"
+NO_ANSWER = "did not answer in"  # how argon_review.py says via_outbound.py ran out of time
+OUTBOUND_LIMIT = 15  # the copy's limit: 15x the slowest answer seen at load 200 (0.9 s), far below the stub's sleep
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 STUB = """#!/bin/sh
 case "$1" in
@@ -46,6 +48,7 @@ echo '{"conversation_id": "abcdef12-3456", "status": "SUCCESS", "response": "NO 
 class ArgonReviewTest(unittest.TestCase):
     CLI_NAME = "gemini-api"
     PLATFORM_ARGS = []
+    SLOW_CASES = True  # the via_outbound.py limit does not depend on the platform, so its slow cases run once
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -76,12 +79,20 @@ class ArgonReviewTest(unittest.TestCase):
         with open(os.path.join(self.home, ".config", "nousfx", "via.json"), "w") as f:
             json.dump({"version": 1, "outbound_allowlist": allowlist}, f)
 
-    def run_script(self, script=SCRIPT, brief="Home screen.", extra=()):
+    def argon(self, script, *args, tries=2):
+        """Runs a gemini-review script, and once more when via_outbound.py did not answer in time (NFX-203).
+        A loaded machine can stall that one subprocess past its limit; any other result is kept as it is."""
         env = {"PATH": os.pathsep.join([th.bin_dir(self.home), os.path.dirname(sys.executable), "/usr/bin", "/bin"]),
                **th.env(self.home)}
-        return subprocess.run([th.python(self.home), "-I", "-B", script, *self.PLATFORM_ARGS, "--shot", self.shot,
-                               "--range", "HEAD", "--brief", brief, *extra],
-                              cwd=self.repo, capture_output=True, text=True, env=env)
+        for _ in range(tries):
+            r = subprocess.run([th.python(self.home), "-I", "-B", script, *self.PLATFORM_ARGS, *args],
+                               cwd=self.repo, capture_output=True, text=True, env=env)
+            if not (r.returncode == 3 and NO_ANSWER in r.stderr):
+                break
+        return r
+
+    def run_script(self, script=SCRIPT, brief="Home screen.", extra=(), tries=2):
+        return self.argon(script, "--shot", self.shot, "--range", "HEAD", "--brief", brief, *extra, tries=tries)
 
     def logged(self, name):
         path = os.path.join(self.home, name)
@@ -244,15 +255,67 @@ class ArgonReviewTest(unittest.TestCase):
     def test_the_code_review_goes_through_agy_too(self):
         self.stub_agy()
         self.config({KEY: {"destinations": ["agy"], "gemini_code_paths": ["ui/"]}})
-        env = {"PATH": os.pathsep.join([th.bin_dir(self.home), os.path.dirname(sys.executable), "/usr/bin", "/bin"]),
-               **th.env(self.home)}
-        r = subprocess.run([th.python(self.home), "-I", "-B", os.path.join(SKILLS, "gemini-review", "scripts",
-                            "review.py"), *self.PLATFORM_ARGS, "--allow-list", "HEAD"],
-                           cwd=self.repo, capture_output=True, text=True, env=env)
+        r = self.argon(os.path.join(SKILLS, "gemini-review", "scripts", "review.py"), "--allow-list", "HEAD")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["route"], "agy")
         self.assertEqual(self.logged("agy-files.log").split(), ["diff.txt"])
         self.assertNotIn("other/Private.kt", self.logged("agy-sent.log"))
+
+    def slow_outbound(self, slow_calls, only=""):
+        """A copy of gemini-review whose via_outbound.py stub sleeps past the copy's OUTBOUND_LIMIT on its first
+        `slow_calls` calls (-1: always; `only`: just that subcommand), then allows ui/ for gemini (not agy).
+        Returns the copy's argon_review.py."""
+        if not self.SLOW_CASES:
+            self.skipTest("runs in ArgonReviewTest only: each case waits OUTBOUND_LIMIT seconds")
+        top = os.path.join(self.tmp, "copy")
+        scripts = os.path.join(top, "claude", "skills", "gemini-review", "scripts")
+        shutil.copytree(os.path.join(SKILLS, "gemini-review"), os.path.dirname(scripts),
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        common = os.path.join(scripts, "gemini_common.py")
+        with open(common) as f:
+            text = f.read()
+        self.assertIn("\nVIA_TIMEOUT = 30 ", text)
+        with open(common, "w") as f:
+            f.write(text.replace("\nVIA_TIMEOUT = 30 ", "\nVIA_TIMEOUT = %d " % OUTBOUND_LIMIT))
+        via = os.path.join(top, "plugins", "via", "scripts")
+        os.makedirs(via)
+        count = os.path.join(self.tmp, "outbound-calls")
+        with open(os.path.join(via, "via_outbound.py"), "w") as f:
+            f.write("import os, sys, time\n"
+                    "count = %r\n"
+                    "n = len(open(count).read()) if os.path.exists(count) else 0\n"
+                    "open(count, 'a').write('.')\n"
+                    "if (%d < 0 or n < %d) and sys.argv[1].startswith(%r):\n"
+                    "    time.sleep(120)\n"
+                    "if sys.argv[1] == 'paths':\n"
+                    "    sys.stdout.write('ui/\\0')\n"
+                    "sys.exit(20 if sys.argv[1] == 'check' and 'agy' in sys.argv else 0)\n" % (count, slow_calls, slow_calls, only))
+        self.config({KEY: {"destinations": ["gemini"], "gemini_code_paths": ["ui/"]}})
+        return os.path.join(scripts, "argon_review.py")
+
+    def test_an_allow_list_check_that_does_not_answer_in_time_stops_with_exit_3_and_says_so(self):
+        r = self.run_script(self.slow_outbound(slow_calls=-1), tries=1)
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn("via_outbound.py %s %d s" % (NO_ANSWER, OUTBOUND_LIMIT), r.stderr)
+        self.assertIn("Nothing was sent", r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_a_code_path_list_that_does_not_answer_in_time_is_not_reported_as_no_code_paths(self):
+        r = self.run_script(self.slow_outbound(slow_calls=-1, only="paths"), tries=1)
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn(NO_ANSWER, r.stderr)
+        self.assertNotIn("names no gemini_code_paths", r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_the_tests_retry_once_when_the_allow_list_check_runs_out_of_time(self):
+        r = self.run_script(self.slow_outbound(slow_calls=1))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ui/Seen.kt", self.logged("stdin.log"))
+
+    def test_the_tests_still_fail_when_the_allow_list_check_runs_out_of_time_twice(self):
+        r = self.run_script(self.slow_outbound(slow_calls=-1))
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertEqual(len(open(os.path.join(self.tmp, "outbound-calls")).read()), 2)  # one retry, no more
 
     def test_no_reference_to_the_old_allow_list_file_remains_in_the_script(self):
         with open(SCRIPT) as f:
@@ -262,6 +325,7 @@ class ArgonReviewTest(unittest.TestCase):
 class ArgonReviewWindowsTest(ArgonReviewTest):
     CLI_NAME = "gemini-api.exe"
     PLATFORM_ARGS = ["--platform", "windows"]
+    SLOW_CASES = False
 
 
 if __name__ == "__main__":
