@@ -26,7 +26,7 @@ The steps I repeat by hand for NousFX. Each one changes my own machine only, exc
 ~/.config/nousfx/     state home: my local rules, via.json allow-list, backups, pinned outside skills
 ```
 
-- **Sync** is the only thing that writes those files. `install.sh` (Mac) and `install.ps1` (Windows) copy nothing themselves: they run a dry run, ask, then run the sync for real. Arguments pass through, except the modes `--check` and `--restore`, which conflict with the dry run: run those with `scripts/nousfx_sync.py` directly.
+- **Sync** is the only thing that writes those files. `install.sh` (Mac) and `install.ps1` (Windows) copy nothing themselves: they run a dry run, ask, then run the sync for real. Arguments pass through, except the modes `--check` and `--restore`, which conflict with the dry run, and `--diff`, which only goes with one: run those with `scripts/nousfx_sync.py` directly.
 - **Models** are mapped per role in `harness/models.toml` (`fast`, `balanced`, `strong`, `deep`). Change a model there and only the agents with that role change.
 - **State home** is `~/.config/nousfx/`. It holds `local.md`, `local.claude.md` and `local.agy.md` (mine alone, never committed), `via.json` (the outbound allow-list), `mcp-owned.json` and `backups/<stamp>/`.
 - **agy delegation and model choice** belong to my `gemini-orchestrator` plugin, not to sync. Install that plugin on each machine that runs agy.
@@ -90,10 +90,14 @@ The design skills Via uses are not in this repo. `harness/skills.lock.json` pins
    git switch main && git pull --ff-only
    ```
 
-2. See what would change. Every difference should come from merged PRs:
+2. See what would change. Every difference should come from merged PRs. The dry run prints one line per file with its `+added -removed` line counts; when a file or a count is more than the merged PRs explain, read the full diffs with `--diff`:
 
    ```bash
    python3 -B scripts/nousfx_sync.py --dry-run --tools claude,agy
+   ```
+
+   ```bash
+   python3 -B scripts/nousfx_sync.py --dry-run --diff --tools claude,agy
    ```
 
 3. Apply it (the installer asks first, or run the sync directly):

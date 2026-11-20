@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """nousfx_sync: write each tool's global rules and MCP servers from neutral sources.
 
-    python3 -B scripts/nousfx_sync.py [--dry-run | --check | --restore] [--clean-backups]
+    python3 -B scripts/nousfx_sync.py [--dry-run [--diff] | --check | --restore] [--clean-backups]
         [--tools claude,agy] [--project DIR]
         [--home DIR] [--state-home DIR] [--repo DIR] [--platform posix|windows]
 
@@ -353,6 +353,18 @@ def diff_of(path, new):
         fromfile=path if old is not None else "/dev/null", tofile=path))
 
 
+def dry_run_summary(path, new):
+    """One line for the default dry run: the action, the path and the +/- line counts, never the content."""
+    old = read_or_none(path)
+    a, b = (old or "").splitlines(keepends=True), new.splitlines(keepends=True)  # as diff_of: endings count
+    added = removed = 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag != "equal":
+            removed += i2 - i1
+            added += j2 - j1
+    return f"would {'create' if old is None else 'update'} {path} (+{added} -{removed})\n"
+
+
 def write_atomic(path, text, mode=None):
     """Write via a temp file. mkstemp makes it 0600, which suits sync's own files; mode overrides that."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -541,12 +553,15 @@ def make_project_links(links, platform):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = ap.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", action="store_true", help="print a diff, write nothing")
+    mode.add_argument("--dry-run", action="store_true",
+                      help="print one line per file (action, path, +/- line counts), write nothing")
     mode.add_argument("--check", action="store_true", help="report drift, exit 1 on drift, write nothing")
     ap.add_argument("--summary", action="store_true",
                     help="with --check: print one JSON line of counts (files, skills, outside, and the rules "
                          "bytes, budget and repeats) instead of the listing")
     mode.add_argument("--restore", action="store_true", help="put back the last backup")
+    ap.add_argument("--diff", action="store_true",
+                    help="with --dry-run: print the full diff of each file instead of the one-line summary")
     ap.add_argument("--home", help="home dir (default: from the user record)")
     ap.add_argument("--state-home", help="state dir (default: <home>/.config/nousfx)")
     ap.add_argument("--repo", default=os.path.dirname(HERE), help="repo with harness/ and claude/hooks/")
@@ -567,6 +582,8 @@ def main(argv=None):
         ap.error(f"--tools takes a comma list of {', '.join(TOOLS)}")
     if args.summary and not args.check:
         ap.error("--summary only goes with --check")
+    if args.diff and not args.dry_run:
+        ap.error("--diff only goes with --dry-run")
     project = os.path.abspath(args.project) if args.project else None
     if project and not os.path.isdir(project):
         ap.error(f"--project: {project} is not a folder")
@@ -641,7 +658,10 @@ def main(argv=None):
             return 1 if bad else 0
         if args.dry_run:
             for p, t in todo.items():
-                print(servers_summary(p, t) if p in mcp_merged else diff_of(p, t), end="")
+                if p in mcp_merged:  # names only in both forms: the file holds the user's own content
+                    print(servers_summary(p, t), end="")
+                else:
+                    print(diff_of(p, t) if args.diff else dry_run_summary(p, t), end="")
             for l, t in links:
                 print(f"would link {l} -> {t}")
             for p in unrunnable:

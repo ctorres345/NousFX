@@ -288,7 +288,7 @@ class Sync(Base):
         self.assertEqual(json.loads(read(self.settings)), {"permissions": {"deny": ["Read(./x)"]}})
 
     def test_dry_run_shows_rules_and_writes_nothing(self):
-        r = self.sync("--dry-run")
+        r = self.sync("--dry-run", "--diff")  # the content needs the full form (NFX-215)
         self.assertIn("Read(//**/.env*)", r.stdout)
         self.assertFalse(os.path.exists(self.settings))
 
