@@ -12,6 +12,7 @@ import subprocess
 import unittest
 
 import nousfx_agy
+import nousfx_project
 import nousfx_sync
 from test_nousfx_sync import ROOT, Base, read, write
 
@@ -673,18 +674,14 @@ class Project(Fixture):
 
     def add_copy_sources(self):
         """review-loop and the agents, as NousFX ships them (the gate is already in the fixture repo)."""
-        for rel in (("claude", "skills", "review-loop", "SKILL.md"),
-                    ("claude", "skills", "review-loop", "scripts", "tier.py"),
-                    ("claude", "skills", "review-loop", "references", "fable.md"),
-                    ("claude", "skills", "review-loop", "references", "gemini.md"), ("harness", "models.toml")):
+        for rel in (("claude", "skills", "review-loop", "SKILL.md"), ("harness", "models.toml"),
+                    *(("claude", "skills", "review-loop", *f) for f in nousfx_project.SKILL_FILES)):
             write(os.path.join(self.repo, *rel), read(os.path.join(ROOT, *rel)))
         shutil.copytree(os.path.join(ROOT, "harness", "agents"), os.path.join(self.repo, "harness", "agents"))
 
     COPIES = ((".claude", "hooks", "review-gate.py"), (".claude", "hooks", "pr_create_parser.py"),
               (".claude", "hooks", "git_refs.py"), (".claude", "agents", "reviewer.md"), (".claude", "skills", "review-loop", "SKILL.md"),
-              (".claude", "skills", "review-loop", "scripts", "tier.py"),
-              (".claude", "skills", "review-loop", "references", "fable.md"),
-              (".claude", "skills", "review-loop", "references", "gemini.md"))
+              *((".claude", "skills", "review-loop", *f) for f in nousfx_project.SKILL_FILES))
 
     def test_stale_copies_are_drift_and_a_run_refreshes_them(self):
         self.add_copy_sources()
@@ -730,18 +727,24 @@ class Project(Fixture):
                          read(os.path.join(ROOT, "claude", "hooks", "git_refs.py")))
         self.assertEqual(self.sync("--project", self.proj, "--tools", "claude", "--check").returncode, 0)
 
-    def test_the_skill_copy_brings_its_references(self):
-        """NFX-114: a repo that keeps SKILL.md gets the two reference files too, so the stubs never dangle."""
+    def test_the_skill_copy_brings_every_file_it_names(self):
+        """NFX-114, NFX-211: a repo that keeps SKILL.md gets every reference and script it names, so it never dangles;
+        a missing one is drift."""
         self.add_copy_sources()
         write(self.files(".claude", "skills", "review-loop", "SKILL.md"), "stale\n")
         r = self.sync("--project", self.proj, "--tools", "claude", "--check")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        for f in nousfx_project.SKILL_FILES:
+            self.assertIn("drift: " + self.files(".claude", "skills", "review-loop", *f), r.stdout)
         self.ok("--project", self.proj, "--tools", "claude")
-        for name in ("fable.md", "gemini.md"):
-            rel = ("claude", "skills", "review-loop", "references", name)
+        for f in nousfx_project.SKILL_FILES:
+            rel = ("claude", "skills", "review-loop", *f)
             self.assertEqual(read(self.files(".claude", *rel[1:])), read(os.path.join(ROOT, *rel)))
-        self.assertFalse(os.path.lexists(self.files(".claude", "skills", "review-loop", "scripts", "tier.py")))
         self.assertEqual(self.sync("--project", self.proj, "--tools", "claude", "--check").returncode, 0)
+        write(self.files(".claude", "skills", "review-loop", "scripts", "prove.py"), "edited\n")
+        r = self.sync("--project", self.proj, "--tools", "claude", "--check")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("drift: " + self.files(".claude", "skills", "review-loop", "scripts", "prove.py"), r.stdout)
 
     def test_a_symlinked_copy_is_left_alone_and_the_run_goes_on(self):
         self.add_copy_sources()
