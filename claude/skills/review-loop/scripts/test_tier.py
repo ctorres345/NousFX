@@ -315,6 +315,103 @@ class Ui(unittest.TestCase):
         self.assertEqual(tier.classify([code(200, "web/src/App.tsx")])["tier"], 2)
 
 
+CAP_MESSAGE = "cap change: needs Cesar's yes; consider moving text to references/"
+SYNC = "scripts/nousfx_sync.py"
+SPLIT_TEST = "scripts/test_review_loop_split.py"
+# The exact lines the three cap raises of wave 2026-11-19 changed (NFX-200).
+PR148 = ("CLAUDE_RULES_BUDGET = 3846  # 50 bytes over the rules at NFX-186 (wave pointer); 3775 at NFX-158, 3339 at "
+         "NFX-133",
+         "CLAUDE_RULES_BUDGET = 3913  # 50 bytes over the rules at NFX-191 (decision-log pointer); 3846 at NFX-186, "
+         "3775 at NFX-158")
+PR149 = ("MAX_BYTES = 16100  # ANI-194: was 14900 (NFX-124: was 14500); room for the Open the PR step, inline so every "
+         "project copy has it",
+         "MAX_BYTES = 16200  # NFX-190: was 16100; ANI-194: was 14900 (NFX-124: was 14500); room for the Open the PR "
+         "step, inline so every project copy has it")
+PR150 = (PR149[1],
+         "MAX_BYTES = 16300  # NFX-192: was 16200 (Cesar chose raising over trimming); NFX-190: was 16100; ANI-194: was "
+         "14900 (NFX-124: was 14500); room for the Open the PR step, inline so every project copy has it")
+
+
+class CapGate(unittest.TestCase):
+    """NFX-200: a diff that changes a byte cap reports a human gate; a diff that only reads one does not."""
+
+    def gates(self, files):
+        return tier.classify(files)["gates"]
+
+    def assert_gate(self, files, name, path):
+        r = tier.classify(files)
+        self.assertEqual(len(r["gates"]), 1, r["gates"])
+        self.assertIn(CAP_MESSAGE, r["gates"][0])
+        self.assertIn(name, r["gates"][0])
+        self.assertIn(path, r["gates"][0])
+        self.assertIn("Gate: " + r["gates"][0], r["reasons"])  # review-loop prints the reasons
+
+    def test_pr148_rules_budget_raise(self):
+        self.assert_gate([f(SYNC, text=[PR148[1]], removed_text=[PR148[0]])], "CLAUDE_RULES_BUDGET", SYNC)
+
+    def test_pr149_max_bytes_raise(self):
+        self.assert_gate([f(SPLIT_TEST, text=[PR149[1]], removed_text=[PR149[0]])], "MAX_BYTES", SPLIT_TEST)
+
+    def test_pr150_max_bytes_raise(self):
+        self.assert_gate([f(SPLIT_TEST, text=[PR150[1]], removed_text=[PR150[0]])], "MAX_BYTES", SPLIT_TEST)
+
+    def test_rules_budget_change(self):
+        self.assert_gate([f(SYNC, text=["RULES_BUDGET = 6500  # x"], removed_text=["RULES_BUDGET = 6400  # x"])],
+                         "RULES_BUDGET", SYNC)
+
+    def test_a_lowered_or_deleted_cap_is_a_change_too(self):
+        self.assert_gate([f(SYNC, text=["RULES_BUDGET = 6000"], removed_text=["RULES_BUDGET = 6400"])],
+                         "RULES_BUDGET", SYNC)
+        self.assert_gate([f(SPLIT_TEST, text=[], removed_text=["MAX_BYTES = 16300"])], "MAX_BYTES", SPLIT_TEST)
+
+    def test_augmented_assignment_is_a_change(self):
+        self.assert_gate([f(SPLIT_TEST, text=["MAX_BYTES += 100"], removed_text=[])], "MAX_BYTES", SPLIT_TEST)
+        self.assert_gate([f(SYNC, text=["    RULES_BUDGET -= 1"], removed_text=[])], "RULES_BUDGET", SYNC)
+
+    def test_a_new_test_file_with_a_cap_is_a_change(self):
+        self.assert_gate([f("scripts/test_new.py", text=["MAX_BYTES = 9000"], removed_text=[])], "MAX_BYTES",
+                         "scripts/test_new.py")
+
+    def test_reads_of_a_cap_report_no_gate(self):
+        files = [f(SPLIT_TEST, text=['        self.assertLess(os.path.getsize(p), MAX_BYTES)']),
+                 f("scripts/test_nousfx_sync.py", text=['        self.assertEqual(b, nousfx_sync.CLAUDE_RULES_BUDGET)']),
+                 f("scripts/test_rules_single_copy.py", text=["CLAUDE_RULES_BUDGET = nousfx_sync.CLAUDE_RULES_BUDGET"]),
+                 f(SYNC, text=["    if size > RULES_BUDGET:", "    budget = CLAUDE_RULES_BUDGET",
+                               "    ok = RULES_BUDGET == size"])]
+        r = tier.classify(files)
+        self.assertEqual(r["gates"], [])
+        self.assertFalse(any(x.startswith("Gate:") for x in r["reasons"]), r["reasons"])
+
+    def test_comment_only_edit_of_a_cap_line_is_no_gate(self):
+        self.assertEqual(self.gates([f(SYNC, text=["RULES_BUDGET = 6400  # new note"],
+                                       removed_text=["RULES_BUDGET = 6400  # old note"])]), [])
+
+    def test_longer_names_and_other_files_do_not_match(self):
+        files = [f(SYNC, text=["NOUSFX_RULES_BUDGET = 1", "RULES_BUDGET_X = 2", "MAX_BYTES = 3"]),
+                 f(SPLIT_TEST, text=["MAX_BYTES_X = 1", "OTHER_MAX_BYTES = 2", "RULES_BUDGET = 3"]),
+                 f("scripts/nousfx_agy.py", text=["MAX_BYTES = 25000"], removed_text=["MAX_BYTES = 24000"]),
+                 f("docs/sync.md", text=["RULES_BUDGET = 7000"]),
+                 f("other/nousfx_sync.py", text=["RULES_BUDGET = 7000"])]
+        self.assertEqual(self.gates(files), [])
+
+    def test_two_caps_in_one_diff_give_two_gates(self):
+        files = [f(SYNC, text=[PR148[1], "RULES_BUDGET = 6500"], removed_text=[PR148[0], "RULES_BUDGET = 6400"]),
+                 f(SPLIT_TEST, text=[PR150[1]], removed_text=[PR150[0]])]
+        self.assertEqual(len(self.gates(files)), 3)
+
+    def test_the_gate_does_not_change_the_tier(self):
+        plain = tier.classify([f(SYNC, text=["X = 2"], removed_text=["X = 1"])])
+        capped = tier.classify([f(SYNC, text=[PR148[1]], removed_text=[PR148[0]])])
+        self.assertEqual(plain["tier"], capped["tier"])
+
+    def test_cap_names_live_in_one_place(self):
+        self.assertEqual(dict(tier.CAP_NAMES), {"CLAUDE_RULES_BUDGET": "scripts/nousfx_sync.py",
+                                                "RULES_BUDGET": "scripts/nousfx_sync.py", "MAX_BYTES": "test"})
+
+    def test_fallback_has_the_gates_key(self):
+        self.assertEqual(tier.fallback("x", [])["gates"], [])
+
+
 TIER = os.path.join(HERE, "tier.py")
 HINT_PARTS = ("git remote set-head origin -a", "git fetch --unshallow")
 
@@ -830,6 +927,19 @@ class GitRefsLoader(GitCase):
         os.symlink(os.path.join(d, "tier.py"), os.path.join(link, "tier.py"))
         out = self.run_copy(os.path.join(link, "tier.py"))
         self.assertFalse(any("git_refs" in r for r in out["reasons"]), out["reasons"])
+
+
+class CapGateCli(GitCase):
+    """NFX-200 through git: the #148 raise on a real diff prints the gate in the JSON."""
+
+    def test_rules_budget_raise_in_a_repo(self):
+        self.write(SYNC, "import os\n" + PR148[0] + "\n")
+        self.commit("cap")
+        base = self.git("rev-parse", "HEAD")
+        self.write(SYNC, "import os\n" + PR148[1] + "\n")
+        out = self.result("--base", base)
+        self.assertEqual(len(out["gates"]), 1, out)
+        self.assertIn(CAP_MESSAGE, out["gates"][0])
 
 
 if __name__ == "__main__":

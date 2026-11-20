@@ -10,6 +10,8 @@ The pinned `retro` skill says how to run a retro. These are our additions; apply
 ## Classes
 Group findings into mistake classes. A class counts once it has happened twice, in two different PRs or tickets; a `habit:` line counts the same way. A class seen once stays in the retro file as a watch item.
 
+A byte cap a ticket raised under a name that `CAP_NAMES` in review-loop's `scripts/tier.py` does not list is a finding (NFX-200); its fix is adding the name there.
+
 ## Fix order per class
 Take the first level that can do the job (idea from pstack `correct`, MIT, github.com/cursor/plugins):
 1. Remove the mistake with an API or structure change.
