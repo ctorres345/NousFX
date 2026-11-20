@@ -9,6 +9,7 @@ Prints one line per suite as it finishes and exits 1 if any failed. Output of a 
 `--fail-fast` stops after the first failure and ends the suites still running (a quick local loop); the review
 gate never passes it, so a stamp is always a full pass. Suites must not write inside the repo: they run side by side, and
 some read the real tree (test_ui_review_retired.py greps it).
+The whole run holds one machine-wide suite slot first (NFX-217; rules in claude/skills/review-loop/scripts/suite_slot.py).
 """
 import argparse
 import concurrent.futures
@@ -23,6 +24,8 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATTERNS = ["claude/hooks/test_*.py", "scripts/test_*.py", "plugins/via/scripts/test_*.py",
             "claude/skills/*/scripts/test_*.py"]
+sys.path.insert(0, os.path.join(ROOT, "claude", "skills", "review-loop", "scripts"))
+import suite_slot  # noqa: E402
 
 
 def parse_args(argv):
@@ -91,6 +94,11 @@ def run(path, running, stop, lock):
 
 def main(argv):
     args = parse_args(argv)
+    with suite_slot.hold():
+        return run_all(args)
+
+
+def run_all(args):
     suites = sorted(p for pat in PATTERNS for p in glob.glob(os.path.join(ROOT, pat)))
     if not suites:
         print("FAIL: no test suites found")

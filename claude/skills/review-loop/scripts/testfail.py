@@ -28,6 +28,7 @@ reads it (the default branch's copy when it has one):
 A finished run writes a signed stamp in the git dir (claude-testfail-pass) binding tree, branch, base, check and
 config. `attest` never runs anything: it prints the same line, with run's exit code, for a stamp that matches the
 current tree, else exits 2.
+Both clone runs hold one machine-wide suite slot, taken after the clone (NFX-217; rules in suite_slot.py).
 The real working tree and index are never written; a run that finds the tree changed refuses. Same trust limits as
 prove.py: see docs/review-gate.md.
 """
@@ -110,6 +111,18 @@ def load_tier():
     with refusing("cannot load tier.py next to testfail.py"):
         import tier
     return tier
+
+
+def suite_slot_hold():
+    """The machine-wide suite slot (NFX-217), or no limit with a note when suite_slot.py is not next to this file."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    try:
+        import suite_slot
+    except Exception as e:
+        print(f"note: no suite slot limit: cannot load suite_slot.py next to testfail.py ({e})", file=sys.stderr)
+        return contextlib.nullcontext()
+    return suite_slot.hold()
 
 
 def git(args, cwd, extra=None):
@@ -233,11 +246,13 @@ def run_in_copy(gate, s, restore):
     os.mkdir(nohooks)
     # The user's global core.hooksPath would run its hooks on the clone's checkout; point it at an empty folder.
     quiet = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": nohooks}
+    slot = contextlib.ExitStack()
     try:
         head = git(["rev-parse", "HEAD"], s.top).strip()
         git(["clone", "-q", "--shared", "--no-checkout", s.top, copy], scratch, quiet)
         git(["checkout", "-q", "-B", s.branch, head], copy, quiet)
         git(["read-tree", "--reset", "-u", s.tree], copy, quiet)
+        slot.enter_context(suite_slot_hold())  # one slot for both runs, so a verdict never queues twice
         ok, why = gate.run_check(copy, s.check, log1)
         if not ok:
             if why.startswith("did not finish"):
@@ -262,6 +277,7 @@ def run_in_copy(gate, s, restore):
         named = [n for n in failing_names(log2, s.pattern, limit=None) if n not in noise][:MAX_NAMED]
         return ("yes", named, "") if named else ("build", [], tail(log2))
     finally:
+        slot.close()
         shutil.rmtree(scratch, ignore_errors=True)
 
 

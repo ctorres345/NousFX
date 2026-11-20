@@ -421,28 +421,50 @@ def stop_tree(proc, posix):
     return TASKKILL_FAILED
 
 
+def suite_slot_hold():
+    """The suite slot from the review-loop skill next to this gate (NFX-217), else no limit with a note (CI and the
+    cloud copy have no skill folder). Loaded only here, so the hook path never runs it (see trusted_check)."""
+    for me in dict.fromkeys((os.path.abspath(__file__), os.path.realpath(__file__))):
+        path = os.path.join(os.path.dirname(me), "..", "skills", "review-loop", "scripts", "suite_slot.py")
+        if not os.path.isfile(path):
+            continue
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("suite_slot_for_gate", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module.hold()
+        except Exception as e:
+            print(f"note: no suite slot limit: cannot load {os.path.normpath(path)} ({e})", file=sys.stderr)
+            return contextlib.nullcontext()
+    print("note: no suite slot limit: no review-loop skill folder next to this gate", file=sys.stderr)
+    return contextlib.nullcontext()
+
+
 def run_check(cwd, check, log_path=None):
     """Run the check command at the repo top level. Returns (ok, why). Output goes to log_path, or to our own
-    stdout and stderr when there is none."""
+    stdout and stderr when there is none. It first takes a machine-wide suite slot (NFX-217), so the timeout counts the
+    run, not the wait for a slot."""
     root = git(["rev-parse", "--show-toplevel"], cwd)
-    env = {k: v for k, v in os.environ.items() if k not in GIT_ENV_VARS}
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    posix = os.name == "posix"
+    with suite_slot_hold():  # before the env copy, so the check inherits the slot marker and takes no second slot
+        env = {k: v for k, v in os.environ.items() if k not in GIT_ENV_VARS}
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        posix = os.name == "posix"
 
-    with open(log_path, "wb") if log_path else contextlib.nullcontext() as out:  # no log: show it (CI job log)
-        proc = subprocess.Popen(check["command"], shell=True, cwd=root, env=env, stdin=subprocess.DEVNULL,
-                                stdout=out, stderr=subprocess.STDOUT if out else None, start_new_session=posix)
-        try:
-            code = proc.wait(timeout=check["timeout"])
-        except subprocess.TimeoutExpired:
-            note = stop_tree(proc, posix)
-            proc.wait(timeout=30)
-            return False, f"did not finish within {check['timeout']} seconds{note}"
-        if posix:  # background children must not keep editing files after the tree hash is compared
+        with open(log_path, "wb") if log_path else contextlib.nullcontext() as out:  # no log: show it (CI job log)
+            proc = subprocess.Popen(check["command"], shell=True, cwd=root, env=env, stdin=subprocess.DEVNULL,
+                                    stdout=out, stderr=subprocess.STDOUT if out else None, start_new_session=posix)
             try:
-                os.killpg(proc.pid, 9)
-            except OSError:
-                pass
+                code = proc.wait(timeout=check["timeout"])
+            except subprocess.TimeoutExpired:
+                note = stop_tree(proc, posix)
+                proc.wait(timeout=30)
+                return False, f"did not finish within {check['timeout']} seconds{note}"
+            if posix:  # background children must not keep editing files after the tree hash is compared
+                try:
+                    os.killpg(proc.pid, 9)
+                except OSError:
+                    pass
     return (True, "") if code == 0 else (False, f"exited with {code}")
 
 
