@@ -209,6 +209,14 @@ class Lint(Base):
     def test_a_missing_file_is_refused(self):
         self.assertEqual(self.prove("lint", os.path.join(self.outside, "nope.md")).returncode, 2)
 
+    def test_non_ascii_ticket_text_on_a_narrow_pipe_still_lists_the_line(self):
+        """Windows pipes default to the locale code page; Jira text has arrows and emoji."""
+        path = self.write_list(ac("same → 🚀"))
+        r = subprocess.run([sys.executable, "-B", PROVE, "lint", path], cwd=self.outside, capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=60, env={**os.environ, "PYTHONIOENCODING": "cp1252"})
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn(b"line 1:", r.stdout)
+
 
 class Attest(Base):
     def run_ok(self, text, **kw):

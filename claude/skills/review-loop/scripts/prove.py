@@ -229,6 +229,9 @@ def lint(args):
 
 
 def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):  # ticket text echoed to a cp1252 pipe on Windows must not crash lint
+        with contextlib.suppress(AttributeError, ValueError):
+            stream.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(prog="prove.py", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("run", help="run the proofs and write the stamp")
