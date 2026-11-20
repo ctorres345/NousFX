@@ -5,6 +5,7 @@ Python only, standard library only; runs the same on macOS and Windows.
 
     python3 -B prove.py run LIST [--timeout SECONDS]
     python3 -B prove.py attest LIST
+    python3 -B prove.py lint LIST
 
 LIST is a Markdown file taken from the ticket's acceptance criteria (a PR table's cells have no `Proof:` prefix, so
 they are not read). Every line with `Proof:` is one proof:
@@ -16,6 +17,10 @@ they are not read). Every line with `Proof:` is one proof:
                             ` Backup:` is reserved in a manual step: an older step that uses it is split there
 Any other `Proof:` line is refused, so a typo cannot drop a criterion. Prose such as a `Proof:` in backticks is not
 a proof line.
+
+`lint` (NFX-208) runs nothing and needs no repo: with the same parser, it prints every refused line as
+"line N: why" and exits 2, else exits 0. A list with only manual proofs passes, since `run`'s no-command rule is
+about the list, not a line.
 
 `run` stops at the first failing proof (exit 2, no stamp). When all pass, it writes a signed stamp in the git dir
 (claude-proof-pass) that binds the working-tree hash, the branch and a hash of the normalized proofs. `attest`
@@ -74,16 +79,18 @@ def load_gate():
     return module
 
 
-def read_list(path):
-    """(proofs, sha): the list is read once, and the hash comes from the proofs parsed from that read.
-    A proof is ("command", text) or ("manual", text), in file order."""
+def read_text(path):
     try:
         with open(path, "rb") as f:
-            data = f.read()
-        text = data.decode("utf-8")
+            return f.read().decode("utf-8")
     except (OSError, UnicodeDecodeError) as e:
         raise Refused(f"cannot read the proof list {path}: {e}") from None
-    proofs = []
+
+
+def parse(text):
+    """(proofs, problems): the one parser `run`, `attest` and `lint` share (NFX-208). A proof is ("command", text) or
+    ("manual", text), in file order; a problem is "line N: why" for a `Proof:` line that is neither."""
+    proofs, problems = [], []
     for number, line in enumerate(text.splitlines(), 1):
         m = PROOF_LINE.search(line)
         if not m:
@@ -93,15 +100,26 @@ def read_list(path):
             step = rest[len(MANUAL):].strip()
             parts = BACKUP.split(" " + step)
             if not parts[0].strip():
-                raise Refused(f"line {number}: `Proof: manual:` names no step")
-            if len(parts) > 2 or (len(parts) == 2 and not parts[1].strip()):
-                raise Refused(f"line {number}: a manual proof takes one `Backup:` that names the backup proof")
-            proofs.append(("manual", step))
+                problems.append(f"line {number}: `Proof: manual:` names no step")
+            elif len(parts) > 2 or (len(parts) == 2 and not parts[1].strip()):
+                problems.append(f"line {number}: a manual proof takes one `Backup:` that names the backup proof")
+            else:
+                proofs.append(("manual", step))
             continue
         c = COMMAND.fullmatch(rest)
         if not c or not c.group(1).strip():
-            raise Refused(f"line {number}: a Proof must be `command` or manual: <step>, got: {rest or '(nothing)'}")
+            problems.append(f"line {number}: a Proof must be `command` or manual: <step>, got: {rest or '(nothing)'}")
+            continue
         proofs.append(("command", c.group(1).strip()))
+    return proofs, problems
+
+
+def read_list(path):
+    """(proofs, sha): the list is read once, and the hash comes from the proofs parsed from that read.
+    Refused at the first problem, or when there is no command proof to run."""
+    proofs, problems = parse(read_text(path))
+    if problems:
+        raise Refused(problems[0])
     if not any(kind == "command" for kind, _ in proofs):
         raise Refused("the list has no `command` proof, so there is nothing to run")
     return proofs, proofs_sha(proofs)
@@ -196,6 +214,20 @@ def attest(args):
     return 0
 
 
+def lint(args):
+    """Every `Proof:` line `run` would refuse, before any code exists (NFX-208). Needs no repo and runs nothing.
+    A list with no command proof passes: a ticket whose proofs are all manual is valid."""
+    proofs, problems = parse(read_text(args.list))
+    for problem in problems:
+        print(problem)
+    if problems:
+        print(f"{len(problems)} Proof: line(s) prove.py cannot read; write each as `command` or manual: <step>",
+              file=sys.stderr)
+        return 2
+    print(f"{len(proofs)} Proof: line(s) OK")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="prove.py", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -206,6 +238,9 @@ def main(argv=None):
     p = sub.add_parser("attest", help="print the AC-Proof line for a valid stamp")
     p.add_argument("list")
     p.set_defaults(fn=attest)
+    p = sub.add_parser("lint", help="list the Proof: lines run would refuse; runs nothing")
+    p.add_argument("list")
+    p.set_defaults(fn=lint)
     args = parser.parse_args(argv)
     try:
         return args.fn(args)

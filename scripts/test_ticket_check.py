@@ -32,6 +32,13 @@ def frontmatter(src):
 
 
 class TicketCheck(unittest.TestCase):
+    def test_step_2_lints_the_proof_lines(self):
+        """NFX-208: refused Proof: lines are gaps before coding, not a hand rewrite at Record time."""
+        src = text()
+        step2 = src[src.index("## Step 2"):src.index("## Step 3")]
+        self.assertIn("prove.py lint", step2)
+        self.assertIn("refused line", step2)
+
     def test_file_exists(self):
         self.assertTrue(os.path.isfile(SKILL))
 
