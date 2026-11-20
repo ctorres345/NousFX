@@ -57,6 +57,7 @@ A ticket gets `ready-for-agent` only when all of these hold:
 - Human gates says "None", and every blocker is Done.
 - It is not `env-device`, which stays `ready-for-human`. Fable approval sits in Review and does not count as a human gate.
 - A UI ticket names its prototype artboard and concrete values. If no prototype exists, it says so and states the visual source to follow (for example `docs/DESIGN_SYSTEM.md`), or it stays `ready-for-human` until a prototype is approved.
+- A script a skill calls lives in `claude/skills/<skill>/scripts/`, which sync ships to every machine. Repo `scripts/` is for repo-only tools and tests. The ticket names the right one.
 - A ticket with the `needs-assets` label has a filled `## Assets` section (at least one real row). With the label and an empty or `None` section it stays out of `ready-for-agent`.
 
 ## Batch review
