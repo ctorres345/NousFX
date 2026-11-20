@@ -23,7 +23,8 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
 | Switch | What it does |
 |---|---|
 | none | back up, write, then self-test the gate hook |
-| `--dry-run` | print a diff, write nothing |
+| `--dry-run` | print one line per file (`would create` or `would update`, the path, `+added -removed` line counts), the link, chmod and fetch lines, and the closing count; write nothing. MCP files list server names only |
+| `--dry-run --diff` | the same, with each file's full unified diff in place of its line. `--diff` without `--dry-run` is a usage error |
 | `--check` | list drifted files, exit 1 on drift, write nothing |
 | `--check --summary` | the same exit code, but one JSON line of counts (`files`, `skills`, `outside`) and a `rules` object (`bytes`, `budget`, `headroom`, `repeats`, and `shared` with the same size keys for the Claude rules, against `CLAUDE_RULES_BUDGET`). The drift warning reads it |
 | `--restore` | put back the last backup (files that did not exist are removed) |
@@ -300,7 +301,7 @@ harness/AGENTS.md + agy.overlay.md + local.md + local.agy.md
 | `.nousfx/project.toml` | Never written. Sync prints a note when it has no `[check] command`, because the review gate cannot record a review without one (see `docs/review-gate.md`). |
 
 - A file I wrote by hand is left alone (shared copies excepted, above). A `CLAUDE.md` without the import, or a `.githooks/pre-push` that is not generated, is shown as a diff with the line to confirm it: `--yes-replace CLAUDE.md` adds the import line at the top and keeps the rest, `--yes-replace .githooks/pre-push` replaces the hook. The run goes on with everything else, and `--check` does not count these as drift.
-- `--check` exits 1 for a missing or hand-edited generated file, a stale shared copy, a missing skills link, or a hook without the executable bit. `--dry-run` prints diffs and writes nothing. `--restore` removes what a run created and puts back what it changed.
+- `--check` exits 1 for a missing or hand-edited generated file, a stale shared copy, a missing skills link, or a hook without the executable bit. `--dry-run` prints one line per file with its line counts and writes nothing; `--dry-run --diff` prints the diffs. `--restore` removes what a run created and puts back what it changed.
 - Sync never adds the review gate to a repo: a copy there is code under review, and a branch could edit it to pass. The pre-push hook and review-loop use the gate in `~/.claude/hooks`, and agy uses the gate in the global plugin. A repo copy is only the cloud fallback (`docs/review-gate.md`, "Pre-push hook").
 - `--restore` does not undo a mode change on a hook whose text was already right (sync only made it executable).
 - Sync does not change git config. To turn the hook on I check `ls .git/hooks | grep -v sample` once per clone. If other hooks are there (graphify's, for example), I link it: `common=$(git rev-parse --path-format=absolute --git-common-dir); ln -s "$common/../.githooks/pre-push" "$common/hooks/pre-push"`. `git config core.hooksPath .githooks` switches those other hooks off, so I use it only when `.git/hooks` holds nothing else.

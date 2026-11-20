@@ -6,6 +6,7 @@ temp copy of the repo sources. Nothing real is touched.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -151,14 +152,33 @@ class FirstRun(Base):
 
 
 class DryRunAndCheck(Base):
-    def test_dry_run_prints_diff_and_writes_nothing(self):
+    def test_dry_run_diff_prints_diff_and_writes_nothing(self):
+        write(self.rules, "old rules\n")
+        before = self.snapshot()
+        r = self.sync("--dry-run", "--diff")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("-old rules", r.stdout)
+        self.assertIn("+# Fixture rules", r.stdout)
+        self.assertIn(f"+++ {self.rules}\n", r.stdout)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_dry_run_summary_by_default_one_line_per_file_and_writes_nothing(self):
         write(self.rules, "old rules\n")
         before = self.snapshot()
         r = self.sync("--dry-run")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("-old rules", r.stdout)
-        self.assertIn("+# Fixture rules", r.stdout)
+        self.assertRegex(r.stdout, rf"(?m)^would update {re.escape(self.rules)} \(\+\d+ -1\)$")
+        self.assertNotIn("old rules", r.stdout)
+        self.assertNotIn("+++ ", r.stdout)
+        self.assertRegex(r.stdout, r"(?m)^\d+ file\(s\) would change$")
         self.assertEqual(self.snapshot(), before)
+
+    def test_diff_without_dry_run_is_a_usage_error(self):
+        for extra in ((), ("--check",)):
+            r = self.sync("--diff", *extra)
+            self.assertEqual(r.returncode, 2, r.stdout)
+            self.assertIn("--diff only goes with --dry-run", r.stderr)
+        self.assertFalse(os.path.exists(self.rules))
 
     def test_check_clean_after_sync(self):
         self.sync()
@@ -176,6 +196,37 @@ class DryRunAndCheck(Base):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("CLAUDE.md", r.stdout)
         self.assertEqual(self.snapshot(), before)
+
+
+class DryRunSummary(unittest.TestCase):
+    """The formatter: one line per file, the action and the +/- line counts, never the content (NFX-215)."""
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="nousfx-sync-summary-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_dry_run_summary_counts_an_update(self):
+        path = os.path.join(self.tmp, "a.md")
+        write(path, "one\ntwo\nthree\n")
+        self.assertEqual(nousfx_sync.dry_run_summary(path, "one\nTWO\nthree\nfour\n"),
+                         f"would update {path} (+2 -1)\n")
+
+    def test_dry_run_summary_counts_a_create(self):
+        path = os.path.join(self.tmp, "new", "b.py")
+        self.assertEqual(nousfx_sync.dry_run_summary(path, "x = 1\ny = 2\n"), f"would create {path} (+2 -0)\n")
+
+    def test_dry_run_summary_counts_a_line_ending_change(self):
+        path = os.path.join(self.tmp, "d.md")
+        write(path, "one\ntwo")  # only the missing newline at the end differs: never +0 -0
+        self.assertEqual(nousfx_sync.dry_run_summary(path, "one\ntwo\n"), f"would update {path} (+1 -1)\n")
+
+    def test_dry_run_summary_never_prints_the_content(self):
+        path = os.path.join(self.tmp, "c.md")
+        write(path, "old-secret-ish\n")
+        line = nousfx_sync.dry_run_summary(path, "new-content\n" * 500)
+        self.assertNotIn("secret", line)
+        self.assertNotIn("new-content", line)
+        self.assertIn("(+500 -1)", line)
+        self.assertEqual(line.count("\n"), 1)
 
 
 class DriftHeader(Base):

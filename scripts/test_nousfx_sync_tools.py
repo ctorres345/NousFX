@@ -262,9 +262,10 @@ class Mcp(Fixture):
     def test_dry_run_prints_server_names_not_the_users_file(self):
         write(self.claude_json, json.dumps({"private": "do-not-print-me"}))
         self.mcp_toml('[servers.docs]\ntools = ["claude"]\nurl = "https://docs.example.com/mcp"\n')
-        r = self.ok("--dry-run")
-        self.assertIn("+docs", r.stdout)
-        self.assertNotIn("do-not-print-me", r.stdout)
+        for extra in ((), ("--diff",)):  # names only in the full form too (NFX-215)
+            r = self.ok("--dry-run", *extra)
+            self.assertIn("+docs", r.stdout)
+            self.assertNotIn("do-not-print-me", r.stdout)
 
     def test_restore_with_an_unusable_record_changes_nothing_and_says_so(self):
         self.mcp_toml('[servers.docs]\ntools = ["claude"]\nurl = "https://docs.example.com/mcp"\n')
@@ -693,7 +694,11 @@ class Project(Fixture):
         for rel in self.COPIES:
             self.assertIn(f"drift: {self.files(*rel)}\n", r.stdout)
         self.assertNotIn("mine.md", r.stdout)
-        self.assertIn("+++", self.ok("--project", self.proj, "--tools", "claude", "--dry-run").stdout)
+        short = self.ok("--project", self.proj, "--tools", "claude", "--dry-run").stdout
+        for rel in self.COPIES:  # one line per copy with its counts, no content (NFX-215)
+            self.assertRegex(short, rf"(?m)^would update {re.escape(self.files(*rel))} \(\+\d+ -1\)$")
+        self.assertNotIn("+++", short)
+        self.assertIn("+++", self.ok("--project", self.proj, "--tools", "claude", "--dry-run", "--diff").stdout)
         self.assertEqual(read(self.files(*self.COPIES[0])), "stale\n")  # the dry run wrote nothing
         self.ok("--project", self.proj, "--tools", "claude")
         self.assertEqual(read(self.files(".claude", "hooks", "review-gate.py")),
