@@ -270,7 +270,6 @@ def classify(files, labels=(), project_paths=()):
             "security": security_skills(files), "gates": gates, "stats": stats}
 
 
-# ---- git layer -------------------------------------------------------------------------------------------------
 # default_ref is shared with the gate: claude/hooks/git_refs.py (NFX-108), loaded by path below. exists_at and the
 # `git show <ref>:<file>` read are still copies of claude/hooks/review-gate.py (a skill cannot import the gate).
 

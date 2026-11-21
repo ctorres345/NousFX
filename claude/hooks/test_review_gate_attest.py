@@ -166,7 +166,7 @@ class Workflow(unittest.TestCase):
                "RUNS_JSON": json.dumps({"workflow_runs": runs}), "EV_FAIL": "", "RUNS_FAIL": "", "IS_MEMBER": "0"}
         return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
 
-    def test_a_review_skip_label_must_be_newer_than_the_push(self):  # NFX-147
+    def test_a_review_skip_label_must_be_newer_than_the_push(self):
         skipped = "Review attestation found for tree x. skipped: no time"
         after = [label_event("labeled", "review-skip")]
         before = [label_event("labeled", "review-skip", at="2026-11-15T09:00:00Z")]
@@ -180,7 +180,7 @@ class Workflow(unittest.TestCase):
         # a real review needs no label at all
         self.assertEqual(self.run_skip_arm("Review attestation found for tree x.", "false", [], []).returncode, 0)
 
-    def test_the_review_skip_arm_calls_the_shared_check(self):  # NFX-147
+    def test_the_review_skip_arm_calls_the_shared_check(self):
         self.assertIn("skip_label_ok review-skip", self.text)
 
     def test_a_skip_attestation_does_not_skip_the_check(self):

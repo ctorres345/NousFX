@@ -53,8 +53,6 @@ class Stamp(Base):
         with open(os.path.join(self.repo, "f.txt"), "a", encoding="utf-8") as f:
             f.write("more")
 
-    # The point of the stamp.
-
     def test_mark_after_a_stamp_does_not_run_the_check_again(self):
         r = self.stamp()
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -146,8 +144,6 @@ class Stamp(Base):
         self.failing()
         self.assertEqual(self.mark("--findings", "0").returncode, BLOCKED)
         self.assertEqual(self.run_gate("gh pr create"), BLOCKED)
-
-    # Forgery.
 
     def stamp_fields(self):
         tree = subprocess.run(["git", "write-tree"], cwd=self.repo, capture_output=True, text=True).stdout.strip()

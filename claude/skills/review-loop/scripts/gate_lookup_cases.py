@@ -68,8 +68,6 @@ class GateLookupCases:
         with open(self.loader, "w") as f:
             f.write(LOADER)
 
-    # --- fixtures ---
-
     def write_gate(self, folder, mark, body=None):
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "review-gate.py"), "w") as f:
@@ -104,8 +102,6 @@ class GateLookupCases:
 
     def assertTamperedNeverRan(self):
         self.assertFalse(os.path.exists(self.sentinel), "the repo's own .claude/hooks/review-gate.py was loaded")
-
-    # --- cases ---
 
     def test_a_project_copy_loads_the_installed_gate_not_its_sibling(self):
         script = self.project_copy()
