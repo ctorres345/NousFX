@@ -164,7 +164,7 @@ class SkipLabel(unittest.TestCase):
 
 
 class Layout(unittest.TestCase):
-    def test_no_script_line_leaves_the_yaml_block(self):  # NFX-147
+    def test_no_script_line_leaves_the_yaml_block(self):
         """A heredoc terminator at column 0 inside a `run: |` block ends the block scalar and breaks the workflow."""
         for n, line in enumerate(read_workflow().splitlines(), 1):
             if line and not line.startswith((" ", "#")):
@@ -172,7 +172,7 @@ class Layout(unittest.TestCase):
 
 
 class Pins(unittest.TestCase):
-    def test_every_action_is_pinned_to_a_full_commit_sha(self):  # NFX-109
+    def test_every_action_is_pinned_to_a_full_commit_sha(self):
         import glob
         import re
         for path in glob.glob(os.path.join(ROOT, ".github", "workflows", "*.y*ml")):

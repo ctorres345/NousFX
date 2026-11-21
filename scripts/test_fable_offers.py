@@ -13,7 +13,7 @@ def read(*parts):
 
 
 SKILL = read("claude", "skills", "review-loop", "SKILL.md")
-FABLE_REF = read("claude", "skills", "review-loop", "references", "fable.md")  # NFX-114: the moved section
+FABLE_REF = read("claude", "skills", "review-loop", "references", "fable.md")
 
 
 def section(text, title):

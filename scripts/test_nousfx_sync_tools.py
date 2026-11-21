@@ -143,7 +143,7 @@ class Tools(Fixture):
         left += [os.path.join(b, n) for b, ds, _ in os.walk(self.home) for n in ds if os.path.islink(os.path.join(b, n))]
         self.assertEqual(left, [])
 
-    def test_a_v1_atlassian_url_warns_but_never_changes_the_exit_code(self):  # NFX-235
+    def test_a_v1_atlassian_url_warns_but_never_changes_the_exit_code(self):
         write(os.path.join(self.state, "mcp.toml"),
               '[servers.atlassian]\ntools = ["agy"]\nurl = "https://mcp.atlassian.com/v1/mcp"\n')
         r = self.ok("--tools", "claude,agy")
@@ -408,7 +408,7 @@ class Project(Fixture):
         self.assertEqual(jload(state_rec)["claude"], {mcp: legacy})
         self.assertFalse(os.path.exists(rec))
 
-    def test_restore_keeps_the_repo_mode_of_mcp_json(self):  # NFX-100
+    def test_restore_keeps_the_repo_mode_of_mcp_json(self):
         self.ok("--project", self.proj, "--tools", "claude")
         mcp = os.path.join(self.proj, ".mcp.json")
         os.chmod(mcp, 0o644)
@@ -419,7 +419,7 @@ class Project(Fixture):
         self.assertEqual(jload(mcp)["mcpServers"]["p"]["url"], "https://p.example.com/mcp")
         self.assertEqual(os.stat(mcp).st_mode & 0o777, 0o644)
 
-    def test_restore_refuses_a_repo_record_without_hashes(self):  # NFX-100
+    def test_restore_refuses_a_repo_record_without_hashes(self):
         self.ok("--project", self.proj, "--tools", "claude")
         write(os.path.join(self.proj, ".nousfx", "mcp.toml"),
               '[servers.p]\ntools = ["claude"]\nurl = "https://p2.example.com/mcp"\n')
@@ -432,7 +432,7 @@ class Project(Fixture):
         self.assertIn("is not usable", r.stdout + r.stderr)
         self.assertEqual(open(mcp, encoding="utf-8").read(), before)
 
-    def test_restore_works_with_a_corrupt_state_record_when_the_repo_has_one(self):  # NFX-100
+    def test_restore_works_with_a_corrupt_state_record_when_the_repo_has_one(self):
         self.ok("--project", self.proj, "--tools", "claude")
         write(os.path.join(self.state, "mcp-owned.json"), "{not json")
         write(os.path.join(self.proj, ".nousfx", "mcp.toml"),
