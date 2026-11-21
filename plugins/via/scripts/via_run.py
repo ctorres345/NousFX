@@ -145,12 +145,23 @@ def load_gate(project):
     in a cloud session with no ~/.claude the default branch's copy the project hook extracts into
     <git-dir>/nousfx-gate/current, then the copy in a NousFX checkout next to this plugin (tests with an empty home).
     None when there is no gate: Via also runs without NousFX, and then nothing reads the record. A gate that cannot
-    load stops the run."""
+    load stops the run. The git-dir lookup runs with every GIT_* variable dropped, as prove.py's gate_paths() does
+    (NFX-225): a committed settings `env` block could point GIT_DIR at a fake git dir in the repo."""
     here = os.path.dirname(os.path.realpath(__file__))
-    paths = [os.path.join(via_home.home_dir(), ".claude", "hooks", "review-gate.py"),
-             os.path.join(git(["rev-parse", "--absolute-git-dir"], project), "nousfx-gate", "current", "hooks",
-                          "review-gate.py"),
-             os.path.normpath(os.path.join(here, "..", "..", "..", "claude", "hooks", "review-gate.py"))]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    # A committed folder that looks like a bare repo is not a git dir: --show-toplevel fails inside any git dir,
+    # and safe.bareRepository=explicit (git 2.38+) refuses bare discovery as a second layer.
+    try:
+        r = subprocess.run(["git", "-c", "safe.bareRepository=explicit", "rev-parse", "--absolute-git-dir",
+                            "--show-toplevel"], cwd=project, env=env, capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=30)
+        git_dir = (r.stdout.splitlines() + [""])[0] if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        git_dir = ""
+    paths = [os.path.join(via_home.home_dir(), ".claude", "hooks", "review-gate.py")]
+    if git_dir:
+        paths.append(os.path.join(git_dir, "nousfx-gate", "current", "hooks", "review-gate.py"))
+    paths.append(os.path.normpath(os.path.join(here, "..", "..", "..", "claude", "hooks", "review-gate.py")))
     path = next((p for p in paths if os.path.isfile(p)), None)
     if path is None:
         return None
