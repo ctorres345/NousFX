@@ -14,7 +14,9 @@ Give the reviewer the flag lines as evidence, the keep list as `scripts/comment_
 - A comment that explains a surprise in our own code: the finding names the rename, extract or type change that removes the need for it.
 - A "do not remove" or "do not change" comment (kind `guard`): the finding offers to encode it as a test or check.
 - A vendor or platform quirk stays only if the comment names the external cause.
-- A ticket key alone (kind `ticket`) is not a reason: the line must also say why.
+- A bare ticket key (kind `ticket-tag`) is Stale: git log holds the history. A key with too short a reason (kind `ticket`) is not a reason either: the line must also say why.
+- A section divider (kind `banner`) is a Tautology.
+- A docstring on a test method (kind `test-docstring`) is a finding when it only repeats the test name.
 - A lint suppression (kind `suppression`) needs its reason on the same line.
 
 ## In the final report

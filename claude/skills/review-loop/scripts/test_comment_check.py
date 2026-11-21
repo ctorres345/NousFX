@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -211,7 +212,7 @@ class KeepList(RepoCase):
             z = 3  # NFX-123: the vendor API returns null on empty lists
             """)
         self.assertEqual(repo.flags(), [
-            "a.py:1 ticket # NFX-123",
+            "a.py:1 ticket-tag # NFX-123",
             "a.py:2 ticket # see https://github.com/o/r/issues/7",
         ])
 
@@ -378,7 +379,7 @@ class ReviewRound1(RepoCase):
     def test_a_neighbour_line_is_not_the_reason_of_a_directive(self):
         repo = self.repo()
         repo.write("a.py", "# helper for legacy payloads\n# NFX-123\nx = 1\n# explain the grid\n# fmt: off\nG = [1,0]\n")
-        self.assertEqual(repo.flags(), ["a.py:1 comment # helper for legacy payloads", "a.py:2 ticket # NFX-123",
+        self.assertEqual(repo.flags(), ["a.py:1 comment # helper for legacy payloads", "a.py:2 ticket-tag # NFX-123",
                                         "a.py:4 comment # explain the grid"])
 
     def test_a_private_constructor_parameter_does_not_make_the_class_private(self):
@@ -1031,6 +1032,150 @@ class Verify(RepoCase):
         self.assertIn("BASE", result.stderr)
 
 
+class PilotTuning(RepoCase):
+    """NFX-240: the keep list tuned from the NFX-230 pilot in scripts/."""
+
+    def verdicts(self, path, source):
+        repo = self.repo()
+        repo.write(path, source)
+        return [(line, verdict) for _, line, _, verdict in items(repo.inventory(path)[0])]
+
+    def test_a_test_method_docstring_is_flagged_and_a_public_one_is_kept(self):
+        self.assertEqual(self.verdicts("test_lib.py", src(
+            "import unittest",
+            "def load():",
+            '    """Read a widget file."""',
+            "class Loads(unittest.TestCase):",
+            '    """Loading a widget."""',
+            "    def test_load(self):",
+            '        """load reads a widget file."""',
+            "class TestSize:",
+            "    def check(self):",
+            '        """A helper on a Test class."""',
+            "    def test_tagged(self):",
+            '        """NFX-1: four or more words here."""',
+            "class Testimonial:",
+            "    def render(self):",
+            '        """Render the card."""')),
+            [(3, "keep:public-doc"), (5, "keep:public-doc"), (7, "flag:test-docstring"),
+             (10, "flag:test-docstring"), (12, "flag:test-docstring"), (15, "keep:public-doc")])
+
+    def test_test_names_outside_a_test_file_stay_public(self):
+        self.assertEqual(self.verdicts("client.py", src(
+            "class TestClient:",
+            "    def get(self):",
+            '        """Send a GET request."""',
+            "def test_connection(host):",
+            '    """Open and close a socket to host."""')),
+            [(3, "keep:public-doc"), (5, "keep:public-doc")])
+        self.assertEqual(self.verdicts("tests/helpers.py", src(
+            "def test_x():", '    """Checks x."""')), [(2, "flag:test-docstring")])
+        self.assertEqual(self.verdicts("app/tests.py", src(
+            "def test_x():", '    """Test x."""')), [(2, "flag:test-docstring")])
+
+    def test_a_tests_folder_above_path_does_not_make_a_test_file(self):
+        repo = self.repo(prefix="comment-check-")
+        repo.write("tests/proj/lib.py", 'def test_connection():\n    """Open a socket."""\n')
+        result = subprocess.run([sys.executable, "-B", SCRIPT, "--all", os.path.join(repo.root, "tests", "proj")],
+                                cwd=repo.root, capture_output=True, text=True)
+        self.assertIn("keep:public-doc", result.stdout)
+
+    def test_a_banner_and_a_bare_ticket_tag_get_their_kind(self):
+        self.assertEqual(self.verdicts("a.py", src(
+            "# --- gh ---",
+            "u = 0",
+            "# ---- findings ------------",
+            "x = 1  # NFX-100",
+            "y = 2  # NFX-114: moved",
+            "z = 3  # NFX-114: the moved section",
+            "w = 4  # NFX-20: tier.py's base",
+            "v = 5  # see https://github.com/o/r/issues/7",
+            "# a - b is the gap",
+            "t = 0",
+            "# --- Section: parsing ---",
+            "s = 0",
+            "# === WARNING: the vendor API returns UTC, not local time ===",
+            "r = 0",
+            "# --- keep this order: parse() reads the header first",
+            "q = 0",
+            "# -*- mode: python -*-",
+            "p = 0  # AVX-512",
+            "o = 0",
+            "# --- do not call twice ---")),
+            [(1, "flag:banner"), (3, "flag:banner"), (4, "flag:ticket-tag"), (5, "flag:ticket-tag"),
+             (6, "flag:ticket-tag"), (7, "flag:ticket"), (8, "flag:ticket"), (9, "flag:comment"),
+             (11, "flag:comment"), (13, "flag:comment"), (15, "flag:comment"),
+             (17, "flag:comment"), (18, "flag:comment"), (20, "flag:comment")])
+
+    def test_a_long_banner_like_line_is_judged_quickly(self):
+        start = time.monotonic()
+        for text in ("# --- " + " " * 2000 + ";", "# " + "-" * 2000 + ";", "#" * 2000 + ";"):
+            comment_check.classify(comment_check.Comment(1, 1, text, "line"))
+        doc = '"""' + "returns x " * 8000 + '"""'
+        comment_check.classify(comment_check.Comment(1, 1, doc, "docstring", "private"))
+        self.assertLess(time.monotonic() - start, 1)
+
+    def test_e402_after_a_sys_path_insert_is_kept(self):
+        self.assertEqual(self.verdicts("t.py", src(
+            "import os",
+            "import json  # noqa: E402",
+            "import sys",
+            "sys.path.insert(0, os.getcwd())",
+            "sys.dont_write_bytecode = True",
+            "",
+            "import tool  # noqa: E402",
+            "import other  # noqa: E402",
+            "import unused  # noqa: E402, F401",
+            "import spaced  # noqa: E402 F401",
+            "x = 1  # noqa: E501",
+            "if x:",
+            "    sys.path.append(os.getcwd())",
+            "import guarded  # noqa: E402")),
+            [(2, "flag:suppression"), (7, "keep:path-import"), (8, "keep:path-import"), (9, "flag:suppression"),
+             (10, "flag:suppression"), (11, "flag:suppression"), (14, "keep:path-import")])
+
+    def test_a_private_docstring_that_states_a_contract_is_kept(self):
+        self.assertEqual(self.verdicts("lib.py", src(
+            "def _read(p):",
+            '    """The text, or None when absent. Raises OSError for anything else."""',
+            "def _linked(p):",
+            '    """True when the path is a symlink."""',
+            "def _bump(x):",
+            '    """Add one to x."""',
+            "def _find(x):",
+            '    """[] if nothing matched; {} on a miss."""',
+            "def _load(p):",
+            '    """Load p, False for now until NFX-9 lands."""')),
+            [(2, "keep:contract"), (4, "keep:contract"), (6, "flag:docstring"), (8, "keep:contract"),
+             (10, "keep:ticket-why")])
+
+
+class PilotBaseline(unittest.TestCase):
+    """NFX-230 retro R1: `--all scripts` at 3f2fd78 names 7 banners and 16 ticket tags, and flags no E402.
+    NousFX only: it reads that commit from the repo's history."""
+
+    COMMIT = "3f2fd78"
+
+    def test_the_pilot_tree_counts(self):
+        root = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
+        if not os.path.isfile(os.path.join(root, "scripts", "nousfx_sync.py")):
+            self.skipTest("not the NousFX repo")
+        if subprocess.run(["git", "cat-file", "-e", f"{self.COMMIT}^{{commit}}"], cwd=root,
+                          capture_output=True).returncode:
+            self.skipTest(f"{self.COMMIT} is not in this clone (shallow?)")
+        folder = tempfile.mkdtemp(prefix="comment-check-pilot-")
+        self.addCleanup(shutil.rmtree, folder, True)
+        archive = subprocess.run(["git", "archive", self.COMMIT, "scripts"], cwd=root, capture_output=True,
+                                 check=True).stdout
+        subprocess.run(["tar", "-x", "-C", folder], input=archive, check=True)
+        result = subprocess.run([sys.executable, "-B", SCRIPT, "--all", "scripts"], cwd=folder, capture_output=True,
+                                text=True, env=dict(os.environ, GIT_CEILING_DIRECTORIES=os.path.dirname(folder)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        verdicts = [l.split(" ")[2] for l in result.stdout.splitlines()[:-1]]
+        e402 = [l for l in result.stdout.splitlines() if "E402" in l and " flag:" in l]
+        self.assertEqual((verdicts.count("flag:banner"), verdicts.count("flag:ticket-tag"), len(e402)), (7, 16, 0))
+
+
 class DiffModeUnchanged(RepoCase):
     """NFX-228 must not change diff mode: one fixture with every kind, its output pinned byte for byte."""
 
@@ -1048,10 +1193,10 @@ class DiffModeUnchanged(RepoCase):
         self.assertEqual(result.stdout, "\n".join([
             "a.py:1 comment # bump",
             "a.py:2 suppression # noqa",
-            "a.py:3 ticket # NFX-1",
+            "a.py:3 ticket-tag # NFX-1",
             "a.py:4 guard # do not remove",
             'a.py:6 docstring """Private."""',
-            "comment_check: 5 flags (comment 1, docstring 1, guard 1, suppression 1, ticket 1)",
+            "comment_check: 5 flags (comment 1, docstring 1, guard 1, suppression 1, ticket-tag 1)",
         ]) + "\n")
 
 

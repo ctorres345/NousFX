@@ -7,8 +7,10 @@
   comment_check.py verify BASE  prove that only comments changed since BASE (the delete-comments skill)
 
 Prints one line per flag, `file:line kind text`, then `comment_check: N flags (kind n, ...)`.
-Kinds: comment; docstring (on a private function or class); suppression (a lint suppression with no reason on its
-line); ticket (a ticket key or issue link with no reason); guard ("do not remove" and the like).
+Kinds: comment; banner (a section divider like `# --- gh ---`, a Tautology); docstring (on a private function or
+class); test-docstring (on a `test_*` def or a `Test*` class's method in a test file: judged, not kept); suppression (a
+lint suppression with no reason on its line); ticket-tag (a bare ticket key, history that git log holds: Stale);
+ticket (a ticket key or issue link with too short a reason); guard ("do not remove" and the like).
 Languages: Python, shell, Kotlin, Dart, TypeScript and JavaScript, by extension or a python/sh shebang. Other files,
 Markdown included, are never read. A comment on the keep list (KEEP) is not printed. Only added lines count, and a
 comment whose text the diff also removes was moved, not added.
@@ -60,13 +62,15 @@ EVERY_LINE = None
 class Comment:
     """One comment from `line` to `end` (1-based). `text` is as written, markers included; for an annotation, the
     whole line. `style`: line, block, doc (/** or ///), docstring or annotation (@Suppress in code). `target`, for a
-    doc or docstring: module, public or private. `reads_doc`: the file reads __doc__."""
+    doc or docstring: module, public, private or test. `reads_doc`: the file reads __doc__. `path_import`: a
+    module-level import after a `sys.path.insert` or `.append` (its `noqa: E402` has its reason above it)."""
     line: int
     end: int
     text: str
     style: str
     target: str = ""
     reads_doc: bool = False
+    path_import: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,7 +87,7 @@ LICENSE = re.compile(r"(?i)SPDX-License-Identifier|copyright\s*(?:\(c\)|©)?\s*\
 FORMATTER = re.compile(r"(?i)\bfmt:\s*(?:off|on|skip)\b|prettier-ignore|isort:\s*(?:skip|off|on)|@formatter:(?:off|on)"
                        r"|dart format (?:off|on)|clang-format (?:off|on)|yapf:\s*(?:disable|enable)")
 TICKET = re.compile(r"\b(?!(?:UTF|ISO|SHA|MD|RFC|AES|GPT|PEP|HTTP|TLS|SSL|CVE|ES|IPV|TCP|UDP|WCAG|ECMA|IEEE"
-                    r"|POSIX|FIPS|RS)-)[A-Z]{2,10}-\d+\b|https?://\S*/(?:issues?|browse|pull)/\S+")
+                    r"|POSIX|FIPS|RS|AVX|LATIN)-)[A-Z]{2,10}-\d+\b|https?://\S*/(?:issues?|browse|pull)/\S+")
 GUARD = re.compile(r"(?i)\b(?:do not|don't|never)\s+(?:remove|delete|change|touch|edit|modify|move|reorder|rename)\b")
 SUPPRESSION_AND_CODES = re.compile(
     r"(?i)\bnoqa\b(?::\s*[A-Z]+\d+(?:\s*,\s*[A-Z]+\d+)*)?"
@@ -103,6 +107,12 @@ HEREDOC = re.compile(r"<<(-|~)?\s*(['\"]?)([A-Za-z_]\w*)\2")
 GENERATED = re.compile(r"(?i)@generated\b|\bgenerated (?:code|file)\b.*\bdo not (?:edit|modify)"
                        r"|\bcode generated\b.*\bdo not edit|\bauto-?generated\b.*\bdo not (?:edit|modify)"
                        r"|\bauto-?generated (?:file|code)\b|\bthis (?:file|code) (?:is|was) auto-?generated\b")
+BANNER = re.compile(r"(?:#|//+)[ \t]*[-=*~#]{3,}(?:[ \t]+[\w.,/'()]+){0,4}(?:[ \t]+[-=*~#]+)?")
+HISTORY_WORDS = {"moved", "added", "removed", "renamed", "fixed", "fix", "new", "the", "a", "an", "section"}
+CONTRACT = re.compile(r"\b[Rr]aises?\s+[A-Z]\w+|(?:\b(?:None|True|False)|\{\}|\[\])\s+(?:when|if|unless|on)\b"
+                      r"|\b[Rr]eturns?\b[^.\n]{0,200}?\b(?:when|if|unless)\b")
+NEGATION = re.compile(r"(?i)\b(?:not|never|must|don't)\b")
+E402 = re.compile(r"\bnoqa:\s*E402\s*$")
 MARKERS = re.compile(r"^\s*(?:#!?|//+|/\*+|\*+/?|\"\"\"|''')|\*+/\s*$|\s--\s")
 
 
@@ -119,9 +129,17 @@ def suppression_reason(c):
     return len(words(MARKERS.sub(" ", SUPPRESSION_AND_CODES.sub(" ", c.text)))) >= 2
 
 
+def bare_ticket(c):
+    """A comment that is a ticket key and nothing besides history words (`# NFX-100`, `# NFX-114: moved`): Stale,
+    git log holds it. A docstring is never one: it documents a def, so it stays a ticket flag."""
+    return c.style not in ("docstring", "doc") and bool(TICKET.search(c.text)) and not re.search(r"https?://", c.text) \
+        and all(w.lower() in HISTORY_WORDS for w in words(TICKET.sub(" ", c.text)))
+
+
 def ticket_reason(c):
-    """A ticket key keeps a line only when the line also says why: four or more other words (NFX-196 comment)."""
-    return bool(TICKET.search(c.text)) and len(words(TICKET.sub(" ", c.text))) >= 4
+    """A ticket key keeps a line only when the line also says why: four or more other words (NFX-196 comment). A
+    test docstring is never kept this way: it is judged (NFX-240)."""
+    return c.target != "test" and bool(TICKET.search(c.text)) and len(words(TICKET.sub(" ", c.text))) >= 4
 
 
 # The keep list, in order: the first rule that matches keeps the comment. NFX-228 reuses it; change it only here.
@@ -134,10 +152,14 @@ KEEP = (
              lambda c: bool(FORMATTER.search(c.text))),
     KeepRule("suppression-why", "a lint suppression with its reason on the same line",
              lambda c: has_suppression(c) and suppression_reason(c)),
+    KeepRule("path-import", "a bare `noqa: E402` on an import after a `sys.path.insert` (the reason is that line)",
+             lambda c: c.path_import and bool(E402.search(c.text))),
     KeepRule("module-doc-read", "a module docstring in a file that reads `__doc__` (argparse builds the CLI from it)",
              lambda c: c.style == "docstring" and c.target == "module" and c.reads_doc),
     KeepRule("public-doc", "a docstring or doc comment on a public module, function, class or CLI",
              lambda c: c.style in ("docstring", "doc") and c.target in ("module", "public")),
+    KeepRule("contract", "a private docstring that states a contract (`None when ...`, `Raises ...`)",
+             lambda c: c.style in ("docstring", "doc") and c.target == "private" and bool(CONTRACT.search(c.text))),
     KeepRule("ticket-why", "a ticket key or issue link plus the reason on the same line", ticket_reason),
     KeepRule("external-quirk", "a vendor or platform quirk whose external cause the comment names", None),
 )
@@ -155,12 +177,16 @@ def classify(c):
             return rule.name, None
     if has_suppression(c):
         return None, "suppression"
+    if is_doc and c.target == "test":
+        return None, "test-docstring"
     if TICKET.search(c.text):
-        return None, "ticket"
+        return None, "ticket-tag" if bare_ticket(c) else "ticket"
     if GUARD.search(c.text):
         return None, "guard"
     if is_doc:
         return None, "docstring"
+    if c.style == "line" and len(c.text) <= 200 and "-*-" not in c.text and not NEGATION.search(c.text) and BANNER.fullmatch(c.text.strip()):
+        return None, "banner"
     return None, "comment"
 
 
@@ -196,7 +222,16 @@ def merge_line_comments(comments, code_lines):
     return out
 
 
-def python_comments(text):
+def is_test_file(path):
+    """test_*.py, *_test.py, tests.py (Django) or conftest.py, or any file under a tests/ or test/ folder. A library's
+    production tests.py (Jinja2's test_odd) is judged as tests: the reviewer reads each flag."""
+    parts = re.split(r"[\\/]", path)
+    name = parts[-1]
+    return name.startswith("test_") or name.endswith("_test.py") or name in ("tests.py", "conftest.py") \
+        or any(p in ("tests", "test") for p in parts[:-1])
+
+
+def python_comments(text, path=""):
     comments, code_lines = [], set()
     try:
         for tok in tokenize.generate_tokens(io.StringIO(text).readline):
@@ -213,6 +248,7 @@ def python_comments(text):
     except (SyntaxError, ValueError):
         return comments
     reads_doc = "__doc__" in text
+    in_tests = is_test_file(path)
     lines = text_lines(text)
 
     def visit(node, target):
@@ -223,10 +259,13 @@ def python_comments(text):
             comments.append(Comment(doc.lineno, doc.end_lineno, "\n".join(lines[doc.lineno - 1:doc.end_lineno]),
                                     "docstring", target, reads_doc))
         in_function = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        test_class = in_tests and isinstance(node, ast.ClassDef) and bool(re.match(r"Test(?:[A-Z_]|$)", node.name))
         for child in defs(node):
             private = (target == "private" or in_function
                        or child.name.startswith("_") and not child.name.endswith("__"))
-            visit(child, "private" if private else "public")
+            test = in_tests and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and (child.name.startswith("test_") or test_class)
+            visit(child, "private" if private else "test" if test else "public")
 
     def defs(node):
         for child in ast.iter_child_nodes(node):
@@ -236,7 +275,24 @@ def python_comments(text):
                 yield from defs(child)
 
     visit(tree, "module")
+    mark_path_imports(tree, comments)
     return sorted(comments, key=lambda c: c.line)
+
+
+def mark_path_imports(tree, comments):
+    """Set path_import on the line comments of each module-level import after a `sys.path.insert` or `.append`,
+    guarded (`if ...:`, `try:`) or not."""
+    inserted, rows = False, set()
+    for stmt in tree.body:
+        if not isinstance(stmt, (ast.Import, ast.ImportFrom)) and any(
+                isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in ("insert", "append")
+                and ast.unparse(n.func.value) == "sys.path" for n in ast.walk(stmt)):
+            inserted = True
+        elif inserted and isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            rows.update(range(stmt.lineno, stmt.end_lineno + 1))
+    for c in comments:
+        if c.style == "line" and c.line in rows:
+            c.path_import = True
 
 
 def scan(text, lang):
@@ -371,7 +427,7 @@ def comments_in(path, text):
     """Every comment in a file (docstrings and suppression annotations included), or [] for a language not covered."""
     lang = language(path, text)
     if lang == "python":
-        return python_comments(text)
+        return python_comments(text, path)
     if lang:
         return scan(text, lang)
     return []
@@ -517,7 +573,7 @@ def inventory(path):
             continue
         shown = os.path.normpath(os.path.join(root, rel))
         lang, lines = language(rel, text), text_lines(text)
-        for c in comments_in(rel, text):
+        for c in comments_in(os.path.join(os.path.basename(os.path.abspath(root)), rel), text):
             kept, kind = classify(c)
             f = form(c, lang, lines)
             shed = c.end - c.line + 1 if not kept and kind != "suppression" and f in SHED_FORMS else 0

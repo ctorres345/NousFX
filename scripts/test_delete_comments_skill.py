@@ -72,6 +72,17 @@ class DeleteCommentsSkill(unittest.TestCase):
         self.assertLess(step.index("verify"), step.index("suite"))
         self.assertIn("exit 2", step.lower())
 
+    def test_it_names_the_test_docstring_rule_and_the_bare_ticket_tag_kind(self):
+        step = section(text(), "2. Classify")
+        rule = next((l for l in step.splitlines() if "flag:test-docstring" in l), "")
+        self.assertTrue(rule, "Classify must name flag:test-docstring")
+        for needle in ("only repeats the test name", "Tautology", "kept"):
+            self.assertIn(needle, rule)
+        tag = next((l for l in step.splitlines() if "flag:ticket-tag" in l), "")
+        self.assertTrue(tag, "Classify must name flag:ticket-tag")
+        for needle in ("# NFX-100", "Stale", "git log"):
+            self.assertIn(needle, tag)
+
     def test_the_report_path_and_batch_rule(self):
         src = text()
         self.assertIn("~/Releases/<project>/reports/<date>-<KEY>/comments.md", src)
