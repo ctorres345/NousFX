@@ -268,8 +268,6 @@ class ViaSetupTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse(os.path.exists(self.config))
 
-    # Pillow environment
-
     def venv_dir(self):
         return os.path.join(self.home, ".local", "share", "nousfx", "via", "venv")
 

@@ -63,7 +63,6 @@ class ViaSkillsTest(unittest.TestCase):
         self.addCleanup(d.cleanup)
         return d.name
 
-    # --- fixtures -----------------------------------------------------------------------------------------
     def git(self, *args, cwd=None):
         r = subprocess.run(["git", *args], cwd=cwd or self.remote, env={"PATH": self.bin, **GIT_ENV},
                            capture_output=True, text=True)
@@ -139,7 +138,6 @@ class ViaSkillsTest(unittest.TestCase):
 
     BASE = {"SKILL.md": b"---\nname: foo\ndescription: d\n---\nhello\n", "refs/a.md": b"A\n"}
 
-    # --- plan / install -----------------------------------------------------------------------------------
     def test_plan_lists_what_it_would_fetch_and_changes_nothing(self):
         c = self.commit(self.BASE)
         self.write_lock(c, self.BASE)
@@ -278,7 +276,6 @@ class ViaSkillsTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("too large", r.stderr.lower())
 
-    # --- verify -------------------------------------------------------------------------------------------
     def test_verify_clean_then_edited_then_missing(self):
         c = self.commit(self.BASE)
         self.write_lock(c, self.BASE)
@@ -301,7 +298,6 @@ class ViaSkillsTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("link", r.stdout)
 
-    # --- update / add -------------------------------------------------------------------------------------
     def test_update_shows_the_diff_and_leaves_the_lock_without_approval(self):
         c = self.commit(self.BASE)
         self.write_lock(c, self.BASE)
@@ -476,7 +472,6 @@ class ViaSkillsTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertNotIn("Traceback", r.stderr)
 
-    # --- environment --------------------------------------------------------------------------------------
     def test_bad_lock_file_fails_closed(self):
         for text in ("not json", '{"version": 2, "skills": {}}', '{"version": 1}', '{"version": 1, "skills": []}'):
             with open(self.lock, "w") as f:
@@ -526,7 +521,7 @@ class AssetsModeDocTest(unittest.TestCase):
                         plan[:plan.index("\n")]):
             self.assertIn("3c", earlier)  # steps 3 and 3b point to it
 
-    def test_a_phrase_with_several_names_is_one_approval_per_name(self):  # NFX-181
+    def test_a_phrase_with_several_names_is_one_approval_per_name(self):
         path = os.path.join(os.path.dirname(SCRIPT), "..", "skills", "via", "modes", "assets.md")
         with open(path, encoding="utf-8") as f:
             doc = f.read()

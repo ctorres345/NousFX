@@ -73,8 +73,6 @@ OTHER_MATRIX = (("light", "phone", "default", "ltr"), ("dark", "phone", "default
 RUN_TIMEOUT = 600
 
 
-# --- detect ---
-
 def read(path):
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -111,8 +109,6 @@ def detect(project):
             roots["compose"] = rel
     return {"platforms": sorted(roots), "roots": dict(sorted(roots.items()))}
 
-
-# --- previews and the matrix ---
 
 def words(name):
     return [w.lower() for w in re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])", name)]
@@ -172,8 +168,6 @@ def build_plan(platform, previews, rtl):
             note(screen, "large, font and rtl for the other states", False, "not in the default matrix", "note")
     return plan, coverage
 
-
-# --- Flutter ---
 
 def balanced(text, start):
     """Index just after the parenthesis that closes the one at text[start]."""
@@ -434,8 +428,6 @@ def capture_flutter(project, rel_root, stage, run_dir):
     return finish_shots("flutter", "flutter test", plan, stage), coverage, []
 
 
-# --- Compose ---
-
 # Roborazzi must not be newer than the app's Compose: 1.77.0 needs Kotlin 2.3 and a recent Compose runtime and fails on an
 # app with Kotlin 2.1 / Compose BOM 2024.10 (NoSuchMethodError in Composer). 1.43.0 is verified on that app. An older
 # library on a newer Compose is the safe direction. Override with $VIA_ROBORAZZI and $VIA_ROBOLECTRIC.
@@ -689,8 +681,6 @@ def capture_compose(project, rel_root, stage, run_dir):
         touched.restore()
     return finish_shots("compose", "gradle", plan, stage), coverage, []
 
-
-# --- emulator fallback ---
 
 ADB_TIMEOUT = 60
 FONT_LARGEST = "2.0"
@@ -987,8 +977,6 @@ def capture_emulator(platform, stage, run_dir, root, why, code):
                 % (serial, package)]
     return shots, coverage, warnings
 
-
-# --- main ---
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
