@@ -22,7 +22,6 @@ TOOLS = ("claude", "agy")
 NAME = re.compile(r"[A-Za-z0-9_-]+")
 ENV_REF = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 KEYS = {"tools", "url", "command", "args", "env"}
-ATLASSIAN_V1 = re.compile(r"(?i)https?://mcp\.atlassian\.com/v1/")
 ATLASSIAN_V2 = "https://mcp.atlassian.com/v2/mcp"
 SECRET_QUERY_KEY = re.compile(r"(?i)token|key|secret|passw|auth|sig|credential")
 # A credential inside one argument ("Authorization: Bearer x", "X-Api-Key: x", "token=x"), checked after
@@ -133,7 +132,17 @@ def v1_warnings(servers):
     """One warning per server still on Atlassian's /v1/ endpoint (removed 2027-03-01). Never an error."""
     return [f"warning: mcp: server {n} uses {e['url']}, which Atlassian removes on 2027-03-01. "
             f"Use {ATLASSIAN_V2} in its mcp.toml." for n, e in sorted(servers.items())
-            if ATLASSIAN_V1.match(e.get("url", ""))]
+            if _atlassian_v1(e.get("url", ""))]
+
+
+def _atlassian_v1(url):
+    """True for any spelling of an Atlassian /v1 URL: port, trailing-dot host, /v1 with or without a slash."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    host = (parts.hostname or "").rstrip(".")
+    return host == "mcp.atlassian.com" and (parts.path == "/v1" or parts.path.startswith("/v1/"))
 
 
 def _shape(e, tool):

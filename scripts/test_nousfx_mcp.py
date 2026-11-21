@@ -576,6 +576,16 @@ class V1Endpoint(Base):  # NFX-235: Atlassian removes /v1/mcp on 2027-03-01
         self.assertIn("https://mcp.atlassian.com/v2/mcp", lines[0])
         self.assertTrue(lines[0].startswith("warning: "))
 
+    def test_other_spellings_of_v1_warn(self):
+        for url in ("https://mcp.atlassian.com:443/v1/mcp", "https://MCP.Atlassian.com./v1/sse",
+                    "https://mcp.atlassian.com/v1"):
+            self.assertEqual(len(M.v1_warnings({"s": {"tools": ["agy"], "url": url}})), 1, url)
+
+    def test_v1_lookalikes_do_not_warn(self):
+        for url in ("https://mcp.atlassian.com/v10/mcp", "https://mcp.atlassian.com.evil.example/v1/mcp",
+                    "https://x.mcp.atlassian.com/v1/mcp"):
+            self.assertEqual(M.v1_warnings({"s": {"tools": ["agy"], "url": url}}), [], url)
+
     def test_v2_and_other_hosts_do_not_warn(self):
         self.assertEqual(M.v1_warnings({"a": {"tools": ["agy"], "url": "https://mcp.atlassian.com/v2/mcp"},
                                         "b": {"tools": ["agy"], "url": "https://x.example.com/v1/mcp"}}), [])
