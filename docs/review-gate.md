@@ -153,6 +153,10 @@ testfail.py attest ──► stamp MAC, tree, branch, base, check and config mat
 - The stamp (`claude-testfail-pass` in the git dir, `kind: "testfail"`) is signed with the pass stamp's key and binds tree, branch, base, command, source, timeout, config and verdict. The gate hook does not read it. Put the `Tests-Fail-Without:` line in the PR body next to `AC-Proof:`.
 - Limits: it proves the tests failed without the production files on this tree, not that they are good tests. A pure refactor passes legitimately (`no` is waivable with a stated reason). The check runs twice, so a slow suite doubles. The stamp key is same-user readable, like the other stamps.
 
+### Comment check (NFX-196)
+
+`claude/skills/review-loop/scripts/comment_check.py <base>` lists the comments a diff adds (Python, shell, Kotlin, Dart, TypeScript, JavaScript; never Markdown), one `file:line kind text` line each, and a count per kind. It is warn-only: the gate does not read it, it exits 0 whenever it ran, and the reviewer turns a real flag into a `low` finding (`references/comments.md`; NFX-233 makes it `med`). The keep list is one structure, `KEEP` in the script, which NFX-228's cleanup modes import; `--keep-list` prints it. Only added lines count, and a comment the same diff removes elsewhere (a move, a rename, a re-indent) is not new.
+
 ### Where prove.py and testfail.py load the gate (NFX-214)
 
 Both scripts sign their stamps with the gate's helpers, so they load the gate `--mark` runs, never one the branch under review can edit. Reader first, as Via does (NFX-207); the first file that exists wins:
