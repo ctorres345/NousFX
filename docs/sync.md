@@ -320,10 +320,11 @@ harness/mcp.toml                shared list (committed)
 ```toml
 [servers.atlassian]
 tools = ["agy"]        # required: claude, agy, or both
-url = "https://mcp.atlassian.com/v1/mcp"
+url = "https://mcp.atlassian.com/v2/mcp"
 ```
 
-- Claude gets the entry in `~/.claude.json` (only the `mcpServers` key, only names sync added). agy gets it in the plugin's `mcp_config.json`. Atlassian is agy only, because Claude has its own connector.
+- Claude gets the entry in `~/.claude.json` (only the `mcpServers` key, only names sync added). agy gets it in the plugin's `mcp_config.json`. Atlassian is agy only, because Claude has its own connector. A project's `.nousfx/mcp.toml` should do the same: a `claude` entry there adds a second Jira server next to the connector.
+- A URL on `mcp.atlassian.com/v1/` prints a warning naming the server and the V2 URL (`/v1/mcp` is removed on 2027-03-01). It never changes the exit code, and `--check --summary` leaves it out. agy may ask to sign in again after the switch (NFX-235).
 - A value is either a URL or an environment variable written as `${NAME}`. A literal token anywhere fails the run before anything is written, and the message names the server, never the value.
 - Sync never overwrites a server it did not add. It stops and tells me. The ownership record keeps a hash of what sync wrote for each name, so a server I changed by hand, or one Claude rewrote, under a name sync owns is also left alone.
 - `harness/mcp.toml` is required. A missing one stops the run, because an empty list would delete every server sync added.

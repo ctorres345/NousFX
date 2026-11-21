@@ -102,7 +102,7 @@ class Tools(Fixture):
         self.assertNotIn("agy-only personal line", claude)
         self.assertEqual(jload(os.path.join(self.plugin, "plugin.json"))["name"], "nousfx")
         self.assertEqual(jload(self.agy_mcp)["mcpServers"]["atlassian"]["url"],
-                         "https://mcp.atlassian.com/v1/mcp")
+                         "https://mcp.atlassian.com/v2/mcp")
         link = os.path.join(self.plugin, "skills", "demo")
         self.assertTrue(os.path.islink(link))
         self.assertTrue(os.path.exists(os.path.join(link, "SKILL.md")))
@@ -142,6 +142,19 @@ class Tools(Fixture):
         left = [os.path.join(b, n) for b, _, fs in os.walk(self.home) for n in fs]
         left += [os.path.join(b, n) for b, ds, _ in os.walk(self.home) for n in ds if os.path.islink(os.path.join(b, n))]
         self.assertEqual(left, [])
+
+    def test_a_v1_atlassian_url_warns_but_never_changes_the_exit_code(self):  # NFX-235
+        write(os.path.join(self.state, "mcp.toml"),
+              '[servers.atlassian]\ntools = ["agy"]\nurl = "https://mcp.atlassian.com/v1/mcp"\n')
+        r = self.ok("--tools", "claude,agy")
+        self.assertIn("warning: mcp: server atlassian", r.stderr)
+        self.assertIn("https://mcp.atlassian.com/v2/mcp", r.stderr)
+        check = self.sync("--tools", "claude,agy", "--check")
+        self.assertIn("no drift", check.stdout)
+        self.assertIn("warning: mcp: server atlassian", check.stderr)
+        summary = self.sync("--tools", "claude,agy", "--check", "--summary")
+        self.assertEqual(len(summary.stdout.strip().splitlines()), 1, summary.stdout)
+        self.assertNotIn("atlassian", summary.stderr)
 
     def test_local_md_with_claude_term_warns_for_agy_only(self):
         write(os.path.join(self.state, "local.md"), "- use the Skill tool\n")
