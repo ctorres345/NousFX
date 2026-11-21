@@ -13,12 +13,17 @@ files the change added are deleted), so only the changed tests differ from the b
 printed does not count. It prints
     Tests-Fail-Without: <verdict> <tree> base:<hash>
 and, for `yes`, one `  failing: <name>` line per failing test. Verdicts:
-    yes            the restored run failed and named at least one failing test or suite   exit 0
+    yes            the restored run failed and named a failing test, or could not import  exit 0
+                   an added production module (`failing: import <path>`)
     no             the restored run passed: the tests do not cover the change             exit 1
     build          the restored run failed and named nothing (build or import error)      exit 1
     baseline-fail  the check fails with the change, so nothing can be concluded            exit 1
     n/a            no production file or no test file changed                              exit 0
 Exit 2 prints a reason to stderr and nothing to stdout (timeout, detached HEAD, no check command, tree changed).
+NFX-222: a Python import error naming a .py file the change added splits by who else names that module. When a file
+that is not a test (docs count) names it, it is production, and the verdict is `yes`. When only tests name it, it is a
+helper: a note says to list it in `[check] tests`. A `build` also lists `  suite: <name>` for each failing suite the
+log names. These notes go in the stamp, so `attest` prints them too.
 The check, its timeout and its two optional keys come from `[check]` in .nousfx/project.toml, read where the gate
 reads it (the default branch's copy when it has one):
     tests = ["glob", ...]       test files; default is test_*, *_test.*, or a tests/ folder
@@ -60,6 +65,14 @@ DEFAULT_PATTERN = "|".join([
     r"^test (\S+) \.\.\. FAILED$",                             # cargo
     r"^(\S.* > \S.*) FAILED$",                                 # Gradle
 ])
+# Python's import errors, found anywhere in a line (pytest prefixes them with "E   "): the missing module, or the name
+# a `from pkg import n` could not find, read as the module pkg.n (NFX-222).
+IMPORT_ERROR = re.compile(r"ModuleNotFoundError: No module named '([\w.]+)'"
+                          r"|ImportError: cannot import name '(\w+)' from '([\w.]+)'")
+RUN_CHECKS_SUITE_FAILED = r"^FAIL (\S+) \(\d+s\)$"
+UNITTEST_MODULE_UNLOADABLE = r"^ERROR: \S+ \(unittest\.loader\._FailedTest\.(\S+)\)$"
+PYTEST_COLLECTION_ERROR = r"ERROR collecting (\S+)"
+SUITE_LINE = re.compile("|".join([RUN_CHECKS_SUITE_FAILED, UNITTEST_MODULE_UNLOADABLE, PYTEST_COLLECTION_ERROR]), re.M)
 GIT_ENV_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")  # as the gate's run_check drops them
 VERDICT_EXIT = {"yes": 0, "n/a": 0, "no": 1, "build": 1, "baseline-fail": 1}
 
@@ -183,14 +196,14 @@ def suite_slot_hold():
     return suite_slot.hold()
 
 
-def git(args, cwd, extra=None):
-    """git's stdout, run in `cwd` with `extra` added to the environment. GIT_DIR and the like are dropped, so a
+def git(args, cwd, extra=None, ok=(0,)):
+    """git's stdout, run in `cwd` with `extra` added to the environment; an exit code outside `ok` refuses. GIT_DIR and the like are dropped, so a
     command meant for the clone never reaches the real repo. GIT_OPTIONAL_LOCKS=0 keeps `git diff` and friends from
     refreshing (writing) the real index, and GIT_LITERAL_PATHSPECS=1 keeps `a[b].py` from matching `ab.py`."""
     env = {k: v for k, v in os.environ.items() if k not in GIT_ENV_VARS}
     env.update(extra or {}, GIT_OPTIONAL_LOCKS="0", GIT_LITERAL_PATHSPECS="1")
     r = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
-    if r.returncode != 0:
+    if r.returncode not in ok:
         raise Refused(f"git {' '.join(args[:2])} failed: {r.stderr.strip() or r.stdout.strip()}")
     return r.stdout
 
@@ -281,10 +294,8 @@ def tail(path):
         return ""
 
 
-def failing_names(path, pattern, limit=MAX_NAMED):
-    """Up to `limit` distinct names the pattern finds in the log: the first group that matched, else the match."""
-    with open(path, encoding="utf-8", errors="replace") as f:
-        output = f.read()
+def failing_names(output, pattern, limit=MAX_NAMED):
+    """Up to `limit` distinct names the pattern finds in the log text: the first group that matched, else the match."""
     named = {}
     for m in pattern.finditer(output):
         name = next((g for g in m.groups() if g), None) if m.groups() else m.group(0)
@@ -295,8 +306,88 @@ def failing_names(path, pattern, limit=MAX_NAMED):
     return list(named)
 
 
+def read_log(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def unique(items):
+    return list(dict.fromkeys(items))
+
+
+def new_in(restored, passing):
+    """The restored run's names that the passing run did not also print: those are noise, not what the restore broke."""
+    noise = set(passing)
+    return [n for n in restored if n not in noise]
+
+
+def missing_modules(text):
+    """The modules the log's import errors name, in log order."""
+    return unique(m.group(1) or f"{m.group(3)}.{m.group(2)}" for m in IMPORT_ERROR.finditer(text))
+
+
+def added_files_for(module, added):
+    """The added .py files that are `module`: a/b.py or a/b/__init__.py for a.b, or any file under a/b/, since Python
+    names an added package by its first missing part. By name only: no match means no claim."""
+    rel = "/" + module.replace(".", "/")
+    hits = []
+    for p in added:
+        q = "/" + p.replace("\\", "/")
+        if q.endswith(".py") and (q.endswith(rel + ".py") or q.endswith(rel + "/__init__.py") or rel + "/" in q):
+            hits.append(p)
+    return hits
+
+
+def mentioned_outside_tests(tier, s, module, matched):
+    """True when a tracked or untracked file that is not a test, not generated and not one of the `matched` added
+    files names the last part of `module` (the name the import error gave) as a word. Docs count. git grep skips
+    binary and ignored files."""
+    word = module.rsplit(".", 1)[-1]
+    hits = git(["grep", "--untracked", "-I", "-l", "-z", "-w", "-F", "-e", word, "--"], s.top, ok=(0, 1))
+    return any(p not in matched and not is_test(p, s.globs) and not tier.is_ignored(p) for p in paths_z(hits))
+
+
+def import_causes(s, added, passing, restored):
+    """(production, helpers): the added files the restored run could not import, split by whether anything but the
+    tests names the module the import error gave (NFX-222). The files one module matches go together: a submodule of an
+    added package is production when the package is."""
+    groups = {m: added_files_for(m, added) for m in new_in(missing_modules(restored), missing_modules(passing))}
+    matched = set(p for group in groups.values() for p in group)
+    if not matched:
+        return [], []
+    tier = load_tier()
+    production = unique(p for m, group in groups.items() if group and mentioned_outside_tests(tier, s, m, matched)
+                        for p in group)
+    return production, unique(p for group in groups.values() for p in group if p not in production)
+
+
+def failing_suites(passing, restored):
+    """Up to MAX_NAMED failing suites or test modules the restored log names and the passing log does not."""
+    def suites(text):
+        return unique(next(g for g in m.groups() if g) for m in SUITE_LINE.finditer(text))
+    return new_in(suites(restored), suites(passing))[:MAX_NAMED]
+
+
+def verdict_from_logs(s, added, log1, log2):
+    """(verdict, named, notes) for a restored run that failed: `yes` when it named a failing test or could not import
+    an added production module, else `build`. notes name added helpers the run could not import (with the
+    [check] tests fix) and, for `build`, the failing suites."""
+    passing, restored = read_log(log1), read_log(log2)
+    tests = new_in(failing_names(restored, s.pattern, limit=None), failing_names(passing, s.pattern, limit=None))
+    production, helpers = import_causes(s, added, passing, restored)
+    named = ([f"import {p}" for p in production] + tests)[:MAX_NAMED]
+    notes = [f"added helper {p} could not be imported: it is not a test file, so the restored run removed it. "
+             f"List it in [check] tests of .nousfx/project.toml (or name it like a test)" for p in helpers]
+    if not named:
+        notes += [f"suite: {n}" for n in failing_suites(passing, restored)]
+    return ("yes" if named else "build"), named, notes
+
+
 def run_in_copy(gate, s, restore):
-    """(verdict, named, log tail) from the two runs in a temporary clone, which is always removed."""
+    """(verdict, named, log tail, notes) from the two runs in a temporary clone, which is always removed."""
     scratch = tempfile.mkdtemp(prefix="testfail-")
     copy = os.path.join(scratch, "repo")
     log1, log2 = os.path.join(scratch, "with-change.log"), os.path.join(scratch, "restored.log")
@@ -315,7 +406,7 @@ def run_in_copy(gate, s, restore):
         if not ok:
             if why.startswith("did not finish"):
                 raise Refused(f"the check with the change {why}; a timeout is never a pass. No stamp recorded.")
-            return "baseline-fail", [], tail(log1)
+            return "baseline-fail", [], tail(log1), []
         in_base = set(paths_z(git(["ls-tree", "-r", "-z", "--name-only", s.base], copy)))
         # Remove the added files first, then check out the base ones: safe for a file turned into a folder (or back)
         # and for a case-only rename on a case-insensitive disk.
@@ -327,13 +418,11 @@ def run_in_copy(gate, s, restore):
             git(["checkout", s.base, "--", *back[i:i + RESTORE_BATCH]], copy, quiet)
         ok, why = gate.run_check(copy, s.check, log2)
         if ok:
-            return "no", [], ""
+            return "no", [], "", []
         if why.startswith("did not finish"):
             raise Refused(f"the restored check {why}; a timeout is never a pass. No stamp recorded.")
-        # A name the passing run also printed is noise, not a test that the restore broke.
-        noise = set(failing_names(log1, s.pattern, limit=None))
-        named = [n for n in failing_names(log2, s.pattern, limit=None) if n not in noise][:MAX_NAMED]
-        return ("yes", named, "") if named else ("build", [], tail(log2))
+        verdict, named, notes = verdict_from_logs(s, added, log1, log2)
+        return verdict, named, ("" if verdict == "yes" else tail(log2)), notes
     finally:
         slot.close()
         shutil.rmtree(scratch, ignore_errors=True)
@@ -341,6 +430,15 @@ def run_in_copy(gate, s, restore):
 
 def line(verdict, tree, base):
     return f"Tests-Fail-Without: {verdict} {tree} base:{base}"
+
+
+def report(verdict, tree, base, named, notes):
+    """What run and attest both print: the verdict line, then the failing names and the notes (NFX-222)."""
+    print(line(verdict, tree, base))
+    for name in named:
+        print(f"  failing: {name}")
+    for note in notes:
+        print(f"  {note}")
 
 
 def run(args):
@@ -353,9 +451,9 @@ def run(args):
     tests, production, restore = split(tier, s.top, s.base, s.globs)
     if tests and production:
         with refusing("the test-fail run stopped; nothing was recorded"):
-            verdict, named, detail = run_in_copy(gate, s, restore)
+            verdict, named, detail, notes = run_in_copy(gate, s, restore)
     else:
-        verdict, named, detail = "n/a", [], ""
+        verdict, named, detail, notes = "n/a", [], "", []
     with refusing("cannot hash the working tree"):
         after = gate.worktree_tree(s.top)
     if after != s.tree:
@@ -363,11 +461,9 @@ def run(args):
         raise Refused(f"the working tree changed during the run ({', '.join(moved[:5]) or 'unknown'}); "
                       "nothing was recorded. Run again.")
     with refusing("cannot write the test-fail stamp"):
-        gate.write_stamp(s.top, {**s.fields, "verdict": verdict, "named": named, "exit": 0,
+        gate.write_stamp(s.top, {**s.fields, "verdict": verdict, "named": named, "notes": notes, "exit": 0,
                                  "time": time.strftime("%Y-%m-%dT%H:%M:%S")}, key, gate.TESTFAIL_STAMP_FILE)
-    print(line(verdict, s.tree, s.base))
-    for name in named:
-        print(f"  failing: {name}")
+    report(verdict, s.tree, s.base, named, notes)
     if verdict == "n/a" and production:
         print("  production files changed, but no changed file matched a test glob; if the tests are named another "
               "way, list them in [check] tests = [...]")
@@ -384,9 +480,7 @@ def attest(args):
     stamp = gate.valid_stamp(s.top, s.fields, gate.TESTFAIL_STAMP_FILE)
     if not stamp or stamp.get("verdict") not in VERDICT_EXIT:
         raise Refused("no valid test-fail stamp for this tree, branch, base and check; run `testfail.py run` again")
-    print(line(stamp["verdict"], s.tree, s.base))
-    for name in stamp.get("named", []):
-        print(f"  failing: {name}")
+    report(stamp["verdict"], s.tree, s.base, stamp.get("named", []), stamp.get("notes", []))
     return VERDICT_EXIT[stamp["verdict"]]
 
 
