@@ -322,6 +322,29 @@ class ViaRunTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(self.pass_record()["tree"], self.worktree_tree())
 
+    def test_a_git_dir_variable_cannot_point_the_gate_lookup_at_a_fake_git_dir(self):
+        """NFX-225: a committed settings `env` block can set GIT_DIR; a fake git dir must not supply the gate."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            scripts, home = os.path.join(d, "cache", "via", "1.0", "scripts"), os.path.join(d, "home")
+            shutil.copytree(here, scripts, ignore=shutil.ignore_patterns("test_*", "__pycache__"))
+            os.makedirs(home)
+            run_dir, _, _ = self.merge(record([]))
+            fake = os.path.join(self.repo, "fake.git")
+            for sub in ("objects", "refs"):
+                os.makedirs(os.path.join(fake, sub))
+            write(os.path.join(fake, "HEAD"), "ref: refs/heads/main\n")
+            ran = os.path.join(d, "tampered-gate-ran")
+            write(os.path.join(fake, "nousfx-gate", "current", "hooks", "review-gate.py"),
+                  "open(%r, 'w').close()\ndef worktree_tree(cwd):\n    return 'f' * 40\n" % ran)
+            r = subprocess.run([th.python(home), "-I", "-B", os.path.join(scripts, "via_run.py"), "pass", run_dir,
+                                "--project", self.repo], capture_output=True, text=True,
+                               env={**os.environ, "GIT_DIR": fake})
+            self.assertFalse(os.path.exists(ran), "the gate in the fake git dir was loaded")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse(json.loads(r.stdout)["recorded"])
+
     def test_pass_counts_open_high_and_med_findings_that_are_not_ticketed(self):
         run_dir, _, _ = self.merge(record([
             finding(severity="high"), finding(rule="a", severity="med", route="ticket", route_reason="Theme"),
