@@ -423,6 +423,130 @@ class Config(Base):
 
 
 
+USES_NEWMOD = ("import unittest\nimport newmod\n\n\nclass T(unittest.TestCase):\n"
+               "    def test_value(self):\n        self.assertEqual(newmod.VALUE, 1)\n")
+
+
+BASE_FILE_GAINS_MUL = BUGGY + "\n\ndef mul(a, b):\n    return a * b\n"
+IMPORTS_NEW_NAME_FROM_BASE_FILE = ("import unittest\nfrom calc import mul\n\n\nclass T(unittest.TestCase):\n"
+            "    def test_mul(self):\n        self.assertEqual(mul(2, 3), 6)\n")
+
+
+class ImportCauses(Base):
+    """NFX-222: a restored run that dies importing a file the change added names that file."""
+
+    def use_runner(self, body):
+        """Make runner.py (a test file, so never restored) the check; it exits with its run's code `r`."""
+        self.write("runner.py", "import subprocess, sys\n" + body + "sys.exit(r.returncode)\n")
+        self.write(".nousfx/project.toml",
+                   '[check]\ncommand = "python3 -B runner.py"\ntimeout = 60\ntests = ["test_*.py", "runner.py"]\n')
+
+    def test_an_added_helper_only_tests_mention_is_build_with_the_tests_key_hint(self):
+        self.write("calc.py", FIXED)
+        self.write("newmod.py", "VALUE = 1\n")
+        self.write("test_newmod.py", USES_NEWMOD)
+        r = self.run_base()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.verdict(r), "build")
+        self.assertIn("newmod.py", r.stdout)
+        self.assertIn("[check] tests", r.stdout)
+
+    def test_an_added_module_a_non_test_file_mentions_is_yes_naming_the_import(self):
+        self.write("newmod.py", "VALUE = 1\n")
+        self.write("app.py", "import newmod\n")
+        self.write("test_newmod.py", USES_NEWMOD)
+        r = self.run_base()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.verdict(r), "yes")
+        self.assertIn("  failing: import newmod.py\n", r.stdout)
+        self.assertNotIn("[check] tests", r.stdout)
+
+    def test_attest_prints_the_same_lines_as_run_for_both_causes(self):
+        for mention in ("", "import newmod\n"):
+            with self.subTest(mention=mention):
+                self.write("newmod.py", "VALUE = 1\n")
+                self.write("app.py", mention)
+                self.write("test_newmod.py", USES_NEWMOD)
+                ran = self.run_base()
+                r = self.tf("attest", "--base", self.base)
+                self.assertEqual(r.stdout, ran.stdout)
+                self.assertEqual(r.returncode, ran.returncode)
+
+    def test_an_import_error_for_a_file_the_change_did_not_add_changes_nothing(self):
+        self.write("calc.py", BASE_FILE_GAINS_MUL)
+        self.write("test_other.py", IMPORTS_NEW_NAME_FROM_BASE_FILE)
+        r = self.run_base()
+        self.assertEqual(self.verdict(r), "build")
+        self.assertNotIn("failing:", r.stdout)
+        self.assertNotIn("[check] tests", r.stdout)
+
+    def test_a_build_names_the_suites_a_run_checks_style_runner_reports(self):
+        self.write("newmod.py", "VALUE = 1\n")
+        self.write("test_newmod.py", USES_NEWMOD)
+        self.use_runner("r = subprocess.run([sys.executable, '-B', 'test_newmod.py'])\n"
+                        "print('ok   test_truth.py (0s)')\n"
+                        "print(('FAIL' if r.returncode else 'ok  ') + ' test_newmod.py (0s)')\n")
+        r = self.run_base()
+        self.assertEqual(self.verdict(r), "build")
+        self.assertIn("  suite: test_newmod.py\n", r.stdout)
+        self.assertNotIn("suite: test_truth.py", r.stdout)
+
+    def test_a_build_names_the_test_module_unittest_could_not_import(self):
+        self.write("calc.py", BASE_FILE_GAINS_MUL)
+        self.write("test_other.py", IMPORTS_NEW_NAME_FROM_BASE_FILE)
+        r = self.run_base()
+        self.assertIn("  suite: test_other\n", r.stdout)
+
+    def test_a_module_the_passing_run_also_could_not_import_is_noise(self):
+        self.write("newmod.py", "VALUE = 1\n")
+        self.write("app.py", "import newmod\n")
+        self.write("test_newmod.py", USES_NEWMOD + "\nprint(\"ModuleNotFoundError: No module named 'newmod'\")\n")
+        r = self.run_base()
+        self.assertEqual(self.verdict(r), "build")
+        self.assertNotIn("import newmod.py", r.stdout)
+
+    def test_an_added_package_is_matched_by_its_first_missing_name(self):
+        self.write("pkg/__init__.py", "")
+        self.write("pkg/core.py", "VALUE = 1\n")
+        self.write("app.py", "from pkg import core\n")
+        self.write("test_pkg.py", "import unittest\nfrom pkg import core\n\n\nclass T(unittest.TestCase):\n"
+                   "    def test_value(self):\n        self.assertEqual(core.VALUE, 1)\n")
+        r = self.run_base()
+        self.assertEqual(self.verdict(r), "yes", r.stdout)
+        self.assertIn("failing: import pkg/core.py", r.stdout)
+
+    def test_a_package_submodule_only_its_own_init_imports_is_not_called_a_helper(self):
+        self.write("pkg/__init__.py", "from .internal import run\n")
+        self.write("pkg/internal.py", "def run():\n    return 1\n")
+        self.write("app.py", "import pkg\n")
+        self.write("test_pkg.py", "import unittest\nimport pkg\n\n\nclass T(unittest.TestCase):\n"
+                   "    def test_run(self):\n        self.assertEqual(pkg.run(), 1)\n")
+        r = self.run_base()
+        self.assertEqual(self.verdict(r), "yes", r.stdout)
+        self.assertIn("failing: import pkg/internal.py", r.stdout)
+        self.assertNotIn("added helper", r.stdout)
+
+    def test_a_helper_package_stays_a_helper_when_a_doc_uses_its_submodule_name(self):
+        self.write("testkit/__init__.py", "from .config import VALUE\n")
+        self.write("testkit/config.py", "VALUE = 1\n")
+        self.write("README.md", "hello\nSee the config section.\n")
+        self.write("calc.py", FIXED)
+        self.write("test_kit.py", "import unittest\nimport testkit\n\n\nclass T(unittest.TestCase):\n"
+                   "    def test_value(self):\n        self.assertEqual(testkit.VALUE, 1)\n")
+        r = self.run_base()
+        self.assertEqual(self.verdict(r), "build", r.stdout)
+        self.assertIn("added helper testkit/config.py", r.stdout)
+
+    def test_a_pytest_style_prefixed_import_error_is_matched(self):
+        self.write("newmod.py", "VALUE = 1\n")
+        self.write("test_newmod.py", USES_NEWMOD)
+        self.use_runner("r = subprocess.run([sys.executable, '-B', 'test_newmod.py'], capture_output=True, text=True)\n"
+                        "print(''.join('E   ' + l for l in r.stderr.splitlines(True)))\n")
+        r = self.run_base()
+        self.assertEqual(self.verdict(r), "build")
+        self.assertIn("added helper newmod.py", r.stdout)
+
+
 class GateLookup(GateLookupCases, unittest.TestCase):
     """NFX-214: a project copy never loads the repo's own .claude/hooks/review-gate.py."""
     SCRIPT = TESTFAIL
