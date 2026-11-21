@@ -110,7 +110,8 @@ class Outputs(Base):
         got = M.load(ROOT, self.state, SyncError, PATTERNS)
         self.assertEqual(list(got), ["atlassian"])
         self.assertEqual(got["atlassian"]["tools"], ["agy"])
-        self.assertEqual(got["atlassian"]["url"], "https://mcp.atlassian.com/v1/mcp")
+        self.assertEqual(got["atlassian"]["url"], "https://mcp.atlassian.com/v2/mcp")
+        self.assertEqual(M.v1_warnings(got), [])
 
     def test_state_file_wins(self):
         self.shared()
@@ -562,6 +563,22 @@ class Nfx52(Base):
         self.assertEqual(out, {"mcpServers": {"a": {}}})
         self.assertEqual(json.loads(M.servers_slice(json.dumps({"oauthAccount": 1}))), {})
         self.assertEqual(M.servers_slice("{nope"), "{nope")
+
+
+class V1Endpoint(Base):  # NFX-235: Atlassian removes /v1/mcp on 2027-03-01
+    def test_a_v1_atlassian_url_warns_with_the_name_and_the_v2_url(self):
+        servers = {"jira": {"tools": ["agy"], "url": "https://mcp.atlassian.com/v1/mcp"},
+                   "other": {"tools": ["agy"], "url": "https://mcp.example.com/v1/mcp"},
+                   "cmd": {"tools": ["claude"], "command": "npx", "args": [], "env": {}}}
+        lines = M.v1_warnings(servers)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("jira", lines[0])
+        self.assertIn("https://mcp.atlassian.com/v2/mcp", lines[0])
+        self.assertTrue(lines[0].startswith("warning: "))
+
+    def test_v2_and_other_hosts_do_not_warn(self):
+        self.assertEqual(M.v1_warnings({"a": {"tools": ["agy"], "url": "https://mcp.atlassian.com/v2/mcp"},
+                                        "b": {"tools": ["agy"], "url": "https://x.example.com/v1/mcp"}}), [])
 
 
 if __name__ == "__main__":

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Sync
+- Atlassian on the V2 endpoint (NFX-235). `harness/mcp.toml` points agy at `https://mcp.atlassian.com/v2/mcp`; Atlassian removes `/v1/mcp` on 2027-03-01. Sync warns on stderr for any server URL on `mcp.atlassian.com/v1/`, naming the server and the V2 URL; the exit code never changes and `--check --summary` leaves it out. `docs/sync.md` says a project's `.nousfx/mcp.toml` keeps Atlassian agy only too, since Claude has the claude.ai connector. agy may ask to sign in again.
+
 ### Review gate
 - One tree hash (NFX-207, absorbs NFX-206). `worktree_tree` lives only in `claude/hooks/review-gate.py`; `testfail.py` and Via's `via_run.py pass` load the gate and call it, as `prove.py` already did. testfail used to seed from HEAD, so a force-added ignored file was missing from its stamp tree; Via copied the real index, so a same-size edit right after a commit could record HEAD's tree. via_run takes the gate that will read the record: `~/.claude/hooks`, then (cloud) `<git-dir>/nousfx-gate/current`, then a NousFX checkout next to the plugin; with neither (Via without NousFX), `pass` records nothing, says so and exits 0, since only the gate reads the record. Via's eval allows `ls-files` and `update-index` (temporary index only). `scripts/test_worktree_tree_parity.py` runs all three callers on a same-size edit, a force-added ignored file and a subfolder call.
 

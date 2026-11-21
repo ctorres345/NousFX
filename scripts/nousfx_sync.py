@@ -639,7 +639,8 @@ def main(argv=None):
         if args.check and args.summary:  # one line for the session-start warning; notes and listings stay out
             print(json.dumps({**counts, "rules": rules} if rules else counts))
             return 1 if bad else 0
-        for line in rule_lines:
+        servers = nousfx_mcp.load(repo, state, SyncError, SECRET_PATTERNS, project)
+        for line in rule_lines + nousfx_mcp.v1_warnings(servers):
             print(line, file=sys.stderr)
         for note in pp.notes:
             print(note)

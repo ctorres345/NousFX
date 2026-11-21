@@ -22,6 +22,8 @@ TOOLS = ("claude", "agy")
 NAME = re.compile(r"[A-Za-z0-9_-]+")
 ENV_REF = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 KEYS = {"tools", "url", "command", "args", "env"}
+ATLASSIAN_V1 = re.compile(r"(?i)https?://mcp\.atlassian\.com/v1/")
+ATLASSIAN_V2 = "https://mcp.atlassian.com/v2/mcp"
 SECRET_QUERY_KEY = re.compile(r"(?i)token|key|secret|passw|auth|sig|credential")
 # A credential inside one argument ("Authorization: Bearer x", "X-Api-Key: x", "token=x"), checked after
 # any ${VAR} reference is removed, so "Authorization: Bearer ${TOKEN}" passes.
@@ -125,6 +127,13 @@ def load(repo, state, SyncError, patterns, project=None):
     got = _load_file(os.path.join(repo, "harness", "mcp.toml"), SyncError, patterns, required=True)
     got.update(_load_file(os.path.join(state, "mcp.toml"), SyncError, patterns))
     return got
+
+
+def v1_warnings(servers):
+    """One warning per server still on Atlassian's /v1/ endpoint (removed 2027-03-01). Never an error."""
+    return [f"warning: mcp: server {n} uses {e['url']}, which Atlassian removes on 2027-03-01. "
+            f"Use {ATLASSIAN_V2} in its mcp.toml." for n, e in sorted(servers.items())
+            if ATLASSIAN_V1.match(e.get("url", ""))]
 
 
 def _shape(e, tool):
