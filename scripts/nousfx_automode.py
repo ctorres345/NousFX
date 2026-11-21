@@ -1,8 +1,8 @@
 """nousfx_automode: the auto-mode allow entry sync writes to autoMode.allow in ~/.claude/settings.json (NFX-117,
 NFX-118).
 
-The branch rule in harness/AGENTS.md has the agent delete its merged `<prefix>/<KEY>` branch and its screenshot
-branch, locally and on origin; auto mode blocks both as Git Destructive unless an allow entry describes them.
+The branch rule in harness/AGENTS.md has the agent delete its merged `<prefix>/<KEY>` branch, and a legacy screenshot
+branch goes once its PRs are migrated (NFX-236), locally and on origin; auto mode blocks both as Git Destructive unless an allow entry describes them.
 The entry is prose the classifier reads, built by rule(prefix). It starts with MARKER, and the prefix comes
 only after it, so sync can find its own entry whatever prefix it was written with.
 
@@ -20,7 +20,7 @@ LEGACY = ("Bash(git branch -D cesar/*)", "Bash(git push origin --delete cesar/*)
 
 def rule(prefix):
     return (f"{MARKER} `git branch -D` or `git push origin --delete` on exactly one branch named `{prefix}/<KEY>` "
-            f"or `{prefix}/<KEY>-shots`, where <KEY> is a ticket key matching [A-Z][A-Z0-9]+-[0-9]+ (such as "
+            f"or a legacy `{prefix}/<KEY>-shots`, where <KEY> is a ticket key matching [A-Z][A-Z0-9]+-[0-9]+ (such as "
             "ABC-123). Allowed once a `gh pr view` or `gh pr list` result in this session shows that branch's PR as "
             "MERGED, or I named that branch or its key as merged in this session. `-D` is the only force form "
             "allowed, because squash merges look unmerged to git: no `--force`, `-f` or `:branch` refspec deletes. "

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### PR evidence
+- Monthly evidence releases replace screenshots branches (NFX-236). `scripts/pr_evidence.py publish` uploads to one prerelease per repo per month, `evidence-YYYY-MM` (UTC), made on first upload; two sessions racing to create it both succeed. `sweep` deletes a month's release and tag once the month ended more than 90 days ago, unless an open PR body links to it, and warns past 800 assets; `after-merge` step 2 runs it and no longer deletes `-shots` branches. A private repo needs no Via run record and no `public: true` (a plain folder in the project sends every media file under it; metadata stripping and the machine-trace check still apply); public and internal repos keep the old rules. `migrate PR --sha COMMIT [--write]` rebuilds a PR's evidence from the shots branch's last commit and repoints its body. The branch rule in `harness/AGENTS.md` points PR shots at `pr_evidence.py`, and the gate's `check-shots` and its pre-push case are gone, so a `-shots` push now needs a review like any branch. Checked first on Animus (private): a release-asset image renders for a signed-in viewer; an mp4 link downloads.
+
 ### Sync
 - Atlassian on the V2 endpoint (NFX-235). `harness/mcp.toml` points agy at `https://mcp.atlassian.com/v2/mcp`; Atlassian removes `/v1/mcp` on 2027-03-01. Sync warns on stderr for any server URL on `mcp.atlassian.com/v1/`, naming the server and the V2 URL; the exit code never changes and `--check --summary` leaves it out. `docs/sync.md` says a project's `.nousfx/mcp.toml` keeps Atlassian agy only too, since Claude has the claude.ai connector. agy may ask to sign in again.
 
