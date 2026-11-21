@@ -155,7 +155,7 @@ testfail.py attest ──► stamp MAC, tree, branch, base, check and config mat
 
 ### Comment check (NFX-196)
 
-`claude/skills/review-loop/scripts/comment_check.py <base>` lists the comments a diff adds (Python, shell, Kotlin, Dart, TypeScript, JavaScript; never Markdown), one `file:line kind text` line each, and a count per kind. It is warn-only: the gate does not read it, it exits 0 whenever it ran, and the reviewer turns a real flag into a `low` finding (`references/comments.md`; NFX-233 makes it `med`). The keep list is one structure, `KEEP` in the script, which NFX-228's cleanup modes import; `--keep-list` prints it. Only added lines count, and a comment the same diff removes elsewhere (a move, a rename, a re-indent) is not new.
+`claude/skills/review-loop/scripts/comment_check.py <base>` lists the comments a diff adds (Python, shell, Kotlin, Dart, TypeScript, JavaScript; never Markdown), one `file:line kind text` line each, and a count per kind. It is warn-only: the gate does not read it, it exits 0 whenever it ran, and the reviewer turns a real flag into a `low` finding (`references/comments.md`; NFX-233 makes it `med`). The keep list is one structure, `KEEP` in the script, which the `delete-comments` skill's two modes share (NFX-228: `--all PATH` inventories every comment, `verify BASE` exits 2 when more than comments changed); `--keep-list` prints it. Only added lines count, and a comment the same diff removes elsewhere (a move, a rename, a re-indent) is not new.
 
 ### Where prove.py and testfail.py load the gate (NFX-214)
 

@@ -3,6 +3,8 @@
 
   comment_check.py <base>       flags in `git diff <base>` (the working tree) plus untracked files
   comment_check.py --keep-list  print the keep list
+  comment_check.py --all PATH   inventory every comment under PATH (the delete-comments skill, NFX-228)
+  comment_check.py verify BASE  prove that only comments changed since BASE (the delete-comments skill)
 
 Prints one line per flag, `file:line kind text`, then `comment_check: N flags (kind n, ...)`.
 Kinds: comment; docstring (on a private function or class); suppression (a lint suppression with no reason on its
@@ -11,16 +13,35 @@ Languages: Python, shell, Kotlin, Dart, TypeScript and JavaScript, by extension 
 Markdown included, are never read. A comment on the keep list (KEEP) is not printed. Only added lines count, and a
 comment whose text the diff also removes was moved, not added.
 Exit 0 when the check ran, with flags or without; 2 when git fails.
-KEEP, comments_in() and classify() are the one keep list: NFX-228's delete-comments modes import them.
+
+--all prints `file:line form verdict text` per comment, where form is docstring, inline (shares its line with code),
+shell (a whole-line comment in a shell file) or line (any other whole-line or block comment), and verdict is
+keep:<rule> or flag:<kind>. The last line counts each form, the kept items, and the lines that deleting the
+non-kept docstring, line and shell items would shed. Files git ignores and generated files are skipped.
+
+verify compares the working tree (untracked files included) with BASE and prints `file: difference` per problem:
+a Python file whose AST, docstrings stripped, differs; in a file that reads __doc__, a changed module docstring or
+a changed docstring of a def or class it reads as `name.__doc__` (any of them can be --help text; verify reads
+scripts and never runs them); a symlink that changed or replaced a file; a changed file mode, in any language; a
+shell file whose text outside comments differs (a heredoc is text), or that newly fails `bash -n` (`zsh -n` for a
+zsh file); a changed shebang or encoding line; an added or deleted Python or shell file; an ADR-NNNN
+pointer in a changed file's comments with no docs/adr/NNNN-*.md (in NousFX, under claude/ and plugins/ it must read
+`NousFX ADR-NNNN`; outside NousFX such a pointer is not looked up). Other languages, and a Python file that did
+not parse at BASE, are left to the test suite, and the OK line counts them. Exit 0 when only
+comments changed, 2 on any difference or when git fails.
+KEEP, comments_in() and classify() are the one keep list for all three modes.
 """
 import argparse
 import ast
+import glob
 import io
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tokenize
-from collections import Counter
+from collections import Counter, namedtuple
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -413,19 +434,36 @@ def parts(c, lines):
             if c.line + k in lines]
 
 
+def read_text(full):
+    """A regular file's text as written (newlines kept), or None for a missing file, a folder or a link."""
+    if not os.path.isfile(full) or os.path.islink(full):
+        return None
+    with open(full, encoding="utf-8", errors="replace", newline="") as f:
+        return f.read()
+
+
+def source(root, path):
+    """The text of a file the check reads, or None: a skipped extension, an ignored path, a link, or a generated file.
+    `path` is relative to `root`, so the ignore rules never see the folders above it."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext and ext not in EXTENSIONS or tier.is_ignored(path):
+        return None
+    text = read_text(os.path.join(root, path))
+    return None if text is None or GENERATED.search("\n".join(text_lines(text)[:5])) else text
+
+
+def first_words(c, start=0):
+    rest = c.text.splitlines()[start:]
+    return next((" ".join(l.split()) for l in rest if words(l)), " ".join(c.text.split()))[:120]
+
+
 def flags(root, base):
     """[(path, line, kind, text)] for the comments the diff adds that the keep list does not keep."""
     added, removed = changed_lines(root, base)
     out = []
     for path in sorted(added):
-        full = os.path.join(root, path)
-        ext = os.path.splitext(path)[1].lower()
-        if ext and ext not in EXTENSIONS or tier.is_ignored(path) or not os.path.isfile(full) \
-                or os.path.islink(full):
-            continue
-        with open(full, encoding="utf-8", errors="replace", newline="") as f:
-            text = f.read()
-        if GENERATED.search("\n".join(text_lines(text)[:5])):
+        text = source(root, path)
+        if text is None:
             continue
         lines = added[path]
         for c in (part for whole in comments_in(path, text) for part in parts(whole, lines)):
@@ -434,10 +472,65 @@ def flags(root, base):
                 continue
             _, kind = classify(c)
             if kind:
-                rest = c.text.splitlines()[hit - c.line:]
-                first = next((" ".join(l.split()) for l in rest if words(l)), " ".join(c.text.split()))
-                out.append((path, hit, kind, first[:120]))
+                out.append((path, hit, kind, first_words(c, hit - c.line)))
     return out
+
+
+FORMS = ("docstring", "inline", "line", "shell")
+SHED_FORMS = tuple(f for f in FORMS if f != "inline")
+Item = namedtuple("Item", "path line form verdict text shed")
+
+
+def form(c, lang, lines):
+    """docstring, inline (shares a line with code), shell (a whole-line shell comment) or line."""
+    if c.style in ("docstring", "doc"):
+        return "docstring"
+    rows = c.text.split("\n")
+    if c.style == "annotation" or lines[c.line - 1].replace(rows[0], "", 1).strip() \
+            or lines[c.end - 1].replace(rows[-1], "", 1).strip():
+        return "inline"
+    return "shell" if lang == "shell" else "line"
+
+
+def files_under(path):
+    """(root, relative path) of each file under PATH: git's tracked and untracked-not-ignored files in a work tree,
+    else every file outside dot folders. One file is its own folder plus its name."""
+    if os.path.isfile(path):
+        return [(os.path.dirname(path) or ".", os.path.basename(path))]
+    try:
+        out = tier.git(["ls-files", "-co", "--exclude-standard", "-z"], path, raw=True).decode("utf-8", "replace")
+        return [(path, rel) for rel in sorted(filter(None, out.split("\0")))]
+    except RuntimeError:
+        found = []
+        for top, dirs, names in os.walk(path):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            found += [(path, os.path.relpath(os.path.join(top, n), path)) for n in sorted(names)]
+        return found
+
+
+def inventory(path):
+    """[Item] for every comment under PATH, each path as PATH joined with the file's path under it."""
+    out = []
+    for root, rel in files_under(path):
+        text = source(root, rel)
+        if text is None:
+            continue
+        shown = os.path.normpath(os.path.join(root, rel))
+        lang, lines = language(rel, text), text_lines(text)
+        for c in comments_in(rel, text):
+            kept, kind = classify(c)
+            f = form(c, lang, lines)
+            shed = c.end - c.line + 1 if not kept and kind != "suppression" and f in SHED_FORMS else 0
+            out.append(Item(shown, c.line, f, f"keep:{kept}" if kept else f"flag:{kind}", first_words(c), shed))
+    return out
+
+
+def inventory_summary(found):
+    counts = Counter(i.form for i in found)
+    forms = ", ".join(f"{f} {counts[f]}" for f in FORMS)
+    kept = sum(i.verdict.startswith("keep:") for i in found)
+    return (f"comment_check --all: {len(found)} items ({forms}), kept {kept}, "
+            f"shed {sum(i.shed for i in found)} lines")
 
 
 def summary(found):
@@ -450,14 +543,233 @@ def summary(found):
     return f"comment_check: {len(found)} flag{'s' if len(found) != 1 else ''} ({kinds})"
 
 
+ADR_POINTER = re.compile(r"(NousFX )?\bADR-(\d{4})\b")
+NOUSFX_ROOTS = ("claude/", "plugins/")
+DELETED_LINES_WARN = 800
+CANNOT_RUN = "cannot run"
+
+
+def changed_files(root, base):
+    """[(status, path, mode changed)] for the working tree against base: status A, D, M or T, untracked files as A.
+    No rename detection, so a rename is a delete and an add."""
+    out = git(root, "diff", "--raw", "-z", "--no-renames", "--no-ext-diff", base, "--").split("\0")
+    rows = []
+    for meta, path in zip(out[0::2], out[1::2]):
+        if meta.startswith(":"):
+            old_mode, new_mode, _, _, status = meta[1:].split()
+            rows.append((status[0], path, old_mode != new_mode))
+    return rows + [("A", f["path"], False) for f in tier.untracked_files(root)]
+
+
+def strip_docstrings(tree):
+    """ast.dump of the tree with every module, class and function docstring removed. An emptied class or function
+    body is `pass`; an emptied module stays empty."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body \
+                and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant) \
+                and isinstance(node.body[0].value.value, str):
+            node.body = node.body[1:] or ([] if isinstance(node, ast.Module) else [ast.Pass()])
+    return ast.dump(tree)
+
+
+def docstrings_read(tree):
+    """[(name, docstring)] for each def and class the file reads as `name.__doc__`: argparse can take --help text
+    from any of them. A read through anything else (self, cls, getattr) takes every def and class."""
+    defs = [n for n in ast.walk(tree) if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))]
+    names = {n.name for n in defs}
+    bases = {n.value.id if isinstance(n.value, ast.Name) else None
+             for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "__doc__"}
+    module_read = any(isinstance(n, ast.Name) and n.id == "__doc__" for n in ast.walk(tree))
+    every = any(b not in names for b in bases) or not bases and not module_read
+    return [(n.name, ast.get_docstring(n, clean=False)) for n in defs if every or n.name in bases]
+
+
+def python_differences(old, new):
+    """The differences, or None when BASE did not parse either: that file is left to the suite."""
+    try:
+        old_tree = ast.parse(old)
+    except (SyntaxError, ValueError):
+        return None
+    try:
+        new_tree = ast.parse(new)
+    except (SyntaxError, ValueError) as e:
+        return [f"does not parse ({e.__class__.__name__}: {e})"]
+    out = []
+    if "__doc__" in old or "__doc__" in new:
+        if ast.get_docstring(old_tree, clean=False) != ast.get_docstring(new_tree, clean=False):
+            out.append("module docstring changed in a file that reads __doc__")
+        changed = set(docstrings_read(old_tree)) ^ set(docstrings_read(new_tree))
+        out += [f"{name} docstring changed in a file that reads __doc__ (it can be --help text)"
+                for name in sorted({name for name, _ in changed})]
+    if strip_docstrings(old_tree) != strip_docstrings(new_tree):
+        out.append("code changed (the AST without docstrings differs from BASE)")
+    return out
+
+
+def directives(text):
+    """The shebang and encoding lines (lines 1 and 2): comments that change how a file runs."""
+    head = text_lines(text)[:2]
+    return [l for n, l in enumerate(head, 1)
+            if n == 1 and l.startswith("#!") or re.match(r"[ \t\f]*#.*" + CODING.pattern, l)]
+
+
+def shell_code(path, text):
+    """A shell file's lines with its comments cut out. A line that held only a comment drops, unless the line before
+    ends in a backslash (dropping it would join two commands). Every other line, blank ones too, must match: a
+    heredoc or string can hold them."""
+    lines = text_lines(text)
+    cut = set()
+    for c in comments_in(path, text):
+        for k, row in enumerate(c.text.split("\n")):
+            i = c.line + k - 1
+            line = lines[i].rstrip()
+            if line.endswith(row.rstrip()):
+                lines[i] = line[:len(line) - len(row.rstrip())].rstrip()
+                cut.add(i)
+    return [l for i, l in enumerate(lines)
+            if not (i in cut and not l and not (i and lines[i - 1].endswith("\\")))]
+
+
+def syntax_error(shell, text):
+    try:
+        r = subprocess.run([shell, "-n"], input=text, capture_output=True, text=True)
+    except OSError as e:
+        return f"{CANNOT_RUN} {shell}: {e}"
+    return None if r.returncode == 0 else (r.stderr.strip().splitlines() or [""])[0]
+
+
+def shell_differences(path, old, new):
+    """Code outside comments must match BASE, and the file must pass `-n` with the shell its shebang or extension
+    names, unless BASE already failed it."""
+    out = [] if shell_code(path, old) == shell_code(path, new) else \
+        ["code changed (the text without comments differs from BASE)"]
+    wants_zsh = path.endswith(".zsh") or "zsh" in text_lines(new)[0] and new.startswith("#!")
+    shell = "zsh" if wants_zsh and shutil.which("zsh") else "bash"
+    error = syntax_error(shell, new)
+    if error is not None and (error.startswith(CANNOT_RUN) or syntax_error(shell, old) is None):
+        out.append(f"fails {shell} -n: {error}")
+    return out
+
+
+def is_nousfx(root):
+    return os.path.isfile(os.path.join(root, "scripts", "nousfx_sync.py"))
+
+
+def adr_differences(root, path, text):
+    out = []
+    for c in comments_in(path, text):
+        for m in ADR_POINTER.finditer(c.text):
+            number = m.group(2)
+            if m.group(1) and not is_nousfx(root):
+                continue
+            if not glob.glob(os.path.join(glob.escape(root), "docs", "adr", f"{number}-*.md")):
+                out.append(f"ADR-{number} has no docs/adr/{number}-*.md")
+            elif path.startswith(NOUSFX_ROOTS) and not m.group(1) and is_nousfx(root):
+                out.append(f"ADR-{number} must read NousFX ADR-{number} under claude/ and plugins/")
+    return out
+
+
+def differences(root, base):
+    """([(path, difference)] for every change since base that is more than comments, the number of changed files
+    verify left to the suite: other languages and file types). An extensionless file takes its language from BASE,
+    since the edit may have deleted its shebang."""
+    out, unchecked = [], 0
+    for status, path, mode_changed in sorted(changed_files(root, base), key=lambda p: p[1]):
+        if status == "M" and mode_changed:
+            out.append((path, "mode changed (the executable bit)"))
+        ext = os.path.splitext(path)[1].lower()
+        if ext and ext not in EXTENSIONS:
+            unchecked += 1
+            continue
+        if status == "D":
+            if language(path, git(root, "show", f"{base}:{path}")) in ("python", "shell"):
+                out.append((path, "deleted"))
+            continue
+        full = os.path.join(root, path)
+        if status == "T" or os.path.islink(full):
+            out.append((path, "a symlink changed or replaced a file"))
+            continue
+        try:
+            new = read_text(full)
+        except OSError as e:
+            out.append((path, f"unreadable ({e.strerror})"))
+            continue
+        old = git(root, "show", f"{base}:{path}") if status != "A" else None
+        lang = (old is not None and not ext and language(path, old)) or \
+            (language(path, new) if new is not None else None)
+        if lang not in ("python", "shell"):
+            unchecked += 1
+        if lang is None:
+            continue
+        found = []
+        if status == "A" and lang in ("python", "shell"):
+            found.append("added")
+        elif lang in ("python", "shell"):
+            if directives(old) != directives(new):
+                found.append("a shebang or encoding line changed")
+            checks = python_differences(old, new) if lang == "python" else shell_differences(path, old, new)
+            if checks is None:
+                unchecked += 1
+            found += checks or []
+        found += adr_differences(root, path, new)
+        out += [(path, d) for d in found]
+    return out, unchecked
+
+
+def deleted_lines(root, base):
+    total = 0
+    for row in git(root, "diff", "--numstat", "--no-renames", base, "--").splitlines():
+        cols = row.split("\t", 2)
+        total += int(cols[1]) if len(cols) == 3 and cols[1].isdigit() else 0
+    return total
+
+
+def verify_main(argv):
+    parser = argparse.ArgumentParser(
+        prog="comment_check.py verify", description="Prove that only comments changed since BASE (see comment_check.py -h).")
+    parser.add_argument("base", metavar="BASE", help="the commit the cleanup started from")
+    args = parser.parse_args(argv)
+    if args.base.startswith("-"):
+        parser.error("give the BASE hash, not an option")
+    try:
+        root = tier.repo_top(os.getcwd())
+        found, unchecked = differences(root, args.base)
+        deleted = deleted_lines(root, args.base)
+    except RuntimeError as e:
+        print(f"comment_check: git failed: {e}", file=sys.stderr)
+        return 2
+    for path, difference in found:
+        print(f"{path}: {difference}")
+    if deleted > DELETED_LINES_WARN:
+        print(f"comment_check verify: warning: {deleted} lines deleted, "
+              f"over the ~{DELETED_LINES_WARN} a PR should take")
+    if found:
+        print(f"comment_check verify: {len(found)} difference{'s' if len(found) != 1 else ''}")
+        return 2
+    print(f"comment_check verify: OK, Python and shell files changed only comments ({deleted} lines deleted); "
+          f"{unchecked} other changed file{'s' if unchecked != 1 else ''} left to the suite")
+    return 0
+
+
 def main(argv):
+    if argv[1:2] == ["verify"]:
+        return verify_main(argv[2:])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("base", nargs="?", help="the merge base hash")
     parser.add_argument("--keep-list", action="store_true", help="print the keep list and exit")
+    parser.add_argument("--all", metavar="PATH", help="inventory every comment under PATH and exit")
     args = parser.parse_args(argv[1:])
     if args.keep_list:
         for rule in KEEP:
             print(f"- {rule.name}: {rule.text}" + ("" if rule.match else " (the reviewer judges)"))
+        return 0
+    if args.all is not None:
+        if not os.path.exists(args.all):
+            parser.error(f"--all: no such path: {args.all}")
+        found = inventory(args.all)
+        for i in found:
+            print(f"{i.path}:{i.line} {i.form} {i.verdict} {i.text}")
+        print(inventory_summary(found))
         return 0
     if not args.base or args.base.startswith("-"):
         parser.error("give the base hash (not an option), or --keep-list")
