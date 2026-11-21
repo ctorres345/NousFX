@@ -17,7 +17,8 @@ The log is append-only (idea from pstack's show-me-your-work skill, MIT, github.
 --supersedes ID, which `render` shows beside the old one. A correction keeps the old entry's --held reason
 unless it gives its own: only Cesar releases a held door. --evidence is a pointer, never prose: a commit SHA,
 #PR, file or file:line, or an https URL. --result says where it stands (tests green, reverted, open,
-INCONCLUSIVE). `render` warns on stderr when a SHA or path does not resolve; PRs and URLs are not checked.
+INCONCLUSIVE). A refused `decide` names every bad field and the key at once, with one example line.
+`render` warns on stderr when a SHA or path does not resolve; PRs and URLs are not checked.
 
 --prs FILE is a JSON list of {number, url, title, state}; without it `render` asks `gh pr list`.
 --proofs FILE is pasted into the report as is (for example the proof table).
@@ -50,6 +51,8 @@ REQUIRED = ("decision", "why", "rejected", "evidence", "result")
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 PR_RE = re.compile(r"^#[1-9][0-9]*$")
 URL_RE = re.compile(r"^https?://\S+$")
+EXAMPLE = ('session_report.py decide NFX-191 --decision "Use JSONL" --why "Appending is crash safe" '
+           '--rejected "One JSON file" --evidence scripts/report.py:40 --result "tests green"')
 
 
 def die(message, code=1):
@@ -118,19 +121,20 @@ def report_dir(args, repo, key=None, guess=None):
 
 
 def cmd_decide(args):
-    if not KEY_RE.match(args.key):
-        die("%r is not a ticket key like NFX-191." % args.key, 2)
     entry = {"key": args.key, "time": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
     for field in FIELDS:
         entry[field] = (getattr(args, field) or "").strip()
-    for field in REQUIRED:
-        if not entry[field]:
-            die("--%s is empty. A decision needs what, why, the alternative you rejected, evidence and a result."
-                % field, 2)
-    if len(entry["evidence"]) > 300 or re.search(r"[\s`]", entry["evidence"]):
-        die("--evidence is a pointer, not prose: a commit SHA, #PR, file:line or URL, with no spaces or backticks.", 2)
+    problems = [] if KEY_RE.match(args.key) else [
+        "%s is not a ticket key like NFX-191." % ("the key" if has_secret(args.key) else repr(args.key))]
+    problems += ["--%s is empty." % field for field in REQUIRED if not entry[field]]
+    if entry["evidence"] and (len(entry["evidence"]) > 300 or re.search(r"[\s`]", entry["evidence"])):
+        problems.append("--evidence is a pointer, not prose: a commit SHA, #PR, file:line or URL, "
+                        "with no spaces or backticks, at most 300 characters.")
     if any(has_secret(v) for v in entry.values()):
-        die("a value looks like a secret. Nothing was written.", 2)
+        problems.append("a value looks like a secret. Nothing was written.")
+    if problems:
+        die("\n".join(problems + ["A decision needs what, why, the alternative you rejected, evidence and a result.",
+                                  "Example: " + EXAMPLE]), 2)
     directory = report_dir(args, repo_paths(), args.key)
     existing, lines, _bad = read_log(directory)
     ids = {e["id"] for e in existing}
@@ -308,7 +312,12 @@ def cmd_render(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="command", required=True)
-    d = sub.add_parser("decide")
+    d = sub.add_parser("decide", formatter_class=argparse.RawDescriptionHelpFormatter, description=(
+        "Append one decision to the log.\n\n"
+        "Required: --decision, --why, --rejected, --evidence, --result (a blank value counts as missing).\n"
+        "--evidence is a pointer, never prose: a commit SHA, #PR, file or file:line, or a URL;\n"
+        "no spaces or backticks, at most 300 characters. A refusal names every bad field at once.\n\n"
+        "Example:\n  " + EXAMPLE))
     d.add_argument("key")
     d.add_argument("--supersedes", type=int)
     for field in FIELDS:
