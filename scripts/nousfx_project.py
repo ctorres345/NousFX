@@ -55,8 +55,9 @@ COPIES = {
 # scripts/test_review_loop_skill_refs.py fails when SKILL.md names a file that is not here.
 SKILL_FILES = (("references", "fable.md"), ("references", "gemini.md"), ("references", "security.md"),
                ("references", "testfail.md"), ("references", "record.md"), ("references", "comments.md"),
-               ("scripts", "tier.py"), ("scripts", "testfail.py"), ("scripts", "suite_slot.py"),
-               ("scripts", "prove.py"), ("scripts", "session_report.py"), ("scripts", "comment_check.py"))
+               ("references", "adr.md"), ("scripts", "tier.py"), ("scripts", "testfail.py"),
+               ("scripts", "suite_slot.py"), ("scripts", "prove.py"), ("scripts", "session_report.py"),
+               ("scripts", "comment_check.py"), ("scripts", "adr_step.py"))
 COPIES.update({os.path.join(".claude", "skills", "review-loop", *f): os.path.join("claude", "skills", "review-loop", *f)
                for f in SKILL_FILES})
 FOLLOW_SKILL = frozenset(os.path.join(".claude", "skills", "review-loop", *f) for f in SKILL_FILES)

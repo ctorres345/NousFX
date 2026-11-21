@@ -145,6 +145,26 @@ class ReviewLoopSplit(unittest.TestCase):
     def test_record_the_review_still_names_the_final_argon_call(self):
         self.assertIn("make the final Argon call", read("SKILL.md"))
 
+    def test_the_adr_step_is_named_with_its_steps_bar_supersede_rule_and_reviewer_evidence(self):
+        skill = read("SKILL.md")
+        self.assertIn("## ADR step\n", skill)
+        stub = skill.split("## ADR step\n")[1].split("\n")[0]
+        for word in ("references/adr.md", "after Step 0", "before Record the review", "as you make"):
+            self.assertIn(word, stub)
+        ref = read("references", "adr.md")
+        self.assertTrue(ref.startswith("Read this after Step 0"))
+        for word in ("scripts/adr_step.py", "again before Record the review", "as you make it", "--adr",
+                     "claude/skills/delete-comments/SKILL.md", "scripts/test_adr_format.py",
+                     "superseded by ADR-NNNN", "`high` finding", "accepted-ADR list", "as evidence",
+                     "Going on", "never restate"):
+            self.assertIn(word, ref)
+        self.assertTrue(os.path.isfile(os.path.join(LOOP_DIR, "scripts", "adr_step.py")))
+
+    def test_decisions_are_logged_as_made_not_only_in_the_final_report(self):
+        skill = read("SKILL.md")
+        before_final = skill.split("## Final report")[0]
+        self.assertIn("session_report.py decide", before_final)
+
 
 if __name__ == "__main__":
     unittest.main()

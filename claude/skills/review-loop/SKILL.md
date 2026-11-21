@@ -67,6 +67,9 @@ Read `references/testfail.md` after Step 0 and in Record the review.
 ## Comment check
 Read `references/comments.md` after Step 0: warn-only, and the reviewer judges each flag against the keep list.
 
+## ADR step
+Read `references/adr.md` after Step 0 and again before Record the review; log each decision as you make it with `scripts/session_report.py decide`.
+
 ## Dispositions
 When the loop ends, every finding has one outcome. `rejected` is not a disposition: it means the finding was not real (step 4 records the reason). Every real finding gets exactly one of:
 - `fix-now`: in scope and cheap (touches files already in the diff, no new design decision). A `high`, or a `med` at 60 or more, is always `fix-now`; if the loop ends with one still unfixed, report it as open and count it in `--findings`. A `med` under 60 is never `fix-now`: it is a `follow-up` or a `note`.
@@ -105,4 +108,4 @@ After recording, or deciding not to, print a table with one row per finding that
 | ID | severity | disposition | reason or ticket draft |
 |---|---|---|---|
 
-Log decisions with this skill's `scripts/session_report.py decide`; `render` reports. Then print: tier and reviewer, rounds used, findings fixed, findings rejected (with reason), findings skipped: low confidence, findings still open, Gemini checks (calls made, findings, real, wrong, or why skipped), Security skills (run, findings, real, wrong, or why skipped), Comment check (flags, real, kept), Fable offers (made, accepted or declined, outcome), and test status.
+Log decisions with this skill's `scripts/session_report.py decide`; `render` reports. Then print: tier and reviewer, rounds used, findings fixed, findings rejected (with reason), findings skipped: low confidence, findings still open, Gemini checks (calls made, findings, real, wrong, or why skipped), Security skills (run, findings, real, wrong, or why skipped), Comment check (flags, real, kept), ADR step (flagged, ADRs written, or why skipped), Fable offers (made, accepted or declined, outcome), and test status.
