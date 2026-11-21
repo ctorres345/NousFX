@@ -63,11 +63,16 @@ if args[:2] == ["release", "list"]:
 if args[:2] == ["release", "delete"]:
     if mode == "no-delete":
         fail("HTTP 502: Bad Gateway")
+    if mode == "gone":
+        shutil.rmtree(os.path.join(releases, args[2])); fail("release not found")
     shutil.rmtree(os.path.join(releases, args[2])); sys.exit(0)
 if args[:2] == ["pr", "list"]:
     if mode == "no-pr-list":
         fail("HTTP 502: Bad Gateway")
-    path = os.path.join(state, "open-prs.json")
+    which = args[args.index("--state") + 1]
+    if which == "merged":
+        assert args[args.index("--search") + 1].startswith("merged:>="), args
+    path = os.path.join(state, "%s-prs.json" % which)
     out(json.load(open(path)) if os.path.exists(path) else [])
 if args[:2] == ["pr", "view"]:
     out(json.load(open(os.path.join(state, "pr-%s.json" % args[2]))))
@@ -83,7 +88,7 @@ if args[:1] == ["api"]:
         tree = os.path.join(state, "tree", sha)
         items = [{"path": os.path.relpath(os.path.join(d, n), tree).replace(os.sep, "/"), "type": "blob"}
                  for d, _, ns in os.walk(tree) for n in ns]
-        out({"tree": items, "truncated": False})
+        out({"tree": items, "truncated": mode == "truncated"})
     rel = path.split("/contents/", 1)[1]
     import urllib.parse
     rel = urllib.parse.unquote(rel)
@@ -250,9 +255,9 @@ class PrEvidenceTest(unittest.TestCase):
         self.assertEqual(os.listdir(os.path.join(self.state, "releases")), [TAG])
         self.assertEqual(sorted(n.split("-")[1] for n in os.listdir(self.assets_dir())), ["87", "88"])
 
-    def folder(self, files):
+    def folder(self, files, where=("shots", "NFX-87")):
         """A plain shots folder (no Via run record) inside the project."""
-        root = os.path.join(self.project, "shots", "NFX-87")
+        root = os.path.join(self.project, *where)
         for rel, data in files.items():
             os.makedirs(os.path.dirname(os.path.join(root, rel)), exist_ok=True)
             with open(os.path.join(root, rel), "wb") as f:
@@ -266,11 +271,20 @@ class PrEvidenceTest(unittest.TestCase):
         self.env["FAKE_GH_VISIBILITY"] = "PRIVATE"
         r = self.publish(root)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(sorted(os.listdir(self.assets_dir())),
-                         ["NFX-87-nfx-87-after-home-dark.png", "NFX-87-nfx-87-before-home-dark.png",
-                          "NFX-87-nfx-87-flow.mp4"])
-        self.assertEqual(self.asset("NFX-87-nfx-87-after-home-dark.png"), png())
+        names = sorted(os.listdir(self.assets_dir()))
+        run = re.match(r"NFX-87-(nfx-87-\d{8}t\d{6}z)-", names[0]).group(1)  # a plain folder's name repeats: stamped
+        self.assertEqual(names, ["NFX-87-%s-%s" % (run, n) for n in ("after-home-dark.png", "before-home-dark.png",
+                                                                     "flow.mp4")])
+        self.assertEqual(self.asset(names[0]), png())
         self.assertIn("notes.txt", r.stderr)  # skipped, and said so
+
+    def test_publishing_the_same_plain_folder_twice_keeps_both_sets(self):
+        root = self.folder({"home.png": png()})
+        self.env["FAKE_GH_VISIBILITY"] = "PRIVATE"
+        self.assertEqual(self.publish(root).returncode, 0)
+        time.sleep(1.1)
+        self.assertEqual(self.publish(root).returncode, 0)
+        self.assertEqual(len(os.listdir(self.assets_dir())), 2)
 
     def test_a_private_repo_still_refuses_a_file_that_names_this_machine(self):
         root = self.folder({"a.png": png(chunk(b"IDAT", b"/Users/QA/x"))})
@@ -286,6 +300,18 @@ class PrEvidenceTest(unittest.TestCase):
         r = self.publish(run)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(os.listdir(self.assets_dir()), [self.p + "a.png"])
+
+    def test_a_via_run_folder_without_its_record_is_not_taken_as_a_plain_folder(self):
+        for where, record in (((".via", "runs", "20261121T100000Z"), None), ((".via",), None),
+                              (("shots", "spec"), "spec.json")):
+            with self.subTest(where=where):
+                root = self.folder({"dropped.png": png()}, where)
+                if record:
+                    open(os.path.join(root, record), "w").close()
+                self.env["FAKE_GH_VISIBILITY"] = "PRIVATE"
+                r = self.publish(root)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertEqual(self.uploads(), [])
 
     def test_a_public_or_internal_repo_refuses_a_plain_folder(self):
         root = self.folder({"a.png": png()})
@@ -304,8 +330,8 @@ class PrEvidenceTest(unittest.TestCase):
             for i in range(n):
                 open(os.path.join(self.assets_dir(tag), "NFX-1-r-%d.png" % i), "w").close()
 
-    def open_prs(self, *bodies):
-        with open(os.path.join(self.state, "open-prs.json"), "w") as f:
+    def open_prs(self, *bodies, state="open"):
+        with open(os.path.join(self.state, "%s-prs.json" % state), "w") as f:
             json.dump([{"number": 10 + i, "body": b} for i, b in enumerate(bodies)], f)
 
     def sweep(self, today, mode=""):
@@ -329,6 +355,26 @@ class PrEvidenceTest(unittest.TestCase):
         for call in self.calls("delete"):
             self.assertEqual(call[3:], ["--cleanup-tag", "--yes", "--repo", "owner/repo"])
 
+    def test_sweep_keeps_an_old_month_an_open_pr_links_by_its_release_page(self):
+        # migrate repoints a folder link to releases/tag/<tag>; evidence-2026-0 must not match evidence-2026-05.
+        self.releases("evidence-2026-05", "evidence-2026-04")
+        self.open_prs("[all](https://github.com/Owner/Repo/releases/tag/evidence-2026-05)",
+                      "https://github.com/owner/repo/releases/tag/evidence-2026-0")
+        r = self.sweep("2026-11-20")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.left(), ["evidence-2026-05"])
+        self.assertIn("kept evidence-2026-05: open PR #10 links to it", r.stdout)
+
+    def test_sweep_keeps_an_old_month_a_just_merged_pr_links_to(self):
+        # after-merge sweeps right after the merge, so the PR it just merged is no longer open.
+        self.releases("evidence-2026-05")
+        self.open_prs("![a](https://github.com/owner/repo/releases/download/evidence-2026-05/NFX-1-r-a.png)",
+                      state="merged")
+        r = self.sweep("2026-11-20")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.left(), ["evidence-2026-05"])
+        self.assertIn("kept evidence-2026-05: PR #10 (merged since 2026-08-22) links to it", r.stdout)
+
     def test_sweep_keeps_a_month_that_ended_exactly_90_days_ago(self):
         self.releases("evidence-2026-07")
         self.assertEqual(self.sweep("2026-10-29").returncode, 0)
@@ -348,6 +394,12 @@ class PrEvidenceTest(unittest.TestCase):
         r = self.sweep("2026-11-20", "no-pr-list")
         self.assertEqual(r.returncode, 3)
         self.assertEqual(self.left(), ["evidence-2026-01"])
+
+    def test_sweep_counts_a_release_another_sweep_deleted_first_as_gone(self):
+        self.releases("evidence-2026-01")
+        r = self.sweep("2026-11-20", "gone")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("deleted evidence-2026-01 (already gone)", r.stdout)
 
     def test_sweep_reports_a_failed_delete(self):
         self.releases("evidence-2026-01")
@@ -369,8 +421,8 @@ class PrEvidenceTest(unittest.TestCase):
         with open(os.path.join(self.state, "pr-%d.json" % number), "w") as f:
             json.dump({"body": body}, f)
 
-    def migrate(self, *extra, visibility="PRIVATE"):
-        env = dict(self.env, FAKE_GH_VISIBILITY=visibility)
+    def migrate(self, *extra, visibility="PRIVATE", mode=""):
+        env = dict(self.env, FAKE_GH_VISIBILITY=visibility, FAKE_GH_MODE=mode)
         return subprocess.run([sys.executable, "-I", "-B", SCRIPT, "migrate", "183", "--repo", "owner/repo", *extra],
                               capture_output=True, text=True, env=env)
 
@@ -422,13 +474,50 @@ class PrEvidenceTest(unittest.TestCase):
         self.legacy(self.PINNED, {"shots/ANI-201/before/phone.png": png()})
         self.pr(183, self.BODY)
         r = self.migrate("--sha", self.SHA, "--write")
-        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.returncode, 5, r.stderr)  # partly migrated
         self.assertIn("after/Phone-Dark.png", r.stderr)
         self.assertIn("/Users/", r.stderr)
         self.assertIn("after/ANI-201-flow.mp4", r.stderr)  # not in that commit
         body = self.edited()
         self.assertIn("blob/cesar/ANI-201-shots/shots/ANI-201/after/Phone-Dark.png?raw=true", body)
         self.assertIn("ANI-201-f42656c-before-phone.png", body)
+
+    def test_migrate_lists_the_files_a_repointed_folder_lost(self):
+        self.legacy(self.SHA, {"shots/ANI-201/after/ok.png": png(),
+                               "shots/ANI-201/after/bad.png": png(chunk(b"IDAT", b"/Users/QA/x"))})
+        self.pr(183, "folder: [all](https://github.com/owner/repo/tree/cesar/ANI-201-shots/shots/ANI-201)\n")
+        r = self.migrate("--sha", self.SHA, "--write")
+        self.assertEqual(r.returncode, 5, r.stderr)  # partly migrated
+        self.assertIn("releases/tag/%s" % TAG, self.edited())
+        self.assertIn("repointed without shots/ANI-201/after/bad.png", r.stderr)
+
+    def test_migrate_refuses_two_files_that_would_share_one_name(self):
+        self.legacy(self.SHA, {"shots/ANI-201/light/home.png": png(), "shots/ANI-201/light-home.png": png(chunk(b"tEXt", b"c\x00b"))})
+        self.pr(183, "a ![a](https://github.com/owner/repo/blob/%s/shots/ANI-201/light/home.png?raw=true)\n"
+                     "b ![b](https://github.com/owner/repo/blob/%s/shots/ANI-201/light-home.png?raw=true)\n"
+                % (self.SHA, self.SHA))
+        r = self.migrate("--write")
+        self.assertEqual(r.returncode, 5, r.stderr)  # partly migrated
+        self.assertIn("gets the same name as shots/ANI-201/light/home.png", r.stderr)
+        body = self.edited()
+        self.assertIn("blob/%s/shots/ANI-201/light-home.png?raw=true" % self.SHA, body)  # kept, not repointed
+
+    def test_migrate_reads_a_folder_link_with_a_percent_encoded_name(self):
+        self.legacy(self.SHA, {"shots/ANI-201/my shots/a.png": png()})
+        self.pr(183, "[all](https://github.com/owner/repo/tree/cesar/ANI-201-shots/shots/ANI-201/my%20shots)\n")
+        r = self.migrate("--sha", self.SHA, "--write")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(os.listdir(self.assets_dir()), ["ANI-201-483deb6-my-shots-a.png"])
+
+    def test_migrate_keeps_a_folder_link_when_github_truncates_the_file_list(self):
+        self.legacy(self.SHA, {"shots/ANI-201/after/ok.png": png()})
+        folder = "https://github.com/owner/repo/tree/cesar/ANI-201-shots/shots/ANI-201"
+        self.pr(183, "folder: [all](%s)\n" % folder)
+        r = self.migrate("--sha", self.SHA, "--write", mode="truncated")
+        self.assertEqual(r.returncode, 5)
+        self.assertIn("too long", r.stderr)
+        self.assertEqual(self.uploads(), [])
+        self.assertFalse(os.path.exists(os.path.join(self.state, "pr-183.edited")))
 
     def test_migrate_refuses_a_public_repo_and_branch_links_without_a_sha(self):
         self.pr(183, self.BODY)

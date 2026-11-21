@@ -204,7 +204,7 @@ To use the spec-to-ticket flow, also run `/setup-matt-pocock-skills` once. It re
 | `claude/templates/pull_request_template.md` | Standard PR body. Copy it to `.github/` per repo |
 | `install.sh`, `install.ps1` | Mac and Windows wrappers: dry run of `scripts/nousfx_sync.py`, ask, then the real run |
 | `scripts/nousfx_sync.py` | The sync: writes each tool's rules, agents, skills, hooks and MCP servers ([docs/sync.md](docs/sync.md)) |
-| `scripts/pr_evidence.py` | Uploads a Via run's kept shots, metadata stripped, to the repo's permanent `evidence` prerelease and prints the table for the PR body ([docs/pr-evidence.md](docs/pr-evidence.md)) |
+| `scripts/pr_evidence.py` | Uploads a Via run's kept shots, metadata stripped, to the repo's monthly `evidence-YYYY-MM` prerelease (old months swept after 90 days; private repos take a plain folder) and prints the table for the PR body ([docs/pr-evidence.md](docs/pr-evidence.md)) |
 | `CHANGELOG.md` | What each release changed |
 | `scripts/usage-report.py` | Read-only token and cost report |
 | `docs/agents/` | This repo's own tracker setup (Jira project `NFX`) |

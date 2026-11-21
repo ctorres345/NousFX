@@ -26,7 +26,8 @@ migrate (private repos) rebuilds the evidence a PR body links in a shots branch 
 commit, strips it, uploads it to this month's release and repoints the body. Without --write it only prints the plan.
 
 Exit 0 when every file uploaded, 1 invalid input (nothing uploaded), 3 `gh` is missing or its token cannot
-write releases on the repo, 4 an upload, delete or body edit failed partway.
+write releases on the repo, 4 an upload, delete or body edit failed partway, 5 migrate left some links
+unmigrated (listed on stderr; keep their screenshots branch).
 """
 import argparse
 import datetime
@@ -329,7 +330,8 @@ def leak(blob, words):
 def prepare(prefix, path, name_words, byte_words, stem=None):
     """The upload name and the stripped bytes of one kept shot. Raises Refused."""
     own_stem, ext = os.path.splitext(os.path.basename(path))
-    stem, ext = stem or own_stem, ext.lower()
+    stem = stem or own_stem
+    ext = ext.lower()
     if ext not in ALLOWED:
         raise Refused("is not one of %s" % ", ".join(sorted(ALLOWED)))
     if not SHOT_RE.match(stem):
@@ -349,7 +351,8 @@ def prepare(prefix, path, name_words, byte_words, stem=None):
 # --- gh ---
 
 def gh(args, repo):
-    return subprocess.run(["gh"] + args + ["--repo", repo], capture_output=True, text=True)
+    return subprocess.run(["gh"] + args + ["--repo", repo], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace")
 
 
 def auth_problem(r):
@@ -360,9 +363,13 @@ def gh_die(r, what, repo):
     die(SCOPE_HINT % repo if auth_problem(r) else "%s: %s" % (what, (r.stderr or "").strip()), 3)
 
 
+def utc_today():
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
 def month_tag(today=None):
-    """This month's release tag, evidence-YYYY-MM, by the UTC date."""
-    return (today or datetime.datetime.now(datetime.timezone.utc).date()).strftime("evidence-%Y-%m")
+    """The release tag of today's month, evidence-YYYY-MM, by the UTC date."""
+    return (today or utc_today()).strftime("evidence-%Y-%m")
 
 
 def ensure_release(repo, tag):
@@ -371,7 +378,7 @@ def ensure_release(repo, tag):
         return
     if "release not found" not in (r.stderr or "").lower():
         gh_die(r, "gh release view failed", repo)
-    title = "PR evidence %s" % tag[len("evidence-"):]
+    title = "PR evidence %s" % tag.removeprefix("evidence-")
     r = gh(["release", "create", tag, "--prerelease", "--title", title, "--notes", NOTES], repo)
     # Another run may have made it in the meantime; that is fine.
     if r.returncode != 0 and gh(["release", "view", tag, "--json", "tagName"], repo).returncode != 0:
@@ -400,23 +407,44 @@ def shot_name(rel):
     return re.sub(r"[^a-z0-9-]+", "-", os.path.splitext(rel)[0].lower()).strip("-")
 
 
+def in_via(project, folder):
+    """True when folder is <project>/.via or anything under it. samefile, so a case variant (.VIA) on a
+    case-insensitive disk counts too."""
+    via = os.path.join(project, ".via")
+    if not os.path.isdir(via):
+        return False
+    path = os.path.realpath(folder)
+    while True:
+        if os.path.exists(path) and os.path.samefile(path, via):
+            return True
+        parent = os.path.dirname(path)
+        if parent == path:
+            return False
+        path = parent
+
+
 def folder_shots(project, folder):
-    """Every media file under a plain folder in the project, as (path, shot name), and the files skipped.
+    """Every media file under a plain folder in the project, as {path, stem}, and the files skipped.
     For a private repo only: its files need no Via review, since only people who can see the repo see them."""
-    root = os.path.realpath(folder)
-    if not os.path.isdir(root) or os.path.commonpath([root, os.path.realpath(project)]) != os.path.realpath(project):
+    root, top = os.path.realpath(folder), os.path.realpath(project)
+    try:
+        inside = os.path.isdir(root) and os.path.commonpath([root, top]) == top
+    except ValueError:  # different drives on Windows
+        inside = False
+    if not inside:
         die("%s is not a folder inside the project %s." % (folder, project))
     shots, skipped = [], []
     for here, dirs, files in os.walk(root):
         dirs[:] = sorted(d for d in dirs if not d.startswith("."))
         for name in sorted(files):
-            path, rel = os.path.join(here, name), os.path.relpath(os.path.join(here, name), root)
+            path = os.path.join(here, name)
+            rel = os.path.relpath(path, root)
             if os.path.islink(path):
                 die("%s is a symlink; only real files are published." % rel)
             if name.startswith(".") or os.path.splitext(name)[1].lower() not in ALLOWED:
                 skipped.append(rel)
             else:
-                shots.append((path, shot_name(rel)))
+                shots.append({"path": path, "stem": shot_name(rel)})
     return shots, skipped
 
 
@@ -479,31 +507,35 @@ def cmd_publish(args):
         die("%s is not a folder." % project)
     repo = resolve_repo(args.repo, project)
     private = visibility(repo) == "PRIVATE"
-    if private and not os.path.exists(os.path.join(args.run_dir, "findings.json")):
+    via_run = (any(os.path.exists(os.path.join(args.run_dir, f)) for f in ("findings.json", "spec.json"))
+               or in_via(project, args.run_dir))
+    plain = private and not via_run
+    if plain:
         shots, skipped = folder_shots(project, args.run_dir)
         if skipped:
             sys.stderr.write("pr_evidence: skipped (not media): %s\n" % ", ".join(skipped))
-        if not shots:
-            die("%s holds no media file. Nothing was uploaded." % args.run_dir)
     else:
-        shots = [(s["path"], None, s) for s in kept_shots(project, args.run_dir)]
+        shots = kept_shots(project, args.run_dir)
     if not shots:
-        die("the run has no shot reviewed as kept. Nothing was uploaded.")
+        die("%s has no shot to publish (no media file, or none reviewed as kept). Nothing was uploaded."
+            % args.run_dir)
     words = identifiers()
     staged, names, problems = tempfile.mkdtemp(prefix="pr-evidence-"), [], []
     try:
         run_id = os.path.basename(os.path.realpath(args.run_dir)).lower()  # before and after runs reuse shot names
         if not SHOT_RE.match(run_id):
             die("the run folder's name %r is not lowercase letters, digits and hyphens." % run_id)
-        for path, stem, *record in shots:
+        if plain:  # a Via run folder's name is a timestamp; a plain folder's (shots/NFX-87) repeats across PRs
+            run_id += datetime.datetime.now(datetime.timezone.utc).strftime("-%Y%m%dt%H%M%Sz")
+        for shot in shots:
             try:
                 # A private repo's shots are seen only by people who can see the repo: no public approval needed.
-                why = None if private else unsafe(record[0])
+                why = None if private else unsafe(shot)
                 if why:
                     raise Refused(why)
-                name, data = prepare("%s-%s" % (args.key, run_id), path, *words, stem=stem)
+                name, data = prepare("%s-%s" % (args.key, run_id), shot["path"], *words, stem=shot.get("stem"))
             except Refused as e:
-                problems.append("%s %s" % (os.path.basename(path), e))
+                problems.append("%s %s" % (os.path.basename(shot["path"]), e))
                 continue
             if name in names:
                 problems.append("%s is named twice" % name)
@@ -551,38 +583,50 @@ def month_end(tag):
 def cmd_sweep(args):
     """Delete each evidence-YYYY-MM release whose month ended more than 90 days ago, unless an open PR links to it."""
     try:
-        today = (datetime.date.fromisoformat(args.today) if args.today
-                 else datetime.datetime.now(datetime.timezone.utc).date())
+        today = datetime.date.fromisoformat(args.today) if args.today else utc_today()
     except ValueError:
         die("--today %r is not a date like 2026-11-20." % args.today)
     repo = resolve_repo(args.repo, os.getcwd())
-    tags = [r["tagName"] for r in gh_json(["release", "list", "--limit", str(LIST_LIMIT), "--json", "tagName"],
-                                          repo, "gh release list failed")]
-    tags = sorted(t for t in tags if MONTH_TAG_RE.match(t))
-    if len(tags) >= LIST_LIMIT:
-        die("gh listed %d releases, so some may be missing; nothing was deleted." % len(tags), 3)
-    prs = gh_json(["pr", "list", "--state", "open", "--limit", str(LIST_LIMIT), "--json", "number,body"],
-                  repo, "could not list the open PRs, so nothing was deleted")
-    if len(prs) >= LIST_LIMIT:
-        die("gh listed %d open PRs, so some may be missing; nothing was deleted." % len(prs), 3)
+    listed = gh_json(["release", "list", "--limit", str(LIST_LIMIT), "--json", "tagName"],
+                     repo, "gh release list failed")
+    if len(listed) >= LIST_LIMIT:
+        die("gh listed %d releases, so some may be missing; nothing was deleted." % len(listed), 3)
+    tags = sorted(r["tagName"] for r in listed if MONTH_TAG_RE.match(r["tagName"]))
+    old = [t for t in tags if (today - month_end(t)).days > KEEP_DAYS]
     failed = []
-    for tag in tags:
-        prefix = "github.com/%s/releases/download/%s/" % (repo, tag)
-        linked = ["#%d" % p["number"] for p in prs if prefix.lower() in (p.get("body") or "").lower()]
-        old = (today - month_end(tag)).days > KEEP_DAYS
-        if old and linked:
-            print("kept %s: open PR %s links to it" % (tag, ", ".join(linked)))
-        elif old:
-            r = gh(["release", "delete", tag, "--cleanup-tag", "--yes"], repo)
-            if r.returncode == 0:
-                print("deleted %s" % tag)
-            else:
-                failed.append("%s: %s" % (tag, (r.stderr or "").strip()))
+    prs = []
+    if old:
+        # A PR merged within the last 90 days counts too: after-merge sweeps right after its own merge, and a PR
+        # that stayed open long past its evidence month would otherwise lose its images the moment it merges.
+        since = (today - datetime.timedelta(days=KEEP_DAYS)).isoformat()
+        for state, extra, what in (("open", [], "open PR %s"), ("merged", ["--search", "merged:>=" + since],
+                                                              "PR %s (merged since " + since + ")")):
+            found = gh_json(["pr", "list", "--state", state, *extra, "--limit", str(LIST_LIMIT),
+                             "--json", "number,body"], repo, "could not list the %s PRs, so nothing was deleted" % state)
+            if len(found) >= LIST_LIMIT:
+                die("gh listed %d %s PRs, so some may be missing; nothing was deleted." % (len(found), state), 3)
+            prs += [(what, p) for p in found]
+    for tag in old:
+        # A file link (releases/download/<tag>/...) or the folder link migrate writes (releases/tag/<tag>).
+        link = re.compile(r"github\.com/%s/releases/(?:download/%s/|tag/%s(?![\w.-]))"
+                          % (re.escape(repo), re.escape(tag), re.escape(tag)), re.I)
+        linked = [what % ("#%d" % p["number"]) for what, p in prs if link.search(p.get("body") or "")]
+        if linked:
+            print("kept %s: %s links to it" % (tag, ", ".join(linked)))
             continue
-        count = len(gh_json(["release", "view", tag, "--json", "assets"], repo, "gh release view failed")["assets"])
+        r = gh(["release", "delete", tag, "--cleanup-tag", "--yes"], repo)
+        if r.returncode == 0:
+            print("deleted %s" % tag)
+        elif "release not found" in (r.stderr or "").lower():  # another after-merge swept it first
+            print("deleted %s (already gone)" % tag)
+        else:
+            failed.append("%s: %s" % (tag, (r.stderr or "").strip()))
+    current = month_tag(today)
+    if current in tags:  # only this month's release still grows
+        count = len(gh_json(["release", "view", current, "--json", "assets"], repo, "gh release view failed")["assets"])
         if count > WARN_ASSETS:
             sys.stderr.write("pr_evidence: warning: %s has %d assets; GitHub stops at 1000. The next step is "
-                             "a release per half month (NFX-236).\n" % (tag, count))
+                             "a release per half month (NFX-236).\n" % (current, count))
     if failed:
         die("could not delete:\n  " + "\n  ".join(failed), 4)
     return 0
@@ -623,16 +667,13 @@ def cmd_migrate(args):
             "`gh api repos/%s/activity?activity_type=branch_deletion`, field `before`)." % (args.pr, repo))
     words, tag = identifiers(), month_tag()
     staged = tempfile.mkdtemp(prefix="pr-evidence-")
-    plan, names_of, staged_names, problems, trees, done = {}, {}, {}, [], {}, {}
+    result, staged_names, problems, trees, cache = {}, {}, [], {}, {}
 
     def rebuild(commit, path, key):
         """Fetch, strip and stage one file once; its asset name, or None after noting why not."""
-        if (commit, path) not in done:
-            done[commit, path] = fetch_one(commit, path, key)
-        return done[commit, path]
-
-    def fetch_one(commit, path, key):
-        name_part = path[len("shots/%s/" % key):]
+        if (commit, path) in cache:
+            return cache[commit, path]
+        cache[commit, path] = None
         ext = os.path.splitext(path)[1].lower()
         if ext not in ALLOWED:
             problems.append("%s: not one of %s" % (path, ", ".join(sorted(ALLOWED))))
@@ -645,20 +686,25 @@ def cmd_migrate(args):
         raw = os.path.join(staged, "raw" + ext)
         with open(raw, "wb") as f:
             f.write(r.stdout)
+        stem = shot_name(urllib.parse.unquote(path[len("shots/%s/" % key):]))
         try:
-            name, data = prepare("%s-%s" % (key, commit[:7]), raw, *words, stem=shot_name(urllib.parse.unquote(name_part)))
+            name, data = prepare("%s-%s" % (key, commit[:7]), raw, *words, stem=stem)
         except Refused as e:
             problems.append("%s %s" % (path, e))
+            return None
+        if staged_names.get(name, path) != path:  # light/home.png and light-home.png both become light-home
+            problems.append("%s: gets the same name as %s (%s)" % (path, staged_names[name], name))
             return None
         with open(os.path.join(staged, name), "wb") as f:
             f.write(data)
         staged_names[name] = path
+        cache[commit, path] = name
         return name
 
     try:
         for m in links:
             url = m.group(0)
-            if url in plan or url in names_of:
+            if url in result:
                 continue
             commit = m.group("ref") if SHA_RE.match(m.group("ref")) else args.sha
             key, path = m.group("key"), m.group("path").rstrip("/")
@@ -668,32 +714,41 @@ def cmd_migrate(args):
                     if r.returncode != 0:
                         problems.append("%s: cannot list %s" % (path, commit[:7]))
                         continue
-                    trees[commit] = [t["path"] for t in json.loads(r.stdout)["tree"] if t.get("type") == "blob"]
-                inside = [p for p in trees[commit] if p.startswith(path + "/")
+                    listing = json.loads(r.stdout)
+                    if listing.get("truncated"):  # GitHub cut the list short: a folder could lose files silently
+                        problems.append("%s: the file list of %s is too long for one call" % (path, commit[:7]))
+                        continue
+                    trees[commit] = [t["path"] for t in listing["tree"] if t.get("type") == "blob"]
+                folder = urllib.parse.unquote(path)  # the URL is percent-encoded; tree paths are not
+                inside = [p for p in trees[commit] if p.startswith(folder + "/")
                           and os.path.splitext(p)[1].lower() in ALLOWED]
-                names = [n for n in (rebuild(commit, p, key) for p in inside) if n]
+                rebuilt = {p: rebuild(commit, p, key) for p in inside}
+                names = [n for n in rebuilt.values() if n]
                 if names:
-                    plan[url], names_of[url] = "https://github.com/%s/releases/tag/%s" % (repo, tag), names
+                    result[url] = ("https://github.com/%s/releases/tag/%s" % (repo, tag), names)
+                    missing = sorted(p for p, n in rebuilt.items() if not n)
+                    if missing:
+                        problems.append("%s: repointed without %s" % (url, ", ".join(missing)))
                 else:
                     problems.append("%s: no media file could be rebuilt from that folder" % url)
             else:
                 name = rebuild(commit, path, key)
                 if name:
-                    plan[url], names_of[url] = asset_url(repo, tag, name), [name]
-        for url, new in plan.items():
+                    result[url] = (asset_url(repo, tag, name), [name])
+        for url, (new, _) in result.items():
             print("%s\n  -> %s" % (url, new))
         failed = []
-        if args.write and plan:
+        if args.write and result:
             ensure_release(repo, tag)
             for name in sorted(staged_names):
                 r = gh(["release", "upload", tag, os.path.join(staged, name), "--clobber"], repo)
                 if r.returncode != 0:
                     failed.append(name)
                     problems.append("%s: upload failed: %s" % (staged_names[name], (r.stderr or "").strip()))
-            plan = {u: n for u, n in plan.items() if not set(names_of[u]) & set(failed)}
+            plan = {u: new for u, (new, names) in result.items() if not set(names) & set(failed)}
             new_body = pattern.sub(lambda m: plan.get(m.group(0), m.group(0)), body)
             body_file = os.path.join(staged, "body.md")
-            with open(body_file, "w") as f:
+            with open(body_file, "w", encoding="utf-8") as f:
                 f.write(new_body)
             r = gh(["pr", "edit", str(args.pr), "--body-file", body_file], repo)
             if r.returncode != 0:
@@ -702,10 +757,13 @@ def cmd_migrate(args):
     finally:
         shutil.rmtree(staged, ignore_errors=True)
     if problems:
-        sys.stderr.write("pr_evidence: not migrated (the old link stays):\n  %s\n" % "\n  ".join(problems))
+        sys.stderr.write("pr_evidence: not migrated (a file link keeps its old URL; a folder link "
+                         "lists what it lost):\n  %s\n" % "\n  ".join(problems))
     if not args.write:
         print("Dry run: nothing uploaded and the body is unchanged. Add --write to do it.")
-    return 4 if failed else 0
+    if failed:
+        return 4
+    return 5 if problems else 0  # partly migrated: the old links still need their screenshots branch
 
 
 def main():
