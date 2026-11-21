@@ -113,7 +113,7 @@ class SkipLabelTime(unittest.TestCase):
             with self.subTest(runs=runs):
                 self.assertEqual(self.run_label("via-skip", [label_event("labeled", "via-skip")], runs).returncode, 1)
 
-    def test_a_rewind_then_a_fast_forward_back_to_the_head_fails(self):  # F1
+    def test_a_rewind_then_a_fast_forward_back_to_the_head_fails(self):
         """Y pushed (run), force-pushed back to X, X labeled, Y pushed again: the old Y run must not date the push."""
         events = [force_push_event("2026-11-15T10:00:30Z"), label_event("labeled", "via-skip", at="2026-11-15T10:05:00Z")]
         runs = [gate_run("2026-11-15T09:50:00Z"), gate_run("2026-11-15T10:10:00Z")]
@@ -124,7 +124,7 @@ class SkipLabelTime(unittest.TestCase):
         events = [force_push_event("0"), label_event("labeled", "via-skip")]
         self.assertEqual(self.run_label("via-skip", events).returncode, 1)
 
-    def test_a_force_push_event_does_not_stand_in_for_a_missing_run(self):  # S1
+    def test_a_force_push_event_does_not_stand_in_for_a_missing_run(self):
         events = [force_push_event("2026-11-15T09:00:00Z"), label_event("labeled", "via-skip")]
         r = self.run_label("via-skip", events, [])
         self.assertEqual(r.returncode, 1)
@@ -273,7 +273,7 @@ class ViaBase(Base):
 
 
 class Decision(ViaBase):
-    def test_ui_diff_blocks_until_a_pass_is_recorded(self):  # AC1
+    def test_ui_diff_blocks_until_a_pass_is_recorded(self):
         self.reviewed_ui_branch()
         r = self.create()
         self.assertEqual(r.returncode, BLOCKED, r.stdout)
@@ -282,7 +282,7 @@ class Decision(ViaBase):
         r = self.create()
         self.assertEqual(r.returncode, ALLOWED, r.stderr)
 
-    def test_docs_only_diff_needs_no_pass(self):  # AC1
+    def test_docs_only_diff_needs_no_pass(self):
         self.commit("README.md", "docs")
         self.assertEqual(subprocess.run([sys.executable, "-B", self.gate_path, "--mark", "--findings", "0"],
                                         cwd=self.repo, capture_output=True, text=True).returncode, 0)
@@ -294,7 +294,7 @@ class Decision(ViaBase):
         self.gate("--mark", "--findings", "0")
         self.assertEqual(self.create(via_line=False).returncode, BLOCKED)
 
-    def test_skip_passes_and_is_recorded(self):  # AC1
+    def test_skip_passes_and_is_recorded(self):
         self.reviewed_ui_branch()
         r = self.gate("--via-skip", "no emulator on this machine")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -323,7 +323,7 @@ class Decision(ViaBase):
             json.dump(rec, f)
         self.assertEqual(self.create().returncode, BLOCKED)
 
-    def test_edit_after_a_pass_on_uncommitted_code_blocks_again(self):  # AC2
+    def test_edit_after_a_pass_on_uncommitted_code_blocks_again(self):
         """The pass covers the working tree (an uncommitted edit); a further edit makes it stale."""
         self.reviewed_ui_branch()
         self.write(UI_FILE, "class HomeScreen { /* v2 */ }")
@@ -340,7 +340,7 @@ class Decision(ViaBase):
         self.write(UI_FILE, "class HomeScreen { /* not committed */ }")
         self.assertEqual(self.create().returncode, ALLOWED)
 
-    def test_new_commit_after_the_pass_blocks_again(self):  # AC2
+    def test_new_commit_after_the_pass_blocks_again(self):
         self.reviewed_ui_branch()
         self.record_pass()
         self.commit(UI_FILE, "class HomeScreen { /* edited */ }")
@@ -349,7 +349,7 @@ class Decision(ViaBase):
         self.assertEqual(r.returncode, BLOCKED)
         self.assertIn("changed after", r.stderr)
 
-    def test_untracked_file_added_after_a_pass_on_uncommitted_code_blocks(self):  # AC2
+    def test_untracked_file_added_after_a_pass_on_uncommitted_code_blocks(self):
         """The pass covers the working tree (an untracked UI file); a second untracked file makes it stale.
         With a clean HEAD the pass covers HEAD, which is all a PR carries (see docs/review-gate.md)."""
         self.reviewed_ui_branch()
@@ -390,7 +390,7 @@ class Decision(ViaBase):
         self.assertEqual(r.returncode, BLOCKED, r.stderr)
         self.assertIn("/via check", r.stderr)
 
-    def test_a_create_pr_mcp_tool_is_gated_the_same_way(self):  # AC4
+    def test_a_create_pr_mcp_tool_is_gated_the_same_way(self):
         self.reviewed_ui_branch()
         r = self.create(tool=MCP, command="x")
         self.assertEqual(r.returncode, BLOCKED, r.stderr)
@@ -615,7 +615,7 @@ class VerifyVia(ViaBase):
             args += ["--text-file", path]
         return self.gate(*args)
 
-    def test_a_skip_line_wins_over_a_pass_line(self):  # NFX-145
+    def test_a_skip_line_wins_over_a_pass_line(self):
         """A plain line next to a skip line must not hide the skip from the label check, in either order."""
         t = "a" * 40
         for text in ("Via-Check: " + t + " skipped: x\nVia-Check: " + t,
@@ -625,30 +625,30 @@ class VerifyVia(ViaBase):
                 self.assertEqual(r.returncode, 0, r.stderr)
                 self.assertEqual(r.stdout.splitlines()[0], "Via check skipped: x")
 
-    def test_a_skip_in_the_body_wins_over_a_pass_in_the_commit_message(self):  # NFX-145
+    def test_a_skip_in_the_body_wins_over_a_pass_in_the_commit_message(self):
         t = "a" * 40
         r = self.verify_two("Via-Check: " + t + " skipped: x", "Via-Check: " + t)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.splitlines()[0], "Via check skipped: x")
 
-    def test_a_skip_in_the_commit_message_wins_over_a_pass_in_the_body(self):  # NFX-145
+    def test_a_skip_in_the_commit_message_wins_over_a_pass_in_the_body(self):
         t = "a" * 40
         r = self.verify_two("Via-Check: " + t, "Via-Check: " + t + " skipped: x")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.splitlines()[0], "Via check skipped: x")
 
-    def test_a_plain_line_alone_still_verifies(self):  # NFX-145
+    def test_a_plain_line_alone_still_verifies(self):
         r = self.verify_two("Via-Check: " + "a" * 40, "nothing")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.splitlines()[0], "Via check verified.")
 
-    def test_a_stale_skip_for_an_old_tree_does_not_hide_a_pass(self):  # NFX-145
+    def test_a_stale_skip_for_an_old_tree_does_not_hide_a_pass(self):
         """After a push the old tree's skip line is stale: it must not ask for the label next to a pass for the new tree."""
         r = self.verify_two("Via-Check: " + "b" * 40 + " skipped: old\nVia-Check: " + "a" * 40, "nothing")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.splitlines()[0], "Via check verified.")
 
-    def test_the_docs_state_the_skip_rule_and_drop_the_old_limit(self):  # NFX-145
+    def test_the_docs_state_the_skip_rule_and_drop_the_old_limit(self):
         docs = os.path.join(os.path.dirname(os.path.dirname(HOOKS)), "docs", "review-gate.md")
         with open(docs, encoding="utf-8") as f:
             text = f.read()
@@ -687,7 +687,7 @@ class SecretPattern(unittest.TestCase):
 
 
 class Workflow(unittest.TestCase):
-    def test_ci_runs_verify_via_and_checks_the_via_skip_label(self):  # AC5
+    def test_ci_runs_verify_via_and_checks_the_via_skip_label(self):
         with open(WORKFLOW, encoding="utf-8") as f:
             text = f.read()
         self.assertIn("verify-via", text)
@@ -708,20 +708,20 @@ class Workflow(unittest.TestCase):
                "RUNS_JSON": json.dumps({"workflow_runs": [gate_run()]}), "EV_FAIL": "", "RUNS_FAIL": "", "IS_MEMBER": "0"}
         return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
 
-    def test_a_skip_with_a_label_older_than_the_push_fails_in_the_arm(self):  # NFX-147
+    def test_a_skip_with_a_label_older_than_the_push_fails_in_the_arm(self):
         r = self.run_arm("Via check skipped: no emulator", "true",
                          [label_event("labeled", "via-skip", at="2026-11-15T09:00:00Z")])
         self.assertEqual(r.returncode, 1)
         self.assertIn("applied before the last push", r.stdout)
 
-    def test_both_skip_arms_use_the_shared_label_check(self):  # NFX-147
+    def test_both_skip_arms_use_the_shared_label_check(self):
         with open(WORKFLOW, encoding="utf-8") as f:
             text = f.read()
         self.assertIn("skip_label_ok via-skip", text)
         self.assertIn("skip_label_ok review-skip", text)
         self.assertIn("actions: read", text)
 
-    def test_the_docs_say_a_push_needs_the_label_again(self):  # NFX-147
+    def test_the_docs_say_a_push_needs_the_label_again(self):
         docs = os.path.join(os.path.dirname(os.path.dirname(HOOKS)), "docs", "review-gate.md")
         with open(docs, encoding="utf-8") as f:
             text = f.read()
@@ -729,7 +729,7 @@ class Workflow(unittest.TestCase):
         self.assertNotIn("a label already on the PR is not removed by a push", text)
         self.assertIn("a push needs the label applied again", text)
 
-    def test_a_skip_without_the_label_fails_and_with_it_passes(self):  # AC5
+    def test_a_skip_without_the_label_fails_and_with_it_passes(self):
         for out in ("Via check skipped: no emulator", "Via check skipped: Via check verified."):
             with self.subTest(out):
                 self.assertEqual(self.run_arm(out, "false").returncode, 1)
