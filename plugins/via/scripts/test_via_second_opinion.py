@@ -122,8 +122,6 @@ class ViaSecondOpinionTest(unittest.TestCase):
         self.assertIsNone(self.logged("args.log"), "gemini-api must not run on a fallback")
         return out
 
-    # --- the Argon branch and its fallbacks ---
-
     def test_an_allowed_project_with_a_gemini_key_runs_argon_on_the_kept_shots(self):
         self.stub()
         r = self.run_cli([self.shot(0), self.shot(1)])
@@ -226,8 +224,6 @@ class ViaSecondOpinionTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIsNone(self.logged("args.log"))
 
-    # --- what may leave the run folder ---
-
     def test_a_shot_not_marked_kept_is_refused(self):
         self.stub()
         for review in ("dropped", None):
@@ -265,8 +261,6 @@ class ViaSecondOpinionTest(unittest.TestCase):
                 r = self.run_cli([self.shot(0), bad])
                 self.assertEqual(r.returncode, 1, r.stdout)
                 self.assertTrue(r.stderr.strip())
-
-    # --- the brief and the cost ---
 
     def test_a_brief_is_required_so_the_reviewer_knows_what_it_is_looking_at(self):
         self.assertEqual(self.run_cli(brief=None).returncode, 1)

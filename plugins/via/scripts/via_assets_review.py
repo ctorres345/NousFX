@@ -176,8 +176,6 @@ def entry(spec, name):
     return spec[name]
 
 
-# --- commands ---
-
 def cmd_add(project, args):
     raw_root = via_assets.raw_dir(project, args.key)
     src = os.path.abspath(args.file)
@@ -394,8 +392,6 @@ def cmd_shots(project, args):
             "gallery": via_assets.rel(project, os.path.join(folder(project, args.key), "gallery.html"))}
 
 
-# --- helpers ---
-
 def create_new(path, data, written):
     """Write data to path, which must not exist yet (O_EXCL: a file another process made there is never
     overwritten). The path goes into written the moment it exists, so a later failure removes it."""
@@ -478,8 +474,6 @@ def report(project, key, state, name=None):
         out["name"] = name
     return out
 
-
-# --- the page ---
 
 STYLE = """
 :root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--text:#1b1d21;--muted:#5b616b;--line:#dfe2e7;

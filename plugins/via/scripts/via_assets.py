@@ -161,8 +161,6 @@ def finding(rule, file, issue, fix):
             "issue": issue, "fix": fix, "source": SOURCE}
 
 
-# --- the spec file ---
-
 def asset_line(text, index):
     """1-based line of the index-th [[asset]] header, so an error can name it."""
     seen = 0
@@ -397,8 +395,6 @@ def vector_size(path):
         return None
 
 
-# --- SVG ---
-
 def editor_only(el):
     return el.tag.startswith(EDITOR_NS)
 
@@ -552,8 +548,6 @@ def svg_findings(root, file, palette, android):
     return out
 
 
-# --- SVG to VectorDrawable ---
-
 def num(value, default=0.0):
     if value is None:
         return default
@@ -673,8 +667,6 @@ def to_vector(root, size):
     return "\n".join(lines) + "\n"
 
 
-# --- audit ---
-
 def managed_files(spec, project, platforms):
     """Asset-like files in the folders Via writes to (targets() names the same folders), for the extra check."""
     found = []
@@ -760,8 +752,6 @@ def audit(spec, project):
                                "Add it to %s, delete it, or list it under ignore." % SPEC))
     return out
 
-
-# --- convert ---
 
 def write_atomic(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)

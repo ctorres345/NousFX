@@ -55,8 +55,6 @@ def expect(condition, detail):
         raise Failed(detail)
 
 
-# --- a throwaway project ---
-
 def clean_env(**extra):
     """The caller's environment without VIA_UNATTENDED or GIT_* (a git hook would point every git call at
     the outer repo), and with no global or system git config (commit signing or a global hooks folder would

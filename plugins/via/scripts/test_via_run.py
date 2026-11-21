@@ -126,8 +126,6 @@ class ViaRunTest(unittest.TestCase):
     def pass_record(self):
         return json.loads(read(os.path.join(self.repo, ".git", "via-check-ok")))
 
-    # --- stable IDs ---
-
     def test_same_finding_gets_the_same_id_across_runs_even_when_its_line_moves(self):
         _, _, first = self.merge(record([finding(line=10)]))
         _, _, second = self.merge(record([finding(line=42)]))
@@ -149,8 +147,6 @@ class ViaRunTest(unittest.TestCase):
         again = {f["location"]["line"]: f["id"] for f in second["findings"]}
         self.assertEqual(again[5], by_line[5])
         self.assertEqual(again[31], by_line[30])
-
-    # --- ledger merge ---
 
     def test_first_run_marks_findings_new_and_a_second_run_marks_them_open(self):
         _, summary, first = self.merge(record([finding()]))
@@ -221,8 +217,6 @@ class ViaRunTest(unittest.TestCase):
         self.assertIn("&lt;script&gt;", table)
         self.assertIn("\\|", table)
 
-    # --- run folder and .gitignore ---
-
     def test_init_ignores_the_run_folder_before_creating_it(self):
         out = self.ok("init")
         self.assertTrue(os.path.isdir(out["run_dir"]))
@@ -260,8 +254,6 @@ class ViaRunTest(unittest.TestCase):
         r = self.run_cli("init")
         self.assertEqual(r.returncode, 1)
         self.assertFalse(os.path.exists(os.path.join(self.repo, ".via")))
-
-    # --- pass record ---
 
     def test_pass_writes_a_record_for_the_current_code_state(self):
         run_dir, _, _ = self.merge(record([finding(severity="low")]))
@@ -437,8 +429,6 @@ class ViaRunTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "via-check-ok")))
 
-    # --- second-opinion verdicts ---
-
     def test_a_second_opinion_finding_without_a_verdict_is_refused(self):
         for source in ("second-opinion:claude", "second-opinion:argon"):
             with self.subTest(source=source):
@@ -578,8 +568,6 @@ class ViaRunTest(unittest.TestCase):
         r = self.run_cli("merge", os.path.join(self.repo, ".via", "runs", "missing"))
         self.assertEqual(r.returncode, 1)
         self.assertTrue(r.stderr.startswith("Stopped:"))
-
-    # --- fixes from review ---
 
     def test_a_ledger_block_with_content_but_no_json_fence_is_refused_not_wiped(self):
         text = "# D\n<!-- via:ledger:start -->\nhand edited, no fence\n<!-- via:ledger:end -->\n"

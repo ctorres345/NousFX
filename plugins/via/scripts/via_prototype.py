@@ -202,8 +202,6 @@ def clean_fragment(source, where):
     return "".join(parser.out), parser.vars, parser.warnings
 
 
-# --- prototype.json ---
-
 def text(value, limit):
     return via_run.is_text(value) and len(value) <= limit
 
@@ -237,8 +235,6 @@ def check_prototype_json(data):
                 raise Problem("%s.states may only hold %s, each as short text." % (vw, ", ".join(STATES)))
     return entries
 
-
-# --- screenshots ---
 
 def image_kind(head):
     if head.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -287,8 +283,6 @@ def before_images(rec, run_dir, finding, budget):
     return {"light": uris.get("light", fallback), "dark": uris.get("dark", fallback), "themes": sorted(uris)}
 
 
-# --- tokens ---
-
 def balanced(value):
     """True when every ( has its ), so a value cannot swallow the CSS rules after it."""
     depth = 0
@@ -325,8 +319,6 @@ def scope_css(tokens, theme):
                 rules.append("%s:%s" % (name, value))
     return ";".join(rules)
 
-
-# --- page ---
 
 CSS = """
 *{box-sizing:border-box}
@@ -497,8 +489,6 @@ def render(run_name, blocks, tokens):
         '<ul class="vp-nav" aria-labelledby="vp-nav-label">%s</ul><main>%s</main></div></body></html>\n'
         % (esc(run_name), css, esc(run_name), len(blocks), "" if len(blocks) == 1 else "s", nav, "".join(sections)))
 
-
-# --- commands ---
 
 def read_json(path, label, missing):
     """A small JSON file with no secret-shaped value. `missing` is the message when the file is absent or a symlink."""

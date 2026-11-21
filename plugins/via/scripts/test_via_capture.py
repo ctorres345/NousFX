@@ -262,8 +262,6 @@ class ViaCaptureTest(unittest.TestCase):
                 return args
         self.fail("the browser was never asked for %s" % name)
 
-    # --- what gets captured ---
-
     def test_a_screen_gets_four_shots_light_and_dark_at_phone_and_desktop_width(self):
         self.ok("home=index.html")
         self.assertEqual(self.pngs(), ["home-dark-desktop.png", "home-dark-phone.png",
@@ -338,8 +336,6 @@ class ViaCaptureTest(unittest.TestCase):
     def test_the_run_folder_holds_only_the_shots_afterwards(self):
         self.ok("home=index.html")
         self.assertEqual(len(os.listdir(self.run_dir)), 4)
-
-    # --- what it prints ---
 
     def test_it_prints_one_run_record_entry_per_shot_with_a_path_inside_the_run_folder(self):
         out = self.ok("home=index.html")

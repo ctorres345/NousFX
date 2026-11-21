@@ -163,8 +163,6 @@ class AssetsTest(unittest.TestCase):
                 out[os.path.relpath(path, self.project)] = digest(path)
         return out
 
-    # --- the ticket's guarantees about this suite and the docs ---
-
     def test_convert_tests_skip_loudly_without_pillow(self):
         env = dict(os.environ, VIA_TEST_PILLOW=os.path.join(self.root, "no-python"))
         r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__),
@@ -184,8 +182,6 @@ class AssetsTest(unittest.TestCase):
     def test_check_mode_doc_runs_the_audit(self):
         with open(CHECK_MD, encoding="utf-8") as f:
             self.assertIn('scripts/via_assets.py" audit', f.read())
-
-    # --- the spec file ---
 
     def test_missing_spec_stops_with_a_clear_message(self):
         r = self.run_cli("audit")
@@ -217,8 +213,6 @@ class AssetsTest(unittest.TestCase):
         r = self.run_cli("audit")
         self.assertEqual(r.returncode, 1)
         self.assertIn("inside the project", r.stderr)
-
-    # --- audit ---
 
     def test_audit_flags_missing_targets_and_sources(self):
         self.spec(asset("home_logo_main", "svg", "design/src/home_logo_main.svg", ["android", "web"], "24x24"),
@@ -376,8 +370,6 @@ class AssetsTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         with open(os.path.join(self.project, "docs", "design", "via.md")) as f:
             self.assertIn("VIA-assets-", f.read())
-
-    # --- convert ---
 
     @unittest.skipUnless(PILLOW, NO_PILLOW)
     def test_convert_writes_every_platform_size_and_leaves_sources(self):
