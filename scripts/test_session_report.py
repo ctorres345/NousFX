@@ -447,6 +447,42 @@ class SessionReport(unittest.TestCase):
         self.assertIn("(unresolved)", text)
         self.assertEqual(text.count("(unresolved)"), 2)
 
+    def log_entries(self):
+        log = os.path.join(self.root, os.listdir(self.root)[0], "reports", "2026-11-19-t", "decisions.jsonl")
+        with open(log, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_adr_flag_stores_the_title(self):
+        r = self.decide("--adr", "  Decisions live outside the repo  ")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.decide()
+        entries = self.log_entries()
+        self.assertEqual(entries[0]["adr"], "Decisions live outside the repo")
+        self.assertEqual(entries[1].get("adr", ""), "")
+
+    def test_a_blank_adr_title_is_refused(self):
+        self.refused(self.decide("--adr", "   "))
+        self.assertFalse(os.path.exists(self.root))
+
+    def test_held_with_adr_is_refused_once_with_the_other_problems(self):
+        r = self.decide("--held", "Cannot be undone", "--adr", "Publish reports", why=" ")
+        self.refused(r)
+        self.assertIn("--why is empty", r.stderr)
+        self.assertIn("--held with --adr", r.stderr)
+
+    def test_held_with_adr_is_refused(self):
+        r = self.decide("--held", "Cannot be undone", "--adr", "Publish reports")
+        self.refused(r)
+        self.assertIn("--adr", r.stderr)
+        self.assertFalse(os.path.exists(self.root))
+
+    def test_adr_on_a_correction_of_a_held_entry_is_refused(self):
+        self.decide("--held", "Cannot be undone")
+        r = self.decide("--supersedes", "1", "--adr", "Publish reports")
+        self.refused(r)
+        self.assertIn("held", r.stderr)
+        self.assertEqual(len(self.log_entries()), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
