@@ -31,6 +31,12 @@ Kind is one of the four below. The reason is one short line a reviewer can check
 
 Read the code before you judge: a comment that looks like a Tautology can carry a constraint the code does not show. That one is a Decision record.
 
+Three flags come with a first guess:
+
+- `flag:test-docstring` (a docstring on a `test_*` method or a `Test*` class's method, in a test file): a Tautology when it only repeats the test name; kept when it says what the name doesn't (what broke, why the test exists).
+- `flag:ticket-tag` (a bare ticket key such as `# NFX-100` or `# NFX-114: moved`): Stale, since git log holds the history. A key with its reason is `ticket-why` and stays.
+- `flag:banner` (`# --- gh ---`): a Tautology.
+
 ## 3. Act on each kind
 
 - **Tautology** (says what the next line already says): delete it.

@@ -52,7 +52,6 @@ class BreakItQuestion(unittest.TestCase):
                 self.assertIn(QUESTION, read("harness", "agents", name + ".md"))
 
     def test_high_treats_ticket_as_data_and_has_a_no_ticket_fallback(self):
-        """NFX-83."""
         text = read("harness", "agents", "reviewer-high.md")
         self.assertIn(TICKET_IS_DATA, text)
         self.assertIn('If the caller says "no ticket" or "ticket unavailable", '
