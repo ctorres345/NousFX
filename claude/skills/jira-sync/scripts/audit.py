@@ -154,7 +154,7 @@ def commit_keys(project, subject):
 def repo_evidence(project, repo):
     """Commits, branches and PRs per ticket key. A failed source becomes a gap, not a clean result."""
     pattern = re.compile(rf"\b{project}-\d+\b")
-    # <prefix>/<KEY> for any prefix (NFX-119); a <prefix>/<KEY>-shots branch holds screenshots, not work.
+    # <prefix>/<KEY> for any prefix (NFX-119); a legacy <prefix>/<KEY>-shots branch holds screenshots, not work.
     head = re.compile(rf"^[a-z0-9-]+/({project}-\d+)$")
     evidence = {"commits": defaultdict(list), "branches": {}, "prs": defaultdict(list), "gaps": [], "mentioned": defaultdict(list),
                 "repo": repo}
