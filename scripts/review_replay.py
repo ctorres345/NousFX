@@ -91,8 +91,6 @@ def run_cost(r):
     return usage_cost((r.get("models_used") or [r.get("model")])[0], r.get("usage", {}))
 
 
-# ---- findings -------------------------------------------------------------------------------
-
 def parse_line(line):
     """`ID | severity | confidence | file:line | problem | fix | quote`; confidence may be missing.
     The quote is last, so it may hold pipes. Returns None for any other line."""
@@ -183,8 +181,6 @@ def decide(t):
     return (not reasons), ("all four conditions hold" if not reasons else "; ".join(reasons))
 
 
-# ---- cases ----------------------------------------------------------------------------------
-
 def case_dirs(override):
     if override:
         return [override]
@@ -225,8 +221,6 @@ def cmd_list(dirs):
                                            "ui" if c.get("ui") else "-", " ".join(notes)))
     return 0
 
-
-# ---- capture --------------------------------------------------------------------------------
 
 def _read_jsonl(path):
     with open(path) as f:
@@ -419,8 +413,6 @@ def capture_case(session, agent_id, repo, case_id, out_dir, ui, source="nousfx",
     return case
 
 
-# ---- running --------------------------------------------------------------------------------
-
 def brief(case):
     ticket = case.get("ticket", "")
     longest = max([len(m) for m in re.findall(r"`+", ticket)] + [3])
@@ -505,8 +497,6 @@ def cmd_run(args, dirs):
                                                                                     ", ".join(failed)), file=sys.stderr)
     return 1 if failed else 0
 
-
-# ---- report ---------------------------------------------------------------------------------
 
 def load_run(runs_dir, label):
     d = os.path.join(runs_dir, label)

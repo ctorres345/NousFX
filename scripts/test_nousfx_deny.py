@@ -189,7 +189,7 @@ class Sync(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         cfg = json.loads(read(self.settings))
         self.assertEqual(cfg["permissions"]["deny"], ["Read(./private/**)"] + RULES)
-        self.assertEqual(cfg["permissions"]["allow"], ["Bash(git status)"] + list(nousfx_deny.ALLOW_RULES))  # NFX-155
+        self.assertEqual(cfg["permissions"]["allow"], ["Bash(git status)"] + list(nousfx_deny.ALLOW_RULES))
         for key in ("model", "env"):
             self.assertEqual(cfg[key], before[key])
         self.assertEqual(cfg["hooks"]["Stop"], before["hooks"]["Stop"])

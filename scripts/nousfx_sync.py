@@ -617,7 +617,7 @@ def main(argv=None):
             failed = nousfx_outside.ensure(state, outside, lambda m: print(f"nousfx_sync: {m}"))
             for n, why in sorted(failed.items()):
                 print(f"nousfx_sync: outside skill {n}: {why}", file=sys.stderr)
-        if project:  # project mode does not touch skills
+        if project:
             sk = nousfx_skills.Plan()
         else:
             extra = [os.path.join(nousfx_agy.plugin_dir(home), "skills")] if "agy" in tools else []

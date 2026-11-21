@@ -55,8 +55,6 @@ def die(message, code=1):
     sys.exit(code)
 
 
-# --- metadata ---
-
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 # An allow-list: any other chunk (text, EXIF, time, a vendor's private chunk) is dropped.
 PNG_KEEP = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"sBIT", b"bKGD",
@@ -335,8 +333,6 @@ def prepare(prefix, path, name_words, byte_words):
         raise Refused("still holds %s after its metadata was removed" % why)
     return name, data
 
-
-# --- gh ---
 
 def gh(args, repo):
     return subprocess.run(["gh"] + args + ["--repo", repo], capture_output=True, text=True)

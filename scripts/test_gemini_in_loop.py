@@ -21,7 +21,7 @@ def section(text, title):
     return m.group(1) if m else ""
 
 
-GEMINI = section(read("claude", "skills", "review-loop", "references", "gemini.md"), "Gemini checks")  # NFX-114: moved
+GEMINI = section(read("claude", "skills", "review-loop", "references", "gemini.md"), "Gemini checks")
 
 
 class GeminiInLoop(unittest.TestCase):

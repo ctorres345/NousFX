@@ -76,7 +76,7 @@ class Sync(Base):
         cfg = json.loads(read(self.settings))
         self.assertEqual(cfg["autoMode"]["allow"], ["$defaults", "Bash(adb:*)"] + RULES)
         self.assertEqual(cfg["autoMode"]["environment"], ENV)
-        self.assertEqual(cfg["permissions"]["allow"], ["Bash(git status)"] + list(nousfx_deny.ALLOW_RULES))  # NFX-155
+        self.assertEqual(cfg["permissions"]["allow"], ["Bash(git status)"] + list(nousfx_deny.ALLOW_RULES))
 
     def test_fresh_settings_and_second_run(self):
         r = self.sync()
