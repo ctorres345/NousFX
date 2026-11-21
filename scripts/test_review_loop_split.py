@@ -127,6 +127,21 @@ class ReviewLoopSplit(unittest.TestCase):
             self.assertIn(word, no_row[0])
         self.assertTrue(os.path.isfile(os.path.join(LOOP_DIR, "scripts", "testfail.py")))
 
+    def test_the_comment_check_is_named_warn_only_with_the_keep_list_judgment(self):
+        # NFX-196: the step, its warn-only status and how the reviewer judges each flag.
+        skill = read("SKILL.md")
+        self.assertIn("## Comment check\n", skill)
+        stub = skill.split("## Comment check\n")[1].split("\n")[0]
+        for word in ("references/comments.md", "after Step 0", "warn-only", "keep list"):
+            self.assertIn(word, stub)
+        ref = read("references", "comments.md")
+        self.assertTrue(ref.startswith("Read this after Step 0"))
+        for word in ("scripts/comment_check.py <base hash>", "## Warn-only", "never blocks", "`low` finding",
+                     "If no keep-list item clearly applies, it is a finding", "rename, extract or type change",
+                     "test or check", "names the external cause", "never copy it here"):
+            self.assertIn(word, ref)
+        self.assertTrue(os.path.isfile(os.path.join(LOOP_DIR, "scripts", "comment_check.py")))
+
     def test_record_the_review_still_names_the_final_argon_call(self):
         self.assertIn("make the final Argon call", read("SKILL.md"))
 
