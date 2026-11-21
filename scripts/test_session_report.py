@@ -5,6 +5,7 @@ Run: python3 -B scripts/test_session_report.py
 """
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -175,6 +176,76 @@ class SessionReport(unittest.TestCase):
         self.assertEqual(self.decide(evidence="the tests all passed").returncode, 2)  # prose
         for ok in ("abc1234", "#12", "scripts/x.py:40", "https://github.com/cursor/plugins"):
             self.assertEqual(self.decide(evidence=ok).returncode, 0, ok)
+
+    # --- one refusal names every bad field, NFX-219 ---
+
+    def test_decide_names_every_missing_field(self):
+        r = self.run_cli("decide", "NFX-219", "--decision", "d", "--why", "w", "--date", "2026-11-19", "--name", "t")
+        self.refused(r)
+        self.assertEqual(r.stderr.count("Stopped:"), 1, r.stderr)
+        for flag in ("--rejected", "--evidence", "--result"):
+            self.assertIn(flag + " is empty", r.stderr)
+        for flag in ("--decision", "--why"):
+            self.assertNotIn(flag + " is empty", r.stderr)
+        self.assertFalse(os.path.exists(self.root))
+
+    def test_decide_names_every_bad_field(self):
+        r = self.run_cli("decide", "nfx-219", "--decision", "d", "--why", "w", "--rejected", "r",
+                         "--evidence", "the tests all passed", "--date", "2026-11-19", "--name", "t")
+        self.refused(r)
+        self.assertEqual(r.stderr.count("Stopped:"), 1, r.stderr)
+        self.assertIn("--result is empty", r.stderr)
+        self.assertIn("--evidence is a pointer, not prose", r.stderr)
+        self.assertIn("'nfx-219' is not a ticket key", r.stderr)
+        self.assertFalse(os.path.exists(self.root))
+
+    def test_each_required_field_alone_is_still_refused(self):
+        full = {"--decision": "d", "--why": "w", "--rejected": "r", "--evidence": "abc1234", "--result": "open"}
+        for flag in full:
+            for value in (None, "   "):
+                argv = ["decide", "NFX-219", "--date", "2026-11-19", "--name", "t"]
+                for f, v in full.items():
+                    if f != flag:
+                        argv += [f, v]
+                    elif value is not None:
+                        argv += [f, value]
+                r = self.run_cli(*argv)
+                self.refused(r, "%s %r" % (flag, value))
+                self.assertIn(flag + " is empty", r.stderr)
+                self.assertEqual(r.stderr.count(" is empty"), 1, r.stderr)
+        self.assertFalse(os.path.exists(self.root))
+
+    def test_a_refusal_never_echoes_a_secret_value(self):
+        r = self.decide(evidence="prose and " + GH_SECRET, result="")
+        self.refused(r)
+        self.assertNotIn(GH_SECRET, r.stderr)
+        self.assertIn("--result is empty", r.stderr)
+        self.assertIn("a value looks like a secret", r.stderr)
+        r = self.decide(key=GH_SECRET)
+        self.refused(r)
+        self.assertNotIn(GH_SECRET, r.stderr)
+        self.assertIn("not a ticket key", r.stderr)
+        self.assertFalse(os.path.exists(self.root))
+
+    def test_the_refusal_example_is_a_valid_decide_call(self):
+        r = self.run_cli("decide", "NFX-219", "--date", "2026-11-19", "--name", "t")
+        self.refused(r)
+        examples = [line for line in r.stderr.splitlines() if line.startswith("Example: ")]
+        self.assertEqual(len(examples), 1, r.stderr)
+        argv = shlex.split(examples[0][len("Example: "):])
+        self.assertEqual(argv[:2], ["session_report.py", "decide"])
+        ok = self.run_cli(*argv[1:], "--date", "2026-11-19", "--name", "t")
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        h = self.run_cli("decide", "--help")
+        self.assertIn(examples[0][len("Example: "):], " ".join(h.stdout.split()))
+
+    def test_decide_help_names_the_required_fields_and_evidence_forms(self):
+        h = self.run_cli("decide", "--help")
+        self.assertEqual(h.returncode, 0, h.stderr)
+        text = " ".join(h.stdout.split())
+        self.assertIn("Required: --decision, --why, --rejected, --evidence, --result", text)
+        for form in ("commit SHA", "#PR", "file:line", "URL"):
+            self.assertIn(form, text)
 
     def test_render_shows_the_evidence_and_result_columns(self):
         self.decide(evidence="#12", result="INCONCLUSIVE")
