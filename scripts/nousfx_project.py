@@ -8,6 +8,8 @@ What a repo gets, besides its MCP files (nousfx_mcp.py) and agy plugin manifest 
   .agents/skills       a link to ../.claude/skills, when the repo keeps its own skills there
   (note only)          a line when .nousfx/project.toml has no [check] command (NFX-54): the review gate
                        cannot record a review without one. Sync never invents a command.
+  (note only)          a line when a repo with .nousfx/project.toml has no docs/agents/domain.md naming docs/adr/
+                       (NFX-234): its agents never read its ADRs. Advice only; docs/adr/ itself is created lazily.
   shared copies        .claude/hooks (gate and parser), .claude/agents/<name>.md for agents NousFX ships,
                        .claude/skills/review-loop (SKILL.md and the references/*.md and scripts/*.py it names): refreshed
                        only when the repo already has them (NFX-98); the named files are also created when SKILL.md is
@@ -26,6 +28,7 @@ Rules:
 import difflib
 import json
 import os
+import re
 import tomllib
 
 import nousfx_agents
@@ -66,6 +69,12 @@ CHECK_REL = os.path.join(".nousfx", "project.toml")
 NO_CHECK_NOTE = ("note: no check command in {path}. The review gate refuses to record a review without one "
                  "(or an approved --skip). Add:\n  [check]\n  command = \"<your test command>\"\n"
                  "The project-setup skill can propose one for this stack.")
+
+DOMAIN_REL = os.path.join("docs", "agents", "domain.md")
+ADR_POINTER = "docs/adr/"
+ADR_NAMED = re.compile(r"(?<![\w./-])docs/adr(?:/|(?![\w-])(?!\.\w))")
+DOMAIN_NOTE = ("note: {path} {problem}, so agents here never read the ADRs. Advice, not a blocker: Cesar runs "
+               "/setup-matt-pocock-skills (user-only; never write the file yourself). docs/adr/ itself may stay absent.")
 
 
 class ProjectPlan:
@@ -196,6 +205,25 @@ def _hook_without_git_refs(project):
     return any("nousfx-gate" in c and "git_refs.py" not in c for c in _hook_commands(project))
 
 
+def _domain_note(plan, project, domain):
+    inside = os.path.realpath(domain).startswith(os.path.join(os.path.realpath(project), ""))
+    if not inside or (os.path.lexists(domain) and not os.path.isfile(domain)):
+        plan.notes.append(f"left alone (domain.md leads outside the repo or is not a file; not read): {domain}")
+        return
+    try:
+        text = _read(domain)
+    except UnicodeDecodeError:
+        plan.notes.append(f"left alone (domain.md is not UTF-8 text): {domain}")
+        return
+    except OSError as e:
+        plan.notes.append(f"left alone (domain.md cannot be read, {type(e).__name__}): {domain}")
+        return
+    if text is None:
+        plan.notes.append(DOMAIN_NOTE.format(path=domain, problem="is missing"))
+    elif not ADR_NAMED.search(text):
+        plan.notes.append(DOMAIN_NOTE.format(path=domain, problem=f"does not name {ADR_POINTER}"))
+
+
 def plan_project(repo, project, SyncError, yes_replace=()):
     """The repo files sync owns or may create, as a ProjectPlan. Reads the repo, writes nothing."""
     try:
@@ -241,6 +269,8 @@ def _plan(repo, project, SyncError, yes_replace):
     check = os.path.join(project, CHECK_REL)
     if not _has_check_command(check):
         p.notes.append(NO_CHECK_NOTE.format(path=check))
+    if os.path.lexists(check):
+        _domain_note(p, project, os.path.join(project, DOMAIN_REL))
 
     _copies(p, repo, project, SyncError)
     if _old_project_hook(project):
