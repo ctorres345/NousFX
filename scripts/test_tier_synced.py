@@ -120,15 +120,15 @@ class SyncedFiles(unittest.TestCase):
         self.assertEqual(out["synced"], [])
         self.assertGreater(out["stats"]["lines"], 0)
 
-    def test_risk_paths_still_count_for_a_synced_file(self):
+    def test_a_synced_gate_meets_no_risk_path(self):
         with open(os.path.join(ROOT, "claude", "hooks", "review-gate.py"), "rb") as fh:
             self.write(".claude/hooks/review-gate.py", fh.read())
         self.git("add", "-A")
         self.git("commit", "-qm", "gate")
         out = self.result()
         self.assertEqual(out["synced"], [".claude/hooks/review-gate.py"])
-        self.assertEqual(out["tier"], 3)
-        self.assertIn("Tier 3: touches .claude/hooks/review-gate.py", out["reasons"])
+        self.assertLessEqual(out["tier"], 1, out["reasons"])
+        self.assertNotIn("Tier 3: touches .claude/hooks/review-gate.py", out["reasons"])
 
     def test_untracked_byte_equal_copies_are_synced_too(self):
         with open(os.path.join(SCRIPTS, "prove.py"), "rb") as fh:
@@ -142,7 +142,7 @@ class SyncedFiles(unittest.TestCase):
         with open(os.path.join(root, "src", "prove.py"), "wb") as fh:
             fh.write(b"same\n")
         files = [{"path": COPY_DIR + "prove.py"}]
-        with mock.patch.object(tier, "nousfx_copies", return_value=(os.path.realpath(root), {COPY_DIR + "prove.py": "src/prove.py"})):
+        with mock.patch.object(tier, "nousfx_copies", return_value=(os.path.realpath(root), {COPY_DIR + "prove.py": "src/prove.py"}, {})):
             tier.mark_synced(self.repo, files)
         return files[0].get("synced")
 

@@ -111,6 +111,12 @@ def _hook_text(repo, SyncError):
             f"Do not edit; change the source and re-run.\n{rest}")
 
 
+def rendered(repo):
+    """Generated repo files -> the exact text sync writes for them now. tier.py --synced counts a byte-equal one as
+    synced (NFX-261). Raises RuntimeError when a source is missing."""
+    return {HOOK_REL: _hook_text(repo, RuntimeError)}
+
+
 def _has_check_command(path):
     """True when the file holds [check] command = "<text>". Unreadable or invalid counts as no."""
     try:

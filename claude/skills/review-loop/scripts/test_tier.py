@@ -1147,5 +1147,92 @@ class CommentOnlyCap(GitCase):
         self.assertCapped(out)
 
 
+class SyncedExempt(GitCase):
+    """NFX-261: with --synced, a project file byte-equal to its NousFX source (or to the text sync renders now, for
+    .githooks/pre-push) adds no path, keyword, line or gate reason. Only the `synced: N files` reason names it."""
+
+    NOUSFX = os.path.realpath(os.path.join(HERE, "..", "..", "..", ".."))
+    GATE = ".claude/hooks/review-gate.py"
+    HOOK = ".githooks/pre-push"
+
+    def setUp(self):
+        super().setUp()
+        self.base = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-qb", "cesar/PAP-70")
+
+    def copy(self, rel, source, edit=False):
+        with open(os.path.join(self.NOUSFX, *source.split("/")), encoding="utf-8", newline="") as fh:
+            text = fh.read()
+        self.write(rel, text + ("# hand edit\n" if edit else ""))
+
+    def rendered_hook(self):
+        sys.path.insert(0, os.path.join(self.NOUSFX, "scripts"))
+        try:
+            import nousfx_project
+        finally:
+            sys.path.pop(0)
+        return nousfx_project.rendered(self.NOUSFX)[os.path.join(".githooks", "pre-push")]
+
+    def synced_result(self):
+        self.commit("sync")
+        return self.result("--base", self.base, "--synced")
+
+    def test_synced_gate_and_copies_get_tier_0_or_1_with_only_the_synced_reason(self):
+        self.copy(self.GATE, "claude/hooks/review-gate.py")
+        self.copy(".claude/hooks/git_refs.py", "claude/hooks/git_refs.py")
+        self.copy(".claude/skills/review-loop/scripts/testfail.py", "claude/skills/review-loop/scripts/testfail.py")
+        out = self.synced_result()
+        self.assertLessEqual(out["tier"], 1, out["reasons"])
+        self.assertEqual(len(out["reasons"]), 1, out["reasons"])
+        self.assertTrue(out["reasons"][0].startswith("synced: 3 files"), out["reasons"])
+        self.assertEqual(out["gates"], [])
+        self.assertEqual(out["security"], [])
+
+    def test_synced_reason_says_the_change_was_reviewed_in_nousfx(self):
+        self.copy(self.GATE, "claude/hooks/review-gate.py")
+        self.assertIn("reviewed in NousFX", self.synced_result()["reasons"][0])
+
+    def test_synced_hand_edited_gate_keeps_tier_3(self):
+        self.copy(self.GATE, "claude/hooks/review-gate.py", edit=True)
+        out = self.synced_result()
+        self.assertEqual(out["tier"], 3, out["reasons"])
+        self.assertIn("Tier 3: touches " + self.GATE, out["reasons"])
+        self.assertEqual(out["synced"], [])
+
+    def test_synced_mix_keeps_every_rule_for_the_project_file(self):
+        self.copy(self.GATE, "claude/hooks/review-gate.py")
+        self.write("src/auth.py", "token = 1\n")
+        out = self.synced_result()
+        self.assertEqual(out["tier"], 3, out["reasons"])
+        self.assertNotIn("Tier 3: touches " + self.GATE, out["reasons"])
+        self.assertTrue(any("src/auth.py" in r for r in out["reasons"]), out["reasons"])
+
+    def test_without_synced_flag_the_gate_copy_still_gets_tier_3(self):
+        self.copy(self.GATE, "claude/hooks/review-gate.py")
+        self.commit("sync")
+        out = self.result("--base", self.base)
+        self.assertEqual(out["tier"], 3, out["reasons"])
+        self.assertIn("Tier 3: touches " + self.GATE, out["reasons"])
+
+    def test_pre_push_rendered_by_sync_counts_as_synced(self):
+        self.write(self.HOOK, self.rendered_hook())
+        out = self.synced_result()
+        self.assertEqual(out["synced"], [self.HOOK])
+        self.assertLessEqual(out["tier"], 1, out["reasons"])
+        self.assertEqual(len(out["reasons"]), 1, out["reasons"])
+
+    def test_pre_push_hand_edited_is_counted_in_full(self):
+        self.write(self.HOOK, self.rendered_hook() + "echo hand edit\n")
+        out = self.synced_result()
+        self.assertEqual(out["synced"], [])
+        self.assertIn("Tier 3: touches " + self.HOOK, out["reasons"])
+
+    def test_pre_push_source_copied_verbatim_is_not_synced(self):
+        self.copy(self.HOOK, "claude/githooks/pre-push")
+        out = self.synced_result()
+        self.assertEqual(out["synced"], [])
+        self.assertIn("Tier 3: touches " + self.HOOK, out["reasons"])
+
+
 if __name__ == "__main__":
     unittest.main()
