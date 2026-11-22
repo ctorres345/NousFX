@@ -454,14 +454,16 @@ class DefaultTestNames(unittest.TestCase):
     def test_jvm_test_source_sets_and_names_are_tests(self):
         for path in ("core/fs/src/test/kotlin/FooTest.kt", "app/src/androidTest/kotlin/BarTest.kt",
                      "src/test/kotlin/Helpers.kt", "shared/src/commonTest/kotlin/Fake.kt",
-                     "lib/FooTest.java", "lib/FooTests.kt", "src/test/resources/fixture.json"):
+                     "lib/FooTest.java", "lib/FooTests.kt", "src/test/resources/fixture.json",
+                     "app/src/testDebug/kotlin/Helper.kt", "app/src/androidTestFreeDebug/kotlin/Fake.kt"):
             with self.subTest(path=path):
                 self.assertTrue(self.is_test(path))
 
     def test_main_source_sets_stay_production_whatever_the_name(self):
         for path in ("core/fs/src/main/kotlin/FileSystemTesting.kt", "core/fs/src/main/kotlin/ContractTest.kt",
                      "shared/src/commonMain/kotlin/FooTest.kt", "core/src/testFixtures/kotlin/FakeTest.kt",
-                     "app/src/main/kotlin/Latest.kt", "lib/Testing.kt", "lib/Contest.kt"):
+                     "app/src/main/kotlin/Latest.kt", "lib/Testing.kt", "lib/Contest.kt",
+                     "core/src/testFixturesDebug/kotlin/FakeTest.kt", "src/testing/helpers.py"):
             with self.subTest(path=path):
                 self.assertFalse(self.is_test(path))
 
