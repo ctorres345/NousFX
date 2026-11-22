@@ -591,6 +591,8 @@ def mark_synced(top, files):
         ref = default_ref(root)
     except Exception:
         return
+    if not ref:
+        return
     for x in wanted:
         rel = norm(x["path"])
         full = os.path.join(top, *rel.split("/"))

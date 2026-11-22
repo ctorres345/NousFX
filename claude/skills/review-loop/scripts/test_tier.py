@@ -1163,6 +1163,8 @@ class SyncedExempt(GitCase):
     def reviewed(self, source):
         """The NousFX file as tier.py compares it: from the default branch, not the working tree."""
         ref = tier.default_ref(self.NOUSFX)
+        if not ref:
+            self.skipTest("NousFX has no origin/HEAD or origin/main: fetch origin first")
         return tier.git(["show", "%s:%s" % (ref, source)], self.NOUSFX, raw=True).decode("utf-8")
 
     def copy(self, rel, source, edit=False):

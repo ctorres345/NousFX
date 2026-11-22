@@ -26,7 +26,10 @@ COPY_DIR = ".claude/skills/review-loop/scripts/"
 
 def reviewed(rel):
     """A NousFX file as tier.py compares it: from the default branch, not the working tree."""
-    return tier.git(["show", "%s:%s" % (tier.default_ref(ROOT), rel)], ROOT, raw=True)
+    ref = tier.default_ref(ROOT)
+    if not ref:
+        raise unittest.SkipTest("NousFX has no origin/HEAD or origin/main: fetch origin first")
+    return tier.git(["show", "%s:%s" % (ref, rel)], ROOT, raw=True)
 
 
 def script(name):
@@ -173,6 +176,13 @@ class SyncedFiles(unittest.TestCase):
         root = os.path.join(self.tmp, "nousfx")
         self.assertTrue(self.mark_against(root))
         self.assertFalse(self.mark_on_branch(root))
+
+    def test_a_nousfx_without_a_default_branch_is_not_synced(self):
+        root = os.path.join(self.tmp, "nousfx")
+        with mock.patch.object(tier, "default_ref", return_value=None), \
+                mock.patch.object(tier, "nousfx_source") as source:
+            self.assertFalse(self.mark_against(root))
+        source.assert_not_called()
 
     def mark_on_branch(self, root):
         """A commit on a NousFX feature branch, never merged: origin/main still has the old bytes."""
