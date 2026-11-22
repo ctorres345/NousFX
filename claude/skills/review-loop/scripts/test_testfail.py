@@ -279,6 +279,16 @@ class Config(Base):
         r = self.run_base()
         self.assertEqual(self.verdict(r), "n/a")
 
+    def test_a_jvm_style_test_file_counts_as_a_test_without_a_tests_list(self):
+        self.write("calc.py", FIXED)
+        self.write("src/test/CalcTest.py",
+                   COVERING.replace("import calc", "import sys\nsys.path.insert(0, '.')\nimport calc"))
+        command = "python3 -B -m unittest discover -s src/test -p '*Test.py'"
+        self.write(".nousfx/project.toml", f'[check]\ncommand = "{command}"\ntimeout = 60\n')
+        r = self.run_base()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.verdict(r), "yes")
+
     def test_failure_pattern_names_the_failures_of_another_runner(self):
         self.fix()
         script = ("import sys, unittest; r = unittest.TextTestRunner(stream=open('/dev/null', 'w')).run("
@@ -372,7 +382,7 @@ class Config(Base):
 
     def test_production_change_with_no_matching_test_names_the_tests_key(self):
         self.write("calc.py", FIXED)
-        self.write("CalcTest.kt", "class CalcTest\n")  # a test, but not by the default convention
+        self.write("calc.spec.ts", "it('adds')\n")  # a test, but not by the default convention
         r = self.run_base()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.verdict(r), "n/a")
@@ -430,6 +440,42 @@ USES_NEWMOD = ("import unittest\nimport newmod\n\n\nclass T(unittest.TestCase):\
 BASE_FILE_GAINS_MUL = BUGGY + "\n\ndef mul(a, b):\n    return a * b\n"
 IMPORTS_NEW_NAME_FROM_BASE_FILE = ("import unittest\nfrom calc import mul\n\n\nclass T(unittest.TestCase):\n"
             "    def test_mul(self):\n        self.assertEqual(mul(2, 3), 6)\n")
+
+
+class DefaultTestNames(unittest.TestCase):
+    """The default match when [check] has no tests list (NFX-266: JVM layouts)."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, HERE)
+        import testfail
+        cls.is_test = staticmethod(lambda path: testfail.is_test(path, None))
+
+    def test_jvm_test_source_sets_and_names_are_tests(self):
+        for path in ("core/fs/src/test/kotlin/FooTest.kt", "app/src/androidTest/kotlin/BarTest.kt",
+                     "src/test/kotlin/Helpers.kt", "shared/src/commonTest/kotlin/Fake.kt",
+                     "lib/FooTest.java", "lib/FooTests.kt", "src/test/resources/fixture.json",
+                     "app/src/testDebug/kotlin/Helper.kt", "app/src/androidTestFreeDebug/kotlin/Fake.kt"):
+            with self.subTest(path=path):
+                self.assertTrue(self.is_test(path))
+
+    def test_main_source_sets_stay_production_whatever_the_name(self):
+        for path in ("core/fs/src/main/kotlin/FileSystemTesting.kt", "core/fs/src/main/kotlin/ContractTest.kt",
+                     "shared/src/commonMain/kotlin/FooTest.kt", "core/src/testFixtures/kotlin/FakeTest.kt",
+                     "app/src/main/kotlin/Latest.kt", "lib/Testing.kt", "lib/Contest.kt",
+                     "core/src/testFixturesDebug/kotlin/FakeTest.kt", "src/testing/helpers.py"):
+            with self.subTest(path=path):
+                self.assertFalse(self.is_test(path))
+
+    def test_the_old_default_still_holds(self):
+        for path in ("test_calc.py", "pkg/calc_test.go", "pkg/tests/helpers.py", "src/main/kotlin/tests/Fake.kt"):
+            with self.subTest(path=path):
+                self.assertTrue(self.is_test(path))
+        self.assertFalse(self.is_test("calc.py"))
+
+    def test_a_tests_list_replaces_the_default(self):
+        import testfail
+        self.assertFalse(testfail.is_test("core/fs/src/test/kotlin/FooTest.kt", ["specs/*_spec.py"]))
 
 
 class ImportCauses(Base):
