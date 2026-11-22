@@ -14,7 +14,7 @@ Run `python3 -B <this skill's folder>/scripts/testfail.py run --base <base hash>
 
 - Exit 2 (timeout, detached HEAD, no `[check]` command) is not a verdict: report why it stopped. A timeout is never a pass.
 - Give the reviewer the verdict line as evidence. The reviewer still judges test names, duplicated cases and tests that assert implementation details; pass/fail evidence comes from the script.
-- Test files and the failure-line pattern come from `[check]` in `.nousfx/project.toml` (`tests = [...]`, `failure_pattern = "..."`); the default is `test_*`, `*_test.*` and `tests/`. An added file that only tests name counts as a helper: testfail names it and says to list it in `tests`. Any other added file counts as production.
+- Test files and the failure-line pattern come from `[check]` in `.nousfx/project.toml` (`tests = [...]`, `failure_pattern = "..."`); the default is `test_*`, `*_test.*`, a `tests/` folder, and the Gradle layout: a `src/test/`, `src/androidTest/` or other `src/*Test/` source set, or with no `src/<set>` a `*Test.*` or `*Tests.*` name (`src/main/` and `src/testFixtures/` stay production). An added file that only tests name counts as a helper: testfail names it and says to list it in `tests`. Any other added file counts as production.
 
 ## In Record the review
 After `run-check --stamp` (and `prove.py attest`), run `testfail.py attest --base <base hash>`. Only if it refuses (exit 2: the tree changed since the last run), run `testfail.py run --base <base hash>` on the final tree, then `attest` again. Put its `Tests-Fail-Without:` line in the PR body next to `AC-Proof:`. A final verdict of `no` with no stated reason is an open `med` finding. Any edit after the run needs a new run.

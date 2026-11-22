@@ -29,7 +29,8 @@ helper: a note says to list it in `[check] tests`. A `build` also lists `  suite
 log names. These notes go in the stamp, so `attest` prints them too.
 The check, its timeout and its two optional keys come from `[check]` in .nousfx/project.toml, read where the gate
 reads it (the default branch's copy when it has one):
-    tests = ["glob", ...]       test files; default is test_*, *_test.*, or a tests/ folder
+    tests = ["glob", ...]       test files; default is test_*, *_test.*, a tests/ folder, a src/test/ (or other
+                                src/*Test/) source set, or *Test.* / *Tests.* outside src/main/
     failure_pattern = "regex"   matched per line against the restored run's output; group 1 (or the whole match) is a
                                 failing test's name; default covers unittest, pytest, go, cargo and Gradle
 
@@ -252,12 +253,28 @@ def read_config(gate, top, check):
     return globs, compiled
 
 
+def is_jvm_test(parts):
+    """Gradle layout (NFX-266): the source set under src/ decides (test, androidTest, commonTest: test; main,
+    commonMain, testFixtures: production); with no src/<set>, a FooTest.* or FooTests.* name does."""
+    for i, part in enumerate(parts[:-2]):
+        if part == "src":
+            source_set = parts[i + 1]
+            if source_set == "test" or source_set.endswith("Test"):
+                return True
+            if source_set in ("main", "testFixtures") or source_set.endswith("Main"):
+                return False
+    name = parts[-1]
+    return fnmatch.fnmatchcase(name, "?*Test.*") or fnmatch.fnmatchcase(name, "?*Tests.*")
+
+
 def is_test(path, globs):
     p = path.replace("\\", "/")
-    name = p.rsplit("/", 1)[-1]
+    parts = p.split("/")
+    name = parts[-1]
     if globs:
         return any(fnmatch.fnmatch(p, g) or fnmatch.fnmatch(name, g) for g in globs)
-    return name.startswith("test_") or fnmatch.fnmatch(name, "*_test.*") or "tests" in p.split("/")[:-1]
+    return (name.startswith("test_") or fnmatch.fnmatch(name, "*_test.*") or "tests" in parts[:-1]
+            or is_jvm_test(parts))
 
 
 def split(tier, top, base, globs):
