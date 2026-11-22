@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for comment_check.py: the warn-only check on comments a diff adds (NFX-196), and the inventory and verify
+"""Tests for comment_check.py: the check on comments a diff adds (NFX-196), and the inventory and verify
 modes of the delete-comments skill (NFX-228).
 Run: python3 -B claude/skills/review-loop/scripts/test_comment_check.py
 
