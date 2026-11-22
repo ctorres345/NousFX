@@ -480,14 +480,15 @@ NOUSFX_MANIFEST = ("scripts", "nousfx_project.py")
 @functools.lru_cache(maxsize=1)
 def nousfx_copies():
     """(NousFX root, {project path: NousFX path}) from the sync manifest (nousfx_project.COPIES) of the NousFX
-    checkout this file's real path sits in, or (None, {}) when there is none (a flat or project copy)."""
+    checkout this file's real path sits in, or (None, {}) when there is none (a flat or project copy). Its folder goes
+    on sys.path while it loads, for its sibling import of nousfx_agents."""
     root = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."))
     scripts = os.path.join(root, NOUSFX_MANIFEST[0])
     path = os.path.join(scripts, NOUSFX_MANIFEST[1])
     if not os.path.isfile(path):
         return None, {}
     sys.dont_write_bytecode = True
-    sys.path.insert(0, scripts)  # it imports nousfx_agents from its own folder
+    sys.path.insert(0, scripts)
     try:
         spec = importlib.util.spec_from_file_location("nousfx_project", path)
         module = importlib.util.module_from_spec(spec)
@@ -501,18 +502,23 @@ def nousfx_copies():
 
 def mark_synced(top, files):
     """NFX-216: set "synced" on each file whose working-tree bytes equal its NousFX sync source. Off when the repo
-    under review is the NousFX checkout or holds it (its manifest would be branch code). A link, a deleted file or a
-    path the manifest does not name is never synced."""
+    under review and the NousFX checkout hold one another (a NousFX worktree, or a manifest that is branch code). A
+    link, a deleted file or a path the manifest does not name is never synced."""
     root, copies = nousfx_copies()
     real_top = os.path.realpath(top)
-    if not root or root == real_top or root.startswith(real_top + os.sep):
+    try:
+        nested = os.path.commonpath([root, real_top]) in (root, real_top) if root else True
+    except ValueError:  # Windows: different drives, so neither holds the other
+        nested = False
+    if nested:
         return
     for x in files:
         rel = norm(x["path"])
         source = copies.get(rel)
         full = os.path.join(top, *rel.split("/"))
-        if not source or os.path.realpath(full) != os.path.join(real_top, *rel.split("/")):
-            continue  # not in the manifest, or a link on the way
+        no_link_on_the_way = os.path.realpath(full) == os.path.join(real_top, *rel.split("/"))
+        if not source or not no_link_on_the_way:
+            continue
         try:
             if os.path.isfile(full) and os.path.getsize(full) <= MAX_UNTRACKED_BYTES:
                 with open(full, "rb") as mine, open(os.path.join(root, *source.split("/")), "rb") as theirs:

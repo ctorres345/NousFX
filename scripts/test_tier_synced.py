@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "claude", "skills", "review-loop", "scripts")
@@ -21,6 +22,10 @@ import tier  # noqa: E402
 
 PAP_68 = ("testfail.py", "prove.py", "session_report.py")
 COPY_DIR = ".claude/skills/review-loop/scripts/"
+
+
+def one_byte_off(data):
+    return data[:-1] + (b"\n" if data[-1:] != b"\n" else b" ")
 
 
 class SyncedFiles(unittest.TestCase):
@@ -55,7 +60,7 @@ class SyncedFiles(unittest.TestCase):
             with open(os.path.join(SCRIPTS, name), "rb") as fh:
                 data = fh.read()
             if name == mutate:
-                data = data[:-1] + (b"\n" if data[-1:] != b"\n" else b" ")  # exactly one byte differs
+                data = one_byte_off(data)
             self.write(COPY_DIR + name, data)
         self.git("add", "-A")
         self.git("commit", "-qm", "sync")
@@ -89,9 +94,9 @@ class SyncedFiles(unittest.TestCase):
         self.assertEqual(out["tier"], 3, out["reasons"])
         self.assertFalse(any("synced:" in r for r in out["reasons"]), out["reasons"])
 
-    def test_a_path_outside_the_manifest_is_counted(self):
+    def test_a_renamed_copy_outside_the_manifest_is_counted(self):
         with open(os.path.join(SCRIPTS, "prove.py"), "rb") as fh:
-            self.write("tools/prove.py", fh.read())  # a renamed copy: the manifest misses it, so it counts
+            self.write("tools/prove.py", fh.read())
         self.git("add", "-A")
         self.git("commit", "-qm", "renamed copy")
         out = self.result()
@@ -130,9 +135,25 @@ class SyncedFiles(unittest.TestCase):
             self.write(COPY_DIR + "prove.py", fh.read())
         self.assertEqual(self.result()["synced"], [COPY_DIR + "prove.py"])
 
-    def test_the_nousfx_checkout_itself_is_never_synced(self):
-        out = tier.run(ROOT, "HEAD", [], synced=True)
-        self.assertEqual(out["synced"], [])
+    def mark_against(self, root):
+        """mark_synced with a fake NousFX checkout at `root` whose source has the copy's exact bytes."""
+        self.write(COPY_DIR + "prove.py", b"same\n")
+        os.makedirs(os.path.join(root, "src"), exist_ok=True)
+        with open(os.path.join(root, "src", "prove.py"), "wb") as fh:
+            fh.write(b"same\n")
+        files = [{"path": COPY_DIR + "prove.py"}]
+        with mock.patch.object(tier, "nousfx_copies", return_value=(os.path.realpath(root), {COPY_DIR + "prove.py": "src/prove.py"})):
+            tier.mark_synced(self.repo, files)
+        return files[0].get("synced")
+
+    def test_a_sibling_nousfx_checkout_marks_the_copy(self):
+        self.assertTrue(self.mark_against(os.path.join(self.tmp, "nousfx")))
+
+    def test_a_repo_inside_the_nousfx_checkout_is_never_synced(self):
+        self.assertIsNone(self.mark_against(self.tmp))
+
+    def test_a_nousfx_checkout_inside_the_repo_is_never_synced(self):
+        self.assertIsNone(self.mark_against(os.path.join(self.repo, "vendor", "nousfx")))
 
     def test_cli_flag(self):
         self.copy_pap_68()
