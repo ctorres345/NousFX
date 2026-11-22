@@ -12,7 +12,7 @@ Run it once per feature, not per edit, and do not wait for the user to type `/re
 
 ## Step 0: simplify (once)
 
-Count the changed lines: insertions + deletions from `git diff --shortstat <base hash> -- . ':(exclude)*test*'`, plus `wc -l` of the untracked non-test files. The tier does not matter here.
+Count the changed lines: insertions + deletions from `git diff --shortstat <base hash> -- . ':(exclude)*test*'`, plus `wc -l` of the untracked non-test files. The tier does not matter here. Synced files are left out of the count and the simplify scope: the `synced` paths from `scripts/tier.py --base <base hash> --synced` (byte-equal to their NousFX source; add `':(exclude)<path>'` for each).
 
 - Under 100 changed lines: do the four checks yourself (reuse, simplification, efficiency, altitude), apply the fixes, and print `Step 0 inline: N changed lines`.
 - 100 changed lines or more: Invoke the `simplify` skill via the Skill tool on the same scope. If the skill cannot be invoked, say so and continue.
@@ -21,7 +21,7 @@ Either way the reviewer sees the final code. Re-run the tests afterwards; if the
 
 ## Step 1: pick the tier
 
-Run `python3 -B <this skill's folder>/scripts/tier.py --base <base hash> --labels <ticket labels>` (`python` on Windows). The labels are one comma-separated argument with no spaces, for example `--labels env-none,size-S`. The ticket is the one in the branch name `<prefix>/<KEY>`; read its labels from Jira. If the branch has no key, leave out `--labels` and say so. If it has a key but Jira cannot be read, labels are unknown: use at least Tier 2 and put "labels unavailable" in the reasons. Print the tier and reasons; a `Gate:` needs Cesar's yes first. If `ui` or `fallback` is true or it failed, run `/via check` now and on the final tree (or ask to skip; unattended: run it): the gate checks it. The merge base was checked above, so any failure of `tier.py` (including exit 2): use Tier 2. Without the Agent tool (agy): the tier sets only the round cap; review inline.
+Run `python3 -B <this skill's folder>/scripts/tier.py --base <base hash> --synced --labels <ticket labels>` (`python` on Windows). The gate and CI count synced files in full, so when `synced` is not empty and the tier is lower than without `--synced`, record it with `--tier-override "synced: N files byte-equal to NousFX"` (Cesar's standing yes, NFX-216). The labels are one comma-separated argument with no spaces, for example `--labels env-none,size-S`. The ticket is the one in the branch name `<prefix>/<KEY>`; read its labels from Jira. If the branch has no key, leave out `--labels` and say so. If it has a key but Jira cannot be read, labels are unknown: use at least Tier 2 and put "labels unavailable" in the reasons. Print the tier and reasons; a `Gate:` needs Cesar's yes first. If `ui` or `fallback` is true or it failed, run `/via check` now and on the final tree (or ask to skip; unattended: run it): the gate checks it. The merge base was checked above, so any failure of `tier.py` (including exit 2): use Tier 2. Without the Agent tool (agy): the tier sets only the round cap; review inline.
 
 | Tier | Reviewer (Agent call) | Rounds |
 |---|---|---|
