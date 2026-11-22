@@ -139,12 +139,13 @@ at most N turns.
 ```
 testfail.py run ──► diff vs base: test files and production files (docs and lockfiles are neither)
                      │ no test file or no production file: n/a
+                     │ comment_check.py verify: only comments, no file left to the suite: n/a (comments only), no run (NFX-251)
                      └─► temporary clone outside the repo (git clone --shared, ignored files not copied)
                           ├─ run [check] with the change ── fails ──► baseline-fail
                           └─ restore every changed non-test file to base, docs too (added ones deleted), run [check] again
                               passes ──► no   fails, names a new test ──► yes   fails, names none ──► build
                               (a name the passing run also printed does not count)
-testfail.py attest ──► stamp MAC, tree, branch, base, check and config match? ──► Tests-Fail-Without: <verdict> <tree> base:<hash>
+testfail.py attest ──► stamp MAC, tree, branch, base, check and config match? ──► Tests-Fail-Without: <verdict> <tree> base:<hash> [(comments only)]
 ```
 
 - Exit 0 for `yes` and `n/a`, 1 for `no`, `build` and `baseline-fail`, 2 for a refusal (timeout, detached HEAD, no `[check]` command, a tree that changed during the run, an unreadable base); `attest` exits like the run it attests. `build` is never proof: a build or import error does not show a test fails. A timeout is a refusal with the same `[check] timeout` as `--mark`, never a pass.
