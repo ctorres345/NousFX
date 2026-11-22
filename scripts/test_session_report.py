@@ -173,7 +173,7 @@ class SessionReport(unittest.TestCase):
             i = argv.index(flag)
             self.assertEqual(self.run_cli(*argv[:i], flag, "  ", *argv[i + 2:]).returncode, 2, flag)
             self.assertEqual(self.run_cli(*argv[:i], *argv[i + 2:]).returncode, 2, flag + " missing")
-        self.assertEqual(self.decide(evidence="the tests all passed").returncode, 2)  # prose
+        self.assertEqual(self.decide(evidence="the tests all passed").returncode, 2)
         for ok in ("abc1234", "#12", "scripts/x.py:40", "https://github.com/cursor/plugins"):
             self.assertEqual(self.decide(evidence=ok).returncode, 0, ok)
 
@@ -340,7 +340,7 @@ class SessionReport(unittest.TestCase):
 
     def test_render_without_gh_still_writes_the_report(self):
         self.decide()
-        bin_dir = os.path.join(self.tmp.name, "bin")  # git only, no gh
+        bin_dir = os.path.join(self.tmp.name, "bin")
         os.makedirs(bin_dir)
         os.symlink(shutil.which("git"), os.path.join(bin_dir, "git"))
         env = dict(self.env, PATH=bin_dir)
