@@ -3,7 +3,7 @@
 
   comment_check.py <base>       flags in `git diff <base>` (the working tree) plus untracked files
   comment_check.py --keep-list  print the keep list
-  comment_check.py --all PATH   inventory every comment under PATH (the delete-comments skill, NFX-228)
+  comment_check.py --all PATH...  inventory every comment under each PATH (the delete-comments skill, NFX-228)
   comment_check.py verify [BASE]  prove that only comments changed since BASE (the delete-comments skill)
 
 Prints one line per flag, `file:line kind text`, then `comment_check: N flags (kind n, ...)`.
@@ -19,7 +19,10 @@ Exit 0 when the check ran, with flags or without; 2 when git fails.
 --all prints `file:line form verdict text` per comment, where form is docstring, inline (shares its line with code),
 shell (a whole-line comment in a shell file) or line (any other whole-line or block comment), and verdict is
 keep:<rule> or flag:<kind>. The last line counts each form, the kept items, and the lines that deleting the
-non-kept docstring, line and shell items would shed. Files git ignores and generated files are skipped.
+non-kept docstring, line and shell items would shed. Files git ignores and generated files are skipped. With
+several paths, each gets its own count line (`comment_check --all PATH: ...`) after its items, and a last line
+`comment_check --all total: ...` sums them; a file under two of the paths is listed and counted once, under the
+first (NFX-265). A missing path exits 2 before anything is listed.
 
 verify compares the working tree (untracked files included) with `git merge-base BASE HEAD` (with no BASE,
 review-loop's base: origin/HEAD, else origin/main), prints that commit, then prints `file: difference` per problem: a
@@ -735,10 +738,16 @@ def files_under(path):
         return found
 
 
-def inventory(path):
-    """[Item] for every comment under PATH, each path as PATH joined with the file's path under it."""
+def inventory(path, seen=None):
+    """[Item] for every comment under PATH, each path as PATH joined with the file's path under it. A file whose
+    real path is in `seen` is skipped; each one read is added to it."""
     out = []
     for root, rel in files_under(path):
+        if seen is not None:
+            real = os.path.realpath(os.path.join(root, rel))
+            if real in seen:
+                continue
+            seen.add(real)
         text = source(root, rel)
         if text is None:
             continue
@@ -752,11 +761,11 @@ def inventory(path):
     return out
 
 
-def inventory_summary(found):
+def inventory_summary(found, label=""):
     counts = Counter(i.form for i in found)
     forms = ", ".join(f"{f} {counts[f]}" for f in FORMS)
     kept = sum(i.verdict.startswith("keep:") for i in found)
-    return (f"comment_check --all: {len(found)} items ({forms}), kept {kept}, "
+    return (f"comment_check --all{' ' + label if label else ''}: {len(found)} items ({forms}), kept {kept}, "
             f"shed {sum(i.shed for i in found)} lines")
 
 
@@ -1117,19 +1126,26 @@ def main(argv):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("base", nargs="?", help="the merge base hash")
     parser.add_argument("--keep-list", action="store_true", help="print the keep list and exit")
-    parser.add_argument("--all", metavar="PATH", help="inventory every comment under PATH and exit")
+    parser.add_argument("--all", metavar="PATH", nargs="+",
+                        help="inventory every comment under each PATH, with a total for several, and exit")
     args = parser.parse_args(argv[1:])
     if args.keep_list:
         for rule in KEEP:
             print(f"- {rule.name}: {rule.text}" + ("" if rule.match else " (the reviewer judges)"))
         return 0
     if args.all is not None:
-        if not os.path.exists(args.all):
-            parser.error(f"--all: no such path: {args.all}")
-        found = inventory(args.all)
-        for i in found:
-            print(f"{i.path}:{i.line} {i.form} {i.verdict} {i.text}")
-        print(inventory_summary(found))
+        for path in args.all:
+            if not os.path.exists(path):
+                parser.error(f"--all: no such path: {path}")
+        seen, total = set(), []
+        for path in args.all:
+            found = inventory(path, seen)
+            for i in found:
+                print(f"{i.path}:{i.line} {i.form} {i.verdict} {i.text}")
+            print(inventory_summary(found, path if len(args.all) > 1 else ""))
+            total += found
+        if len(args.all) > 1:
+            print(inventory_summary(total, "total"))
         return 0
     if not args.base or args.base.startswith("-"):
         parser.error("give the base hash (not an option), or --keep-list")
