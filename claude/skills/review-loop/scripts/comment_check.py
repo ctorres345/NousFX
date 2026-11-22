@@ -21,7 +21,7 @@ shell (a whole-line comment in a shell file) or line (any other whole-line or bl
 keep:<rule> or flag:<kind>. The last line counts each form, the kept items, and the lines that deleting the
 non-kept docstring, line and shell items would shed. Files git ignores and generated files are skipped. With
 several paths, each gets its own count line (`comment_check --all PATH: ...`) after its items, and a last line
-`comment_check --all total: ...` sums them; a file under two of the paths is listed and counted once, under the
+`comment_check --all (total): ...` sums them; a file under two of the paths is listed and counted once, under the
 first (NFX-265). A missing path exits 2 before anything is listed.
 
 verify compares the working tree (untracked files included) with `git merge-base BASE HEAD` (with no BASE,
@@ -739,18 +739,19 @@ def files_under(path):
 
 
 def inventory(path, seen=None):
-    """[Item] for every comment under PATH, each path as PATH joined with the file's path under it. A file whose
-    real path is in `seen` is skipped; each one read is added to it."""
+    """[Item] for every comment under PATH, each path as PATH joined with the file's path under it. A file read
+    already is skipped when its (device, inode) is in `seen`, so a second spelling of a path on a case-insensitive
+    file system or a hard link counts once; each one read is added to it."""
     out = []
     for root, rel in files_under(path):
-        if seen is not None:
-            real = os.path.realpath(os.path.join(root, rel))
-            if real in seen:
-                continue
-            seen.add(real)
         text = source(root, rel)
         if text is None:
             continue
+        if seen is not None:
+            st = os.stat(os.path.join(root, rel))
+            if (st.st_dev, st.st_ino) in seen:
+                continue
+            seen.add((st.st_dev, st.st_ino))
         shown = os.path.normpath(os.path.join(root, rel))
         lang, lines = language(rel, text), text_lines(text)
         for c in comments_in(os.path.join(os.path.basename(os.path.abspath(root)), rel), text):
@@ -1137,15 +1138,16 @@ def main(argv):
         for path in args.all:
             if not os.path.exists(path):
                 parser.error(f"--all: no such path: {path}")
-        seen, total = set(), []
+        several = len(args.all) > 1
+        seen, total = set() if several else None, []
         for path in args.all:
             found = inventory(path, seen)
             for i in found:
                 print(f"{i.path}:{i.line} {i.form} {i.verdict} {i.text}")
-            print(inventory_summary(found, path if len(args.all) > 1 else ""))
+            print(inventory_summary(found, path if several else ""))
             total += found
-        if len(args.all) > 1:
-            print(inventory_summary(total, "total"))
+        if several:
+            print(inventory_summary(total, "(total)"))
         return 0
     if not args.base or args.base.startswith("-"):
         parser.error("give the base hash (not an option), or --keep-list")

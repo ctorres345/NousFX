@@ -701,7 +701,6 @@ class Inventory(RepoCase):
         self.assertIn("no such path", result.stderr)
 
     def test_several_paths_print_a_count_line_each_and_their_total(self):
-        """NFX-265: HEM-86's ticket ran `--all app core feature build-logic`; argparse took one PATH."""
         repo = self.fixture()
         repo.write("lib/a.py", "# one\nx = 1\n")
         result = repo.run("--all", "pkg", "lib")
@@ -709,10 +708,10 @@ class Inventory(RepoCase):
         self.assertEqual([l for l in result.stdout.splitlines() if l.startswith("comment_check --all")], [
             "comment_check --all pkg: 7 items (docstring 2, inline 1, line 2, shell 2), kept 3, shed 6 lines",
             "comment_check --all lib: 1 items (docstring 0, inline 0, line 1, shell 0), kept 0, shed 1 lines",
-            "comment_check --all total: 8 items (docstring 2, inline 1, line 3, shell 2), kept 3, shed 7 lines",
+            "comment_check --all (total): 8 items (docstring 2, inline 1, line 3, shell 2), kept 3, shed 7 lines",
         ])
         self.assertIn("lib/a.py:1 line flag:comment # one", result.stdout)
-        self.assertEqual(result.stdout.splitlines()[-1].split(": ", 1)[0], "comment_check --all total")
+        self.assertEqual(result.stdout.splitlines()[-1].split(": ", 1)[0], "comment_check --all (total)")
 
     def test_one_path_prints_what_it_printed_before(self):
         result = self.fixture().run("--all", "pkg/run.sh")
@@ -730,7 +729,31 @@ class Inventory(RepoCase):
         self.assertIn("comment_check --all pkg/run.sh: 2 items", "\n".join(out))
         self.assertIn("comment_check --all pkg: 5 items", "\n".join(out))
         self.assertIn("comment_check --all ./pkg/tool.py: 0 items", "\n".join(out))
-        self.assertTrue(out[-1].startswith("comment_check --all total: 7 items"), out[-1])
+        self.assertTrue(out[-1].startswith("comment_check --all (total): 7 items"), out[-1])
+
+    def test_a_hard_link_under_two_paths_counts_once(self):
+        """A case-insensitive file system's second spelling (`core Core`) is the same file in the same way."""
+        repo = self.fixture()
+        os.makedirs(os.path.join(repo.root, "lib"))
+        os.link(os.path.join(repo.root, "pkg", "run.sh"), os.path.join(repo.root, "lib", "run.sh"))
+        out = repo.run("--all", "pkg", "lib").stdout.splitlines()
+        self.assertTrue(out[-1].startswith("comment_check --all (total): 7 items"), out[-1])
+
+    def test_a_link_in_an_earlier_path_does_not_hide_its_target_in_a_later_one(self):
+        repo = self.fixture()
+        os.makedirs(os.path.join(repo.root, "a"))
+        os.symlink(os.path.join("..", "pkg", "tool.py"), os.path.join(repo.root, "a", "link.py"))
+        result = repo.run("--all", "a", "pkg")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.splitlines()[-1].startswith("comment_check --all (total): 7 items"),
+                        result.stdout)
+
+    def test_a_folder_named_total_keeps_its_own_count_line_apart_from_the_sum(self):
+        repo = self.fixture()
+        repo.write("total/a.py", "# one\nx = 1\n")
+        out = repo.run("--all", "total", "pkg").stdout.splitlines()
+        self.assertIn("comment_check --all total: 1 items", "\n".join(out))
+        self.assertTrue(out[-1].startswith("comment_check --all (total): 8 items"), out[-1])
 
     def test_a_missing_path_among_several_is_named_and_nothing_is_counted(self):
         result = self.fixture().run("--all", "pkg", "nope", "pkg/run.sh")
