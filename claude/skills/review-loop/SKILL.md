@@ -12,7 +12,7 @@ Run it once per feature, not per edit, and do not wait for the user to type `/re
 
 ## Step 0: simplify (once)
 
-Count the changed lines: insertions + deletions from `git diff --shortstat <base hash> -- . ':(exclude)*test*'`, plus `wc -l` of the untracked non-test files. The tier does not matter here.
+Count the changed lines: insertions + deletions from `git diff --shortstat <base hash> -- . ':(exclude)*test*'`, plus `wc -l` of the untracked non-test files. The tier does not matter here. Synced files are left out of the count and the simplify scope: the `synced` paths from `scripts/tier.py --base <base hash> --synced` (byte-equal to their NousFX source; add `':(exclude)<path>'` for each).
 
 - Under 100 changed lines: do the four checks yourself (reuse, simplification, efficiency, altitude), apply the fixes, and print `Step 0 inline: N changed lines`.
 - 100 changed lines or more: Invoke the `simplify` skill via the Skill tool on the same scope. If the skill cannot be invoked, say so and continue.
