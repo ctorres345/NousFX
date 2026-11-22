@@ -142,5 +142,14 @@ class SyncedFiles(unittest.TestCase):
         self.assertIn("synced: 3 files", r.stdout)
 
 
+
+class LoopWording(unittest.TestCase):
+    def test_step_1_passes_synced_and_names_the_override(self):
+        with open(os.path.join(ROOT, "claude", "skills", "review-loop", "SKILL.md"), encoding="utf-8") as fh:
+            skill = fh.read()
+        self.assertIn("--base <base hash> --synced --labels", skill)
+        self.assertIn('--tier-override "synced: N files byte-equal to NousFX"', skill)
+
+
 if __name__ == "__main__":
     unittest.main()
