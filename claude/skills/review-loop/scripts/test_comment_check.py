@@ -958,8 +958,8 @@ class Verify(RepoCase):
         self.assert_difference(repo, "cli.py:", "does not parse")
 
     def test_other_languages_and_markdown_are_left_to_the_suite(self):
-        repo = self.fixture(**{"a.ts": "const x = 1; // one\n"})
-        self.edit(repo, "a.ts", "const x = 1", "const x = 2")
+        repo = self.fixture(**{"a.go": "var x = 1 // one\n"})
+        self.edit(repo, "a.go", "var x = 1", "var x = 2")
         self.edit(repo, "README.md", "base", "changed")
         result = repo.verify()
         self.assertEqual(result.returncode, 0, result.stdout)
@@ -1030,6 +1030,343 @@ class Verify(RepoCase):
         result = self.fixture().run("verify")
         self.assertEqual(result.returncode, 2)
         self.assertIn("BASE", result.stderr)
+
+
+KOTLIN = src(
+    "package app",
+    "",
+    "/**",
+    " * Greets someone.",
+    " */",
+    "fun greet(name: String): String {",
+    '    val url = "https://example.com/a//b/*c*/"  // the home page',
+    "    /* the greeting */",
+    '    return "hi $name" + url',
+    "}")
+
+DART = src(
+    "/// A dog.",
+    "class Dog {",
+    "  // its name",
+    "  final String name;",
+    "  Dog(this.name);",
+    "",
+    "  List<String> tricks() => [",
+    "        'sit', //",
+    "        'stay', // the hard one",
+    "        'https://example.com//x',",
+    "      ];",
+    "}")
+
+TSX = src(
+    "export function Card() {",
+    "  return (",
+    "    <div>",
+    "      {/* the title */}",
+    '      <h1 className="a//b">Hi</h1>',
+    "    </div>",
+    "  );",
+    "}")
+
+
+class VerifyCLike(RepoCase):
+    """NFX-250: verify compares Kotlin, Dart, TypeScript and JavaScript token by token outside comments."""
+
+    def edited(self, path, text, old, new):
+        repo = self.repo({path: text})
+        full = os.path.join(repo.root, path)
+        self.assertIn(old, text)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(text.replace(old, new, 1))
+        return repo.verify()
+
+    def assert_ok(self, result):
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("0 other changed files left to the suite", result.stdout)
+
+    def assert_changed(self, result, location):
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn(f"{location} code changed", result.stdout)
+
+    def test_removing_only_comments_passes(self):
+        cases = (("a.kt", KOTLIN, "/**\n * Greets someone.\n */\n", ""),
+                 ("a.kt", KOTLIN, "  // the home page", ""),
+                 ("a.kt", KOTLIN, "    /* the greeting */\n", ""),
+                 ("lib/dog.dart", DART, "/// A dog.\n", ""),
+                 ("lib/dog.dart", DART, "  // its name\n", ""),
+                 ("lib/dog.dart", DART, " // the hard one", ""),
+                 ("ui/card.tsx", TSX, "      {/* the title */}\n", ""))
+        for path, text, old, new in cases:
+            with self.subTest(path=path, old=old):
+                self.assert_ok(self.edited(path, text, old, new))
+
+    def test_one_changed_code_token_exits_2_naming_its_line(self):
+        cases = (("a.kt", KOTLIN, '"hi $name"', '"hey $name"', "a.kt:9"),
+                 ("a.kt", KOTLIN, "a//b/*c*/", "a//b", "a.kt:7"),
+                 ("lib/dog.dart", DART, "'stay'", "'go'", "lib/dog.dart:9"),
+                 ("lib/dog.dart", DART, "final String", "final Object", "lib/dog.dart:4"),
+                 ("ui/card.tsx", TSX, 'className="a//b"', 'className="a"', "ui/card.tsx:5"),
+                 ("ui/card.tsx", TSX, "<h1", "<h2", "ui/card.tsx:5"))
+        for path, text, old, new, location in cases:
+            with self.subTest(path=path, old=old):
+                self.assert_changed(self.edited(path, text, old, new), location)
+
+    def test_a_bare_trailing_dart_slash_pair_is_code(self):
+        """`dart format` keeps a list split on lines when an element ends in `//`: it is not a comment."""
+        repo = self.repo({"lib/dog.dart": DART})
+        lines, _ = repo.inventory("lib/dog.dart")
+        self.assertFalse([l for l in lines if l.startswith("lib/dog.dart:8 ")], lines)
+        self.assertTrue([l for l in lines if l.startswith("lib/dog.dart:9 ")], lines)
+        self.assert_changed(self.edited("lib/dog.dart", DART, "'sit', //", "'sit',"), "lib/dog.dart:8")
+
+    def test_the_diff_mode_does_not_flag_a_bare_trailing_dart_slash_pair(self):
+        repo = self.repo({"lib/dog.dart": "x"})
+        repo.write("lib/dog.dart", DART)
+        self.assertFalse([l for l in repo.flags() if l.startswith("lib/dog.dart:8 ")])
+
+    def test_a_bare_slash_pair_in_kotlin_is_still_a_comment(self):
+        self.assert_ok(self.edited("a.kt", "val x = listOf(\n    1, //\n)\n", " //", ""))
+
+    def test_tsx_braces_left_behind_are_a_code_change(self):
+        self.assert_changed(self.edited("ui/card.tsx", TSX, "{/* the title */}", "{}"), "ui/card.tsx:4")
+
+    def test_empty_braces_in_code_are_never_dropped(self):
+        """Only a JSX child is a comment expression: an arrow body or an if block keeps its braces."""
+        cases = ("const f = () => {/* nothing */}\n<a/>\n", "if (x) {/* nothing */}\n{y}\n",
+                 "try { run() } catch {/* nothing */}\n{ cleanup() }\n",
+                 "interface Props {/* nothing */}\n<App />\n",
+                 "async function f(): Promise<void> {/* nothing */}\n{ x() }\n",
+                 "class A { static {/* nothing */}\n<B/> }\n")
+        for text in cases:
+            with self.subTest(text=text):
+                result = self.edited("a.tsx", text, "{/* nothing */}", "")
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertRegex(result.stdout, r"a\.tsx:\d+ code changed")
+
+    def test_jsx_text_around_a_comment_expression(self):
+        cases = (("<p>Hello {/* name */}</p>\n", " {/* name */}"),
+                 ("<p>{/* note */}Hello</p>\n", "{/* note */}"),
+                 ("<p>Hello: {/* name */}</p>\n", "{/* name */}"),
+                 ("return <div className={a}>{/* note */}</div>\n", "{/* note */}"))
+        for text, old in cases:
+            with self.subTest(text=text):
+                self.assert_ok(self.edited("a.jsx", text, old, ""))
+
+    def test_raw_strings_end_at_their_quote(self):
+        """A backslash escapes nothing in a Dart r'...' or a Kotlin \"\"\"...\"\"\" string."""
+        self.assert_ok(self.edited("a.dart", "final p = s.split(r'\\'); // Windows\nx;\n", " // Windows", ""))
+        self.assert_ok(self.edited("a.kt", 'val p = """C:\\"""  // dir\nval y = 1\n', "  // dir", ""))
+
+    def test_a_bare_slash_pair_after_a_multiline_dart_string_is_code(self):
+        result = self.edited("a.dart", "final s = '''\nhello\n''' //\n'world';\n", "''' //", "'''")
+        self.assert_changed(result, "a.dart:3")
+
+    def test_an_added_or_deleted_kotlin_file_exits_2(self):
+        repo = self.repo({"a.kt": KOTLIN})
+        repo.write("b.ts", "const x = 1\n")
+        repo.remove("a.kt")
+        result = repo.verify()
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("a.kt: deleted", result.stdout)
+        self.assertIn("b.ts: added", result.stdout)
+
+    def test_regrouped_operators_and_moved_line_breaks_are_code(self):
+        """Spacing between two operators, and line breaks (ASI, Kotlin statements), are code."""
+        cases = (("a.ts", "x = i++ + j\n", "i++ + j", "i + ++j"),
+                 ("a.ts", "function f() {\n  return a\n}\n", "return a", "return\n  a"),
+                 ("a.kt", "val x = a - b\n", "a - b", "a\n- b"))
+        for path, text, old, new in cases:
+            with self.subTest(text=text):
+                result = self.edited(path, text, old, new)
+                self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_comment_spacing_is_not_code(self):
+        cases = (("a.ts", "foo(/* x */ a)\n", "/* x */ ", ""),
+                 ("a.ts", "foo(/* x */a)\n", "/* x */", ""),
+                 ("a.ts", "a = b - /* x */ -c\n", "/* x */ ", ""),
+                 ("a.kt", "val x = 1 /* one */\nval y = 2\n", " /* one */", ""),
+                 ("a.tsx", "<div>\n  {/* t */} <b/>\n</div>\n", "{/* t */} ", ""))
+        for path, text, old, new in cases:
+            with self.subTest(text=text):
+                self.assert_ok(self.edited(path, text, old, new))
+
+    def test_code_after_a_comment_marker_in_code_is_compared(self):
+        """A URL in JSX text, a quote nested in an interpolation and a regex class open no comment."""
+        cases = (("a.tsx", "<a>https://x.com</a>; let n = 1\n"),
+                 ("a.kt", 'val s = "${if (a) "http://x" else ""}"; val n = 1\n'),
+                 ("a.dart", "var s = '${a ? 'http://x' : ''}'; var n = 1;\n"),
+                 ("a.ts", "const s = `${a ? `http://${b}` : ''}`; let n = 1\n"),
+                 ("a.ts", "const r = /[/*]/;\nlet n = 1;\n// */\n"))
+        for path, text in cases:
+            with self.subTest(text=text):
+                result = self.edited(path, text, "n = 1", "n = 2")
+                self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_a_trailing_comment_after_an_interpolation_or_regex_may_go(self):
+        cases = (("a.kt", 'val s = "${if (a) "x" else ""}" // why\n'),
+                 ("a.ts", "const r = /a\\/b/g // why\n"),
+                 ("a.ts", "const q = a / b // why\n"))
+        for path, text in cases:
+            with self.subTest(text=text):
+                self.assert_ok(self.edited(path, text, " // why", ""))
+
+    def test_a_deleted_compiler_directive_exits_2(self):
+        """These comments change how the file compiles."""
+        cases = (("src/vite-env.d.ts", '/// <reference types="vite/client" />\nlet n = 1\n'),
+                 ("a.dart", "// @dart=2.9\nvar n = 1;\n"),
+                 ("a.tsx", "/** @jsxImportSource preact */\nlet n = 1\n"),
+                 ("a.ts", "// @ts-nocheck\nlet n = 1\n"))
+        for path, text in cases:
+            with self.subTest(path=path):
+                head = text.split("\n", 1)[0] + "\n"
+                result = self.edited(path, text, head, "")
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn("compiler directive", result.stdout)
+
+    def test_a_large_file_with_far_apart_edits_finishes_fast(self):
+        """Difflib on a whole file is quadratic; verify trims the common ends first."""
+        body = "".join(f"const v{i} = f(a, b, c, d, e);\n" for i in range(8000))
+        old = "let first = 1\n" + body + "let last = 1\n"
+        new = "let first = 2\n" + body + "let last = 2\n"
+        start = time.monotonic()
+        found = comment_check.c_differences("big.ts", old, new)
+        self.assertLess(time.monotonic() - start, 10)
+        self.assertEqual([row for row, _ in found][:1], [1])
+        self.assertTrue(found)
+
+    def test_a_spaced_pointer_under_claude_must_name_nousfx_with_a_hyphen(self):
+        """NousFX files keep the one form `NousFX ADR-NNNN`."""
+        repo = self.repo({"docs/adr/0001-x.md": "# X\n", "scripts/nousfx_sync.py": "x = 1\n",
+                          "claude/x.py": "x = 1  # old\n"})
+        with open(os.path.join(repo.root, "claude/x.py"), "w") as f:
+            f.write("x = 1  # see NousFX ADR 0001 for why\n")
+        result = repo.verify()
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("NousFX ADR-0001", result.stdout)
+
+    def test_a_division_after_a_non_null_assertion_is_no_regex(self):
+        """Kotlin has no regex literals, and a postfix `!` (`a!!`, `x!`) ends an operand."""
+        cases = (("a.kt", "val r = a!! / 2 // half\n"), ("a.ts", "const r = x! / 2 // half\n"))
+        for path, text in cases:
+            with self.subTest(path=path):
+                self.assertEqual([c.text for c in comment_check.comments_in(path, text)], ["// half"])
+                self.assert_ok(self.edited(path, text, " // half", ""))
+
+    def test_a_comment_in_jsx_text_is_code(self):
+        """`//` and `/* */` between tags are rendered text, not comments."""
+        cases = (("a.tsx", "<div>\n  Home // Settings\n</div>\n", " // Settings"),
+                 ("a.jsx", "<p>a /* b */ c</p>\n", "/* b */ "))
+        for path, text, old in cases:
+            with self.subTest(text=text):
+                result = self.edited(path, text, old, "")
+                self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_a_comment_after_jsx_code_may_go(self):
+        cases = ("const a = <b>x</b>; // why\n", "return (\n  <div>\n    {/* note */}\n  </div>\n) // why\n")
+        for text in cases:
+            with self.subTest(text=text):
+                self.assert_ok(self.edited("a.tsx", text, " // why", ""))
+
+    def test_a_nested_block_comment_ends_at_its_own_close(self):
+        """Kotlin and Dart nest block comments."""
+        for path in ("a.kt", "a.dart"):
+            with self.subTest(path=path):
+                text = "/* a /* b */ c */\nval n = 1\n"
+                self.assertEqual([c.text for c in comment_check.comments_in(path, text)], ["/* a /* b */ c */"])
+                result = self.edited(path, text, "/* a /* b */", "")
+                self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_a_deletion_at_the_start_names_the_first_line(self):
+        found = comment_check.c_differences("a.ts", "x; y\nz\nw\nv\n", "y\nz\nw\nv\n")
+        self.assertEqual([row for row, _ in found][:1], [1])
+
+    def test_an_edit_to_a_comment_in_jsx_text_is_code(self):
+        """JSX text that looks like a comment is compared by its text."""
+        cases = (("<p>// TODO a</p>\n", "TODO a", "TODO b"), ("<div>\n  /* hi */\n  <b />\n</div>\n", "hi", "bye"),
+                 ("<p>// a</p>\n", "</p>", "</div>"))
+        for text, old, new in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.edited("a.tsx", text, old, new).returncode, 2)
+
+    def test_a_comment_glued_to_brackets_may_go(self):
+        """Only operators fuse, so `{/* x */}` and `{}` are the same code."""
+        cases = (("a.kt", "fun f() {/* nothing */}\n", "/* nothing */"), ("a.kt", "val a = listOf(/* none */)\n", "/* none */"),
+                 ("a.dart", "var a = Foo(/* x */);\n", "/* x */"),
+                 ("a.tsx", "useEffect(() => {/* noop */}, [])\n", "/* noop */"))
+        for path, text, old in cases:
+            with self.subTest(text=text):
+                self.assert_ok(self.edited(path, text, old, ""))
+
+    def test_a_regex_after_an_arrow_or_keyword_opens_no_comment(self):
+        cases = ("const f = (s) => /[/*]/.test(s)\nlet a = 1\n/* x */\n",
+                 "for (const m of /[/*]/g.exec(s)) {}\nlet a = 1\n/* x */\n",
+                 "async function f() { await /[/*]/.test(s) }\nlet a = 1\n/* x */\n")
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.edited("a.ts", text, "a = 1", "a = 2").returncode, 2)
+
+    def test_a_comment_after_a_colon_outside_jsx_is_a_comment(self):
+        """The URL exception is for JSX text only."""
+        self.assert_ok(self.edited("a.ts", "const a = x ? 1 ://c\n  2\n", "//c", ""))
+
+    def test_jsx_text_on_the_next_line_is_text(self):
+        result = self.edited("a.tsx", "<p>\n  hello // world\n  more\n</p>\n", " // world", "")
+        self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_a_code_comment_between_jsx_elements_may_go(self):
+        """An array of elements and a spread attribute are code, not children."""
+        cases = ("const a = [\n  <A key=\"a\" />,\n  // admin only\n  <B key=\"b\" />,\n]\n",
+                 "const a = <Foo\n  a={1}\n  // forward the rest\n  {...rest}\n/>\n",
+                 "const a = cond ? <A /> : null // why\nconst b = <B>x</B>\n// why\nlet c = 1\n")
+        for text in cases:
+            with self.subTest(text=text):
+                self.assert_ok(self.edited("a.tsx", text, "// admin only\n" if "admin" in text else
+                                           "// forward the rest\n" if "forward" in text else " // why", ""))
+
+    def test_a_directive_reason_may_change(self):
+        """The delete-comments skill rewrites the reason of a bare suppression."""
+        text = "// @ts-expect-error: old lib types, see the long story here\nlet n = f()\n"
+        self.assert_ok(self.edited("a.ts", text, "old lib types, see the long story here", "old lib types (YUY-12)"))
+
+    def test_a_comment_expression_that_parts_two_text_lines_is_code(self):
+        """Without it the two lines join into one text with a space."""
+        cases = (("<p>\n  a\n  {/* c */}\n  b\n</p>\n", "  {/* c */}\n"), ("<p>\n  a{/* c */}\n  b\n</p>\n", "{/* c */}"))
+        for text, old in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.edited("a.tsx", text, old, "").returncode, 2)
+
+    def test_a_comment_object_in_an_array_of_elements_is_code(self):
+        result = self.edited("a.tsx", "const a = [<A/>, {/* c */}, <B/>]\n", "{/* c */}", "")
+        self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_an_apostrophe_in_jsx_text_opens_no_string(self):
+        text = "const a = <p>Don't go</p>\n// why\nlet b = 1\n"
+        self.assertEqual([c.text for c in comment_check.comments_in("a.tsx", text)], ["// why"])
+        self.assert_ok(self.edited("a.tsx", text, "// why\n", ""))
+        self.assertEqual(self.edited("a.tsx", text, "b = 1", "b = 2").returncode, 2)
+
+    def test_slashes_in_jsx_text_are_not_listed(self):
+        self.assertEqual(comment_check.comments_in("a.tsx", "<div>\n  Home // Settings\n</div>\n"), [])
+
+    def test_jsx_in_a_plain_js_file_is_followed(self):
+        """CRA and React Native write JSX in .js files."""
+        for path in ("a.js", "a.mjs", "a.cjs"):
+            with self.subTest(path=path):
+                text = "const a = <p>Visit http://example.com today</p>\n"
+                self.assertEqual(comment_check.comments_in(path, text), [])
+                self.assertEqual(self.edited(path, text, "//example.com today</p>", "").returncode, 2)
+
+    def test_a_hemisphere_pointer_resolves(self):
+        """Hemisphere writes `ADR NNNN`, never the hyphen."""
+        repo = self.repo({"a.kt": "val x = 1 // old\n", "docs/adr/0002-room.md": "# Room\n"})
+        with open(os.path.join(repo.root, "a.kt"), "w") as f:
+            f.write("val x = 1 // see ADR 0002 for why\n")
+        self.assertEqual(repo.verify().returncode, 0)
+        with open(os.path.join(repo.root, "a.kt"), "w") as f:
+            f.write("val x = 1 // see ADR 0003 for why\n")
+        result = repo.verify()
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("0003", result.stdout)
 
 
 class PilotTuning(RepoCase):
