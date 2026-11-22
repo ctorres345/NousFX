@@ -215,6 +215,9 @@ jobs:
           # NFX-108: risk_paths come from origin/$BASE_REF, the PR's own base, not origin/HEAD. The base's tier.py needs
           # git_refs.py beside it; a base that has neither yet runs as before, with a warning.
           git show "origin/$BASE_REF:claude/hooks/git_refs.py" > "$gate_dir/git_refs.py" 2>/dev/null || rm -f "$gate_dir/git_refs.py"
+          # NFX-252: the base's comment_check.py beside tier.py caps a proved comment-only diff at Tier 1 with `ui` false.
+          # Without it (a base from before NFX-252) tier.py caps nothing, so it is optional.
+          git show "origin/$BASE_REF:claude/skills/review-loop/scripts/comment_check.py" > "$gate_dir/comment_check.py" 2>/dev/null || rm -f "$gate_dir/comment_check.py"
           if grep -q -- '"--base-ref"' "$gate_dir/tier.py"; then
             set -- --base-ref "$BASE_REF"
           else
