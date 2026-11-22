@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""List the comments a diff adds, so the reviewer can judge each one (NFX-196). Warn-only.
+"""List the comments a diff adds, so the reviewer can judge each one (NFX-196).
 
   comment_check.py <base>       flags in `git diff <base>` (the working tree) plus untracked files
   comment_check.py --keep-list  print the keep list

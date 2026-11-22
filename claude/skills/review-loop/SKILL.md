@@ -68,7 +68,7 @@ Read `references/testfail.md` after Step 0 and in Record the review.
 Read `references/failure-modes.md` when planning a ticket's tests, after Step 0 and in Record the review: each ticket failure mode needs a test or a stated waiver.
 
 ## Comment check
-Read `references/comments.md` after Step 0: warn-only, and the reviewer judges each flag against the keep list.
+Read `references/comments.md` after Step 0: the reviewer judges each flag against the keep list, and a real one is a `med` finding at confidence 60.
 
 ## ADR step
 Read `references/adr.md` after Step 0 and again before Record the review; log each decision as you make it with `scripts/session_report.py decide`.
