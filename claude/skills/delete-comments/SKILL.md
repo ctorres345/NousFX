@@ -44,7 +44,7 @@ Three flags come with a first guess:
 - **Excuse** (covers a hack, a workaround, or a suppression with no reason): replace it with a one-line reason plus a new ticket key; the fix ticket deletes it. File the tickets first, then edit: one ticket per root cause, not per comment, labels `needs-triage` and `agent-filed`, in the project's own tracker (`docs/agents/issue-tracker.md`). Never just delete a tool directive (`# type: ignore`, `# noqa`, `# pragma: no cover`, `# shellcheck`, `@Suppress`): it changes what a tool does.
 - **Decision record** (why the code is this way): becomes an ADR when it is hard to reverse, surprising and a real trade-off, all three; otherwise cut it to the reason or delete it. The code keeps at most a pointer with a one-line reason.
 
-ADRs follow the `domain-modeling` skill's ADR-FORMAT: `docs/adr/NNNN-slug.md`, the next free number. A pointer reads `ADR-NNNN`; in NousFX files under `claude/` and `plugins/` (they are copied into other projects) it reads `NousFX ADR-NNNN`. Anything below the three-part bar is not an ADR.
+ADRs follow the `domain-modeling` skill's ADR-FORMAT: `docs/adr/NNNN-slug.md`, the next free number. A pointer reads `ADR-NNNN` (or `ADR NNNN` where the project writes it so); in NousFX files under `claude/` and `plugins/` (they are copied into other projects) it reads `NousFX ADR-NNNN`. Anything below the three-part bar is not an ADR.
 
 ## 4. Verify
 
@@ -52,7 +52,7 @@ ADRs follow the `domain-modeling` skill's ADR-FORMAT: `docs/adr/NNNN-slug.md`, t
 python3 -B ~/.claude/skills/review-loop/scripts/comment_check.py verify <base>
 ```
 
-`<base>` is the commit the cleanup started from. It checks every changed Python file's AST with docstrings stripped, the module docstring and every docstring read as `name.__doc__` in each file that reads `__doc__` (the `--help` text; it reads scripts and never runs them), each changed shell file's text outside comments and `bash -n`, shebang and encoding lines, and every ADR pointer. Exit 2 names each file that changed more than comments: undo that edit and run it again. In a shell file, delete only the comment and keep the blank lines and spaces around it: verify counts them as code, since a heredoc or an escaped space can hold them. Exit 0 is not the end: then run the project's test suite. Other languages rely on the suite alone.
+`<base>` is the commit the cleanup started from. It checks every changed Python file's AST with docstrings stripped, the module docstring and every docstring read as `name.__doc__` in each file that reads `__doc__` (the `--help` text; it reads scripts and never runs them), each changed shell file's text outside comments and `bash -n`, shebang and encoding lines, and every ADR pointer. Exit 2 names each file that changed more than comments: undo that edit and run it again. In a shell file, delete only the comment and keep the blank lines and spaces around it: verify counts them as code, since a heredoc or an escaped space can hold them. Kotlin, Dart, TypeScript and JavaScript files are compared token by token outside comments, and a difference names its line. In TSX or JSX delete the whole `{/* ... */}` expression: empty braces left behind are code. In Dart a bare trailing `//` is a `dart format` line-break marker, not a comment: keep it. Exit 0 is not the end: then run the project's test suite. Other languages rely on the suite alone.
 
 ## 5. Report
 

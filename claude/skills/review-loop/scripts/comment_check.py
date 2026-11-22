@@ -26,15 +26,19 @@ a Python file whose AST, docstrings stripped, differs; in a file that reads __do
 a changed docstring of a def or class it reads as `name.__doc__` (any of them can be --help text; verify reads
 scripts and never runs them); a symlink that changed or replaced a file; a changed file mode, in any language; a
 shell file whose text outside comments differs (a heredoc is text), or that newly fails `bash -n` (`zsh -n` for a
-zsh file); a changed shebang or encoding line; an added or deleted Python or shell file; an ADR-NNNN
-pointer in a changed file's comments with no docs/adr/NNNN-*.md (in NousFX, under claude/ and plugins/ it must read
-`NousFX ADR-NNNN`; outside NousFX such a pointer is not looked up). Other languages, and a Python file that did
-not parse at BASE, are left to the test suite, and the OK line counts them. Exit 0 when only
+zsh file); a changed shebang or encoding line; a Kotlin, Dart, TypeScript or JavaScript file whose tokens outside
+comments differ, as `file:line code changed` (a TSX or JSX `{/* note */}` child is a comment as a whole, so empty
+braces left behind are code; a bare trailing `//` in Dart is a `dart format` marker and always code); an added or
+deleted file in any of these languages; an ADR-NNNN (or ADR NNNN) pointer in a changed file's comments with no
+docs/adr/NNNN-*.md (in NousFX, under claude/ and plugins/ it must read `NousFX ADR-NNNN`; outside NousFX such a
+pointer is not looked up). Other languages, and a Python file that did not parse at BASE, are left to the test
+suite, and the OK line counts them. Exit 0 when only
 comments changed, 2 on any difference or when git fails.
 KEEP, comments_in() and classify() are the one keep list for all three modes.
 """
 import argparse
 import ast
+import difflib
 import glob
 import io
 import os
@@ -51,7 +55,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tier  # noqa: E402 (a sibling script: its git() and untracked_files() are the safe, capped ones)
 
 EXTENSIONS = {".py": "python", ".sh": "shell", ".bash": "shell", ".zsh": "shell",
-              ".kt": "c", ".kts": "c", ".dart": "c", ".ts": "c", ".tsx": "c", ".mts": "c", ".cts": "c",
+              ".kt": "c", ".kts": "c", ".dart": "dart", ".ts": "c", ".tsx": "c", ".mts": "c", ".cts": "c",
               ".js": "c", ".jsx": "c", ".mjs": "c", ".cjs": "c"}
 
 
@@ -295,18 +299,40 @@ def mark_path_imports(tree, comments):
             c.path_import = True
 
 
-def scan(text, lang):
-    """Comments in shell or C-like text (Kotlin, Dart, TypeScript, JavaScript), skipping strings."""
+def scan(text, lang, tokens=None):
+    """Comments in shell or C-like text (Kotlin, Dart, TypeScript, JavaScript), skipping strings. A `tokens` list
+    gets [line, token] for the code: a word, a string literal, or one other character; a comment is [line, None].
+    In Dart a bare trailing `//` is a `dart format` line-break marker, so it is code."""
     comments, code, heredocs = [], {}, []
     i, n, line = 0, len(text), 1
+    c_like = lang in ("c", "dart")
+    tokens = [] if tokens is None else tokens
+    in_word = False
+
+    def add_token(token):
+        nonlocal in_word
+        in_word = False
+        tokens.append([line, token])
 
     def note_code(ch):
-        if not ch.isspace():
-            code.setdefault(line, []).append(ch)
+        nonlocal in_word
+        if ch.isspace():
+            in_word = False
+            return
+        code.setdefault(line, []).append(ch)
+        if ch.isalnum() or ch in "_$":
+            if in_word:
+                tokens[-1][1] += ch
+            else:
+                add_token(ch)
+                in_word = True
+        else:
+            add_token(ch)
 
     while i < n:
         ch = text[i]
         if ch == "\n":
+            in_word = False
             line += 1
             i += 1
             for word, strip_tabs in heredocs:
@@ -332,36 +358,44 @@ def scan(text, lang):
             j = text.find("\n", i)
             j = n if j < 0 else j
             comments.append(Comment(line, line, text[i:j], "line"))
+            add_token(None)
             i = j
             continue
-        if lang == "c" and text.startswith("//", i) and text[i - 1:i] != "\\":
+        if c_like and text.startswith("//", i) and text[i - 1:i] != "\\":
             j = text.find("\n", i)
             j = n if j < 0 else j
             body = text[i:j]
+            if lang == "dart" and body.rstrip() == "//" and line in code:
+                add_token("//")
+                i = j
+                continue
             style = "doc" if body.startswith("///") and not body.startswith("////") else "line"
             comments.append(Comment(line, line, body, style))
+            add_token(None)
             i = j
             continue
-        if lang == "c" and text.startswith("/*", i) and text[i - 1:i] != "\\":
+        if c_like and text.startswith("/*", i) and text[i - 1:i] != "\\":
             j = text.find("*/", i + 2)
             j = n if j < 0 else j + 2
             body = text[i:j]
             style = "doc" if body.startswith("/**") and body != "/**/" else "block"
             comments.append(Comment(line, line + body.count("\n"), body, style))
+            add_token(None)
             line += body.count("\n")
             i = j
             continue
         quote = next((q for q in ('"""', "'''", '"', "'", "`") if text.startswith(q, i)), None)
-        if quote and (lang == "c" or len(quote) == 1 and quote != "`"):
+        if quote and (c_like or len(quote) == 1 and quote != "`"):
             j = i + len(quote)
             while j < n and not text.startswith(quote, j):
                 if text[j] == "\\" and not (lang == "shell" and quote == "'"):
                     j += 1
-                elif text[j] == "\n" and len(quote) == 1 and quote != "`" and lang == "c":
+                elif text[j] == "\n" and len(quote) == 1 and quote != "`" and c_like:
                     break
                 j += 1
             j = min(n, j + len(quote))
-            note_code('"')
+            code.setdefault(line, []).append('"')
+            add_token(text[i:j])
             line += text.count("\n", i, j)
             i = j
             continue
@@ -599,7 +633,7 @@ def summary(found):
     return f"comment_check: {len(found)} flag{'s' if len(found) != 1 else ''} ({kinds})"
 
 
-ADR_POINTER = re.compile(r"(NousFX )?\bADR-(\d{4})\b")
+ADR_POINTER = re.compile(r"(NousFX )?\bADR[- ](\d{4})\b")
 NOUSFX_ROOTS = ("claude/", "plugins/")
 DELETED_LINES_WARN = 800
 CANNOT_RUN = "cannot run"
@@ -707,6 +741,51 @@ def shell_differences(path, old, new):
     return out
 
 
+C_LIKE = ("c", "dart")
+JSX = (".tsx", ".jsx")
+NOT_JSX_TEXT = {"else", "try", "finally", "do"}
+
+
+def jsx_comments(tokens):
+    """Indexes of the braces of each JSX comment expression, `{/* note */}` as a child between tags: the braces hold
+    only comments, the next token is `<` or `{`, and the one before is a tag's `>` (not `=>`), a `}` or a JSX text
+    word. Deleting the whole expression is a comment change; leaving `{}` behind is not."""
+    code = [k for k, (_, t) in enumerate(tokens) if t is not None]
+    out = set()
+    for pos, k in enumerate(code):
+        if tokens[k][1] != "{" or pos + 1 >= len(code) or tokens[code[pos + 1]][1] != "}" or code[pos + 1] == k + 1:
+            continue
+        before = tokens[code[pos - 1]][1] if pos else ""
+        arrow = before == ">" and pos > 1 and tokens[code[pos - 2]][1] == "="
+        after = tokens[code[pos + 2]][1] if pos + 2 < len(code) else ""
+        text_word = re.fullmatch(r"[\w$]+", before) and before not in NOT_JSX_TEXT
+        if after in ("<", "{") and (before in (">", "}") and not arrow or text_word):
+            out.update((k, code[pos + 1]))
+    return out
+
+
+def c_code(path, text):
+    """[(line, token)] of a Kotlin, Dart, TypeScript or JavaScript file outside its comments."""
+    tokens = []
+    scan(text, language(path, text), tokens)
+    drop = jsx_comments(tokens) if os.path.splitext(path)[1].lower() in JSX else set()
+    return [(line, t) for k, (line, t) in enumerate(tokens) if t is not None and k not in drop]
+
+
+def c_differences(path, old, new):
+    """[(line, difference)] for each run of tokens outside comments that differs from BASE, at its line in the
+    working tree."""
+    before, after = c_code(path, old), c_code(path, new)
+    matcher = difflib.SequenceMatcher(None, [t for _, t in before], [t for _, t in after], autojunk=False)
+    out = []
+    for op, _, _, j1, _ in matcher.get_opcodes():
+        if op == "equal":
+            continue
+        row = after[j1][0] if op != "delete" and j1 < len(after) else after[j1 - 1][0] if j1 else 1
+        out.append((row, "code changed"))
+    return out
+
+
 def is_nousfx(root):
     return os.path.isfile(os.path.join(root, "scripts", "nousfx_sync.py"))
 
@@ -726,49 +805,50 @@ def adr_differences(root, path, text):
 
 
 def differences(root, base):
-    """([(path, difference)] for every change since base that is more than comments, the number of changed files
-    verify left to the suite: other languages and file types). An extensionless file takes its language from BASE,
-    since the edit may have deleted its shebang."""
+    """([(path, line or None, difference)] for every change since base that is more than comments, the number of
+    changed files verify left to the suite: other languages and file types). An extensionless file takes its
+    language from BASE, since the edit may have deleted its shebang."""
     out, unchecked = [], 0
     for status, path, mode_changed in sorted(changed_files(root, base), key=lambda p: p[1]):
         if status == "M" and mode_changed:
-            out.append((path, "mode changed (the executable bit)"))
+            out.append((path, None, "mode changed (the executable bit)"))
         ext = os.path.splitext(path)[1].lower()
         if ext and ext not in EXTENSIONS:
             unchecked += 1
             continue
         if status == "D":
-            if language(path, git(root, "show", f"{base}:{path}")) in ("python", "shell"):
-                out.append((path, "deleted"))
+            if language(path, git(root, "show", f"{base}:{path}")):
+                out.append((path, None, "deleted"))
             continue
         full = os.path.join(root, path)
         if status == "T" or os.path.islink(full):
-            out.append((path, "a symlink changed or replaced a file"))
+            out.append((path, None, "a symlink changed or replaced a file"))
             continue
         try:
             new = read_text(full)
         except OSError as e:
-            out.append((path, f"unreadable ({e.strerror})"))
+            out.append((path, None, f"unreadable ({e.strerror})"))
             continue
         old = git(root, "show", f"{base}:{path}") if status != "A" else None
         lang = (old is not None and not ext and language(path, old)) or \
             (language(path, new) if new is not None else None)
-        if lang not in ("python", "shell"):
-            unchecked += 1
         if lang is None:
+            unchecked += 1
             continue
         found = []
-        if status == "A" and lang in ("python", "shell"):
-            found.append("added")
-        elif lang in ("python", "shell"):
+        if status == "A":
+            found.append((None, "added"))
+        elif lang in C_LIKE:
+            found += c_differences(path, old, new)
+        else:
             if directives(old) != directives(new):
-                found.append("a shebang or encoding line changed")
+                found.append((None, "a shebang or encoding line changed"))
             checks = python_differences(old, new) if lang == "python" else shell_differences(path, old, new)
             if checks is None:
                 unchecked += 1
-            found += checks or []
-        found += adr_differences(root, path, new)
-        out += [(path, d) for d in found]
+            found += [(None, d) for d in checks or []]
+        found += [(None, d) for d in adr_differences(root, path, new)]
+        out += [(path, row, d) for row, d in found]
     return out, unchecked
 
 
@@ -794,15 +874,16 @@ def verify_main(argv):
     except RuntimeError as e:
         print(f"comment_check: git failed: {e}", file=sys.stderr)
         return 2
-    for path, difference in found:
-        print(f"{path}: {difference}")
+    for path, row, difference in found:
+        print(f"{path}:{row} {difference}" if row else f"{path}: {difference}")
     if deleted > DELETED_LINES_WARN:
         print(f"comment_check verify: warning: {deleted} lines deleted, "
               f"over the ~{DELETED_LINES_WARN} a PR should take")
     if found:
         print(f"comment_check verify: {len(found)} difference{'s' if len(found) != 1 else ''}")
         return 2
-    print(f"comment_check verify: OK, Python and shell files changed only comments ({deleted} lines deleted); "
+    print(f"comment_check verify: OK, Python, shell, Kotlin, Dart, TypeScript and JavaScript files changed only "
+          f"comments ({deleted} lines deleted); "
           f"{unchecked} other changed file{'s' if unchecked != 1 else ''} left to the suite")
     return 0
 

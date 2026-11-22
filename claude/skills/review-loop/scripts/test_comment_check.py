@@ -958,8 +958,8 @@ class Verify(RepoCase):
         self.assert_difference(repo, "cli.py:", "does not parse")
 
     def test_other_languages_and_markdown_are_left_to_the_suite(self):
-        repo = self.fixture(**{"a.ts": "const x = 1; // one\n"})
-        self.edit(repo, "a.ts", "const x = 1", "const x = 2")
+        repo = self.fixture(**{"a.go": "var x = 1 // one\n"})
+        self.edit(repo, "a.go", "var x = 1", "var x = 2")
         self.edit(repo, "README.md", "base", "changed")
         result = repo.verify()
         self.assertEqual(result.returncode, 0, result.stdout)
@@ -1030,6 +1030,138 @@ class Verify(RepoCase):
         result = self.fixture().run("verify")
         self.assertEqual(result.returncode, 2)
         self.assertIn("BASE", result.stderr)
+
+
+KOTLIN = src(
+    "package app",
+    "",
+    "/**",
+    " * Greets someone.",
+    " */",
+    "fun greet(name: String): String {",
+    '    val url = "https://example.com/a//b/*c*/"  // the home page',
+    "    /* the greeting */",
+    '    return "hi $name" + url',
+    "}")
+
+DART = src(
+    "/// A dog.",
+    "class Dog {",
+    "  // its name",
+    "  final String name;",
+    "  Dog(this.name);",
+    "",
+    "  List<String> tricks() => [",
+    "        'sit', //",
+    "        'stay', // the hard one",
+    "        'https://example.com//x',",
+    "      ];",
+    "}")
+
+TSX = src(
+    "export function Card() {",
+    "  return (",
+    "    <div>",
+    "      {/* the title */}",
+    '      <h1 className="a//b">Hi</h1>',
+    "    </div>",
+    "  );",
+    "}")
+
+
+class VerifyCLike(RepoCase):
+    """NFX-250: verify compares Kotlin, Dart, TypeScript and JavaScript token by token outside comments."""
+
+    def edited(self, path, text, old, new):
+        repo = self.repo({path: text})
+        full = os.path.join(repo.root, path)
+        self.assertIn(old, text)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(text.replace(old, new, 1))
+        return repo.verify()
+
+    def assert_ok(self, result):
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("0 other changed files left to the suite", result.stdout)
+
+    def assert_changed(self, result, location):
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn(f"{location} code changed", result.stdout)
+
+    def test_removing_only_comments_passes(self):
+        cases = (("a.kt", KOTLIN, "/**\n * Greets someone.\n */\n", ""),
+                 ("a.kt", KOTLIN, "  // the home page", ""),
+                 ("a.kt", KOTLIN, "    /* the greeting */\n", ""),
+                 ("lib/dog.dart", DART, "/// A dog.\n", ""),
+                 ("lib/dog.dart", DART, "  // its name\n", ""),
+                 ("lib/dog.dart", DART, " // the hard one", ""),
+                 ("ui/card.tsx", TSX, "      {/* the title */}\n", ""))
+        for path, text, old, new in cases:
+            with self.subTest(path=path, old=old):
+                self.assert_ok(self.edited(path, text, old, new))
+
+    def test_one_changed_code_token_exits_2_naming_its_line(self):
+        cases = (("a.kt", KOTLIN, '"hi $name"', '"hey $name"', "a.kt:9"),
+                 ("a.kt", KOTLIN, "a//b/*c*/", "a//b", "a.kt:7"),
+                 ("lib/dog.dart", DART, "'stay'", "'go'", "lib/dog.dart:9"),
+                 ("lib/dog.dart", DART, "final String", "final Object", "lib/dog.dart:4"),
+                 ("ui/card.tsx", TSX, 'className="a//b"', 'className="a"', "ui/card.tsx:5"),
+                 ("ui/card.tsx", TSX, "<h1", "<h2", "ui/card.tsx:5"))
+        for path, text, old, new, location in cases:
+            with self.subTest(path=path, old=old):
+                self.assert_changed(self.edited(path, text, old, new), location)
+
+    def test_a_bare_trailing_dart_slash_pair_is_code(self):
+        """`dart format` keeps a list split on lines when an element ends in `//`: it is not a comment."""
+        repo = self.repo({"lib/dog.dart": DART})
+        lines, _ = repo.inventory("lib/dog.dart")
+        self.assertFalse([l for l in lines if l.startswith("lib/dog.dart:8 ")], lines)
+        self.assertTrue([l for l in lines if l.startswith("lib/dog.dart:9 ")], lines)
+        self.assert_changed(self.edited("lib/dog.dart", DART, "'sit', //", "'sit',"), "lib/dog.dart:8")
+
+    def test_the_diff_mode_does_not_flag_a_bare_trailing_dart_slash_pair(self):
+        repo = self.repo({"lib/dog.dart": "x"})
+        repo.write("lib/dog.dart", DART)
+        self.assertFalse([l for l in repo.flags() if l.startswith("lib/dog.dart:8 ")])
+
+    def test_a_bare_slash_pair_in_kotlin_is_still_a_comment(self):
+        self.assert_ok(self.edited("a.kt", "val x = listOf(\n    1, //\n)\n", " //", ""))
+
+    def test_tsx_braces_left_behind_are_a_code_change(self):
+        self.assert_changed(self.edited("ui/card.tsx", TSX, "{/* the title */}", "{}"), "ui/card.tsx:4")
+
+    def test_empty_braces_in_code_are_never_dropped(self):
+        """Only a JSX child is a comment expression: an arrow body or an if block keeps its braces."""
+        cases = ("const f = () => {/* nothing */}\n<a/>\n", "if (x) {/* nothing */}\n{y}\n")
+        for text in cases:
+            with self.subTest(text=text):
+                result = self.edited("a.tsx", text, "{/* nothing */}", "")
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertRegex(result.stdout, r"a\.tsx:\d+ code changed")
+
+    def test_jsx_text_before_a_comment_expression(self):
+        self.assert_ok(self.edited("a.jsx", "<p>Hello {/* name */}</p>\n", " {/* name */}", ""))
+
+    def test_an_added_or_deleted_kotlin_file_exits_2(self):
+        repo = self.repo({"a.kt": KOTLIN})
+        repo.write("b.ts", "const x = 1\n")
+        repo.remove("a.kt")
+        result = repo.verify()
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("a.kt: deleted", result.stdout)
+        self.assertIn("b.ts: added", result.stdout)
+
+    def test_a_hemisphere_pointer_resolves(self):
+        """Hemisphere writes `ADR NNNN`, never the hyphen."""
+        repo = self.repo({"a.kt": "val x = 1 // old\n", "docs/adr/0002-room.md": "# Room\n"})
+        with open(os.path.join(repo.root, "a.kt"), "w") as f:
+            f.write("val x = 1 // see ADR 0002 for why\n")
+        self.assertEqual(repo.verify().returncode, 0)
+        with open(os.path.join(repo.root, "a.kt"), "w") as f:
+            f.write("val x = 1 // see ADR 0003 for why\n")
+        result = repo.verify()
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("0003", result.stdout)
 
 
 class PilotTuning(RepoCase):
