@@ -7,10 +7,12 @@ throwaway repos under a temp dir and never touch the real repo or HOME.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -940,6 +942,209 @@ class CapGateCli(GitCase):
         out = self.result("--base", base)
         self.assertEqual(len(out["gates"]), 1, out)
         self.assertIn(CAP_MESSAGE, out["gates"][0])
+
+
+class CommentLines(unittest.TestCase):
+    """NFX-252: a keyword on a whole-line comment, added or removed, is not a Tier 3 keyword hit."""
+
+    def tier_of(self, path, added=(), removed=()):
+        return tier.classify([f(path, text=list(added), removed_text=list(removed))])
+
+    def test_removed_banner_comment_is_not_a_keyword_hit(self):
+        r = self.tier_of("plugins/via/scripts/via_prototype.py", removed=["# --- tokens ---"])
+        self.assertEqual(r["tier"], 0, r["reasons"])
+
+    def test_comment_lines_in_each_comment_style_are_skipped(self):
+        for path, line in (("src/a.py", "    # check the secret"), ("run.sh", "# the token goes here"),
+                           ("src/A.kt", "// the auth flow"), ("src/a.ts", "  /* login first */"),
+                           ("src/a.ts", "   * @param token the user's token"), ("src/A.java", " */ "),
+                           ("src/a.go", "// password rules"), ("conf/a.yml", "# secrets live in the vault")):
+            r = self.tier_of(path, added=[line], removed=[line])
+            self.assertFalse([x for x in r["reasons"] if "keyword" in x], (path, line, r["reasons"]))
+
+    def test_code_on_the_line_still_counts(self):
+        for path, line in (("src/a.py", "x = token  # the token"), ("src/a.ts", "/* x */ login()"),
+                           ("src/a.c", "#define SECRET 1"), ("src/a.c", "*p = secret;"),
+                           ("src/a.go", "*p = token"), ("src/a.py", "*args, token = x"),
+                           ("src/a.ts", "/* a */ login(); /* b */"), ("src/A.kt", "*/ val token = 1"),
+                           ("src/A.kt", "    *tokens,"), ("src/a.js", "  *[Symbol.iterator]() { yield token }")):
+            self.assertEqual(self.tier_of(path, added=[line])["tier"], 3, (path, line))
+            self.assertEqual(self.tier_of(path, removed=[line])["tier"], 3, (path, line))
+
+    def test_security_skills_still_read_comment_lines(self):
+        r = self.tier_of("src/a.py", removed=["# check the secret"])
+        self.assertEqual(r["security"], ["sharp-edges"])
+
+
+class CommentOnlyCap(GitCase):
+    """NFX-252: when `comment_check.py verify BASE` proves only comments changed (and leaves no other changed file),
+    the tier is capped at 1 and `ui` is false. Anything less than that proof leaves the tier as it was."""
+
+    GATE_FILE = "claude/hooks/review-gate.py"
+    UI_FILE = "app/src/main/java/x/ui/GameBoardScreen.kt"
+
+    def setUp(self):
+        super().setUp()
+        self.write(self.GATE_FILE, "import os\n\n# Check the token here.\nLIMIT = 3\n")
+        self.write(self.UI_FILE, "package x\n\n// Draws the board.\n@Composable\nfun Board() {\n    Text(\"a\")\n}\n")
+        self.commit("base")
+        self.base = self.git("rev-parse", "HEAD")
+
+    def change_comment(self):
+        self.write(self.GATE_FILE, "import os\n\n# Check it.\nLIMIT = 3\n")
+
+    def change_code(self):
+        self.write(self.GATE_FILE, "import os\n\n# Check it.\nLIMIT = 4\n")
+
+    def assertCapped(self, out):
+        self.assertEqual(out["tier"], 1, out["reasons"])
+        self.assertEqual(out["reasons"][0], "Tier 1: comments only (verify OK)")
+        self.assertFalse(out["ui"])
+
+    def test_comment_only_gate_file_is_capped_at_tier_1(self):
+        self.change_comment()
+        out = self.result("--base", self.base)
+        self.assertCapped(out)
+
+    def test_capped_reasons_keep_what_was_found_without_a_tier_prefix(self):
+        self.change_comment()
+        out = self.result("--base", self.base)
+        self.assertIn("was Tier 3: touches " + self.GATE_FILE, out["reasons"])
+        self.assertEqual([r for r in out["reasons"] if r.startswith("Tier ")], ["Tier 1: comments only (verify OK)"])
+
+    def test_one_code_token_changed_stays_tier_3(self):
+        self.change_code()
+        out = self.result("--base", self.base)
+        self.assertEqual(out["tier"], 3)
+        self.assertNotIn("Tier 1: comments only (verify OK)", out["reasons"])
+
+    def test_comment_only_ui_file_is_not_ui(self):
+        self.write(self.UI_FILE, "package x\n\n// Draws it.\n@Composable\nfun Board() {\n    Text(\"a\")\n}\n")
+        out = self.result("--base", self.base)
+        self.assertCapped(out)
+
+    def test_code_change_in_a_ui_file_is_still_ui(self):
+        self.write(self.UI_FILE, "package x\n\n// Draws the board.\n@Composable\nfun Board() {\n    Text(\"b\")\n}\n")
+        self.assertTrue(self.result("--base", self.base)["ui"])
+
+    def test_another_changed_file_verify_cannot_read_means_no_cap(self):
+        self.change_comment()
+        self.write("README.md", "hello again\n")
+        out = self.result("--base", self.base)
+        self.assertEqual(out["tier"], 3, out["reasons"])
+
+    def test_deleted_docstring_of_a_file_that_reads_doc_means_no_cap(self):
+        self.write(self.GATE_FILE, '"""Usage: gate."""\nimport argparse\n\nHELP = __doc__\n')
+        self.commit("doc")
+        base = self.git("rev-parse", "HEAD")
+        self.write(self.GATE_FILE, "import argparse\n\nHELP = __doc__\n")
+        self.assertEqual(self.result("--base", base)["tier"], 3)
+
+    def test_deleted_file_means_no_cap(self):
+        """NFX-252: comment_check verify neither flags nor counts a deleted file it cannot type (no extension, no shebang)."""
+        self.write("Makefile", "all:\n\ttrue\n")
+        self.commit("make")
+        base = self.git("rev-parse", "HEAD")
+        self.change_comment()
+        self.git("rm", "-q", "Makefile")
+        self.assertEqual(self.result("--base", base)["tier"], 3)
+
+    def test_verify_timeout_leaves_the_gate_time_for_the_rest(self):
+        with open(os.path.join(CLAUDE_DIR, "hooks", "review-gate.py"), encoding="utf-8") as fh:
+            text = fh.read()
+        for name in ("TIER_TIMEOUT", "DEFAULT_BUDGET"):
+            budget = int(re.search(r"^%s = (\d+)" % name, text, re.M).group(1))
+            self.assertLessEqual(tier.VERIFY_TIMEOUT * 2, budget, name)
+
+    def test_a_diff_too_big_for_a_cleanup_is_not_verified(self):
+        self.write("src/big.py", "".join("# c%d\nx%d = 1\n" % (i, i) for i in range(600)))
+        self.commit("big")
+        base = self.git("rev-parse", "HEAD")
+        self.write("src/big.py", "".join("# d%d\nx%d = 1\n" % (i, i) for i in range(600)))
+        with mock.patch.object(tier, "comments_only", side_effect=AssertionError("verify ran")):
+            result = tier.run(self.repo, base, [])
+        self.assertEqual(result["tier"], 3)
+
+    def test_untracked_code_file_means_no_cap(self):
+        self.change_comment()
+        self.write("src/new.py", "x = 1\n")
+        self.assertEqual(self.result("--base", self.base)["tier"], 3)
+
+    def test_fable_review_label_keeps_tier_3_but_not_ui(self):
+        self.write(self.UI_FILE, "package x\n\n// Draws it.\n@Composable\nfun Board() {\n    Text(\"a\")\n}\n")
+        out = self.result("--base", self.base, "--labels", "fable-review")
+        self.assertEqual(out["tier"], 3)
+        self.assertFalse(out["ui"])
+
+    def test_size_l_label_is_still_capped(self):
+        self.change_comment()
+        self.assertCapped(self.result("--base", self.base, "--labels", "size-L"))
+
+    def test_a_small_comment_only_diff_keeps_its_tier(self):
+        self.write("src/a.py", "# one\nx = 1\n")
+        self.commit("a")
+        base = self.git("rev-parse", "HEAD")
+        self.write("src/a.py", "# two\nx = 1\n")
+        out = self.result("--base", base)
+        self.assertEqual(out["tier"], 0)
+        self.assertNotIn("Tier 1: comments only (verify OK)", out["reasons"])
+
+    def run_copy(self, comment_check=None):
+        d = os.path.join(self.tmp, "copy")
+        os.makedirs(d)
+        shutil.copy(TIER, d)
+        shutil.copy(GIT_REFS_SRC, d)
+        if comment_check is not None:
+            with open(os.path.join(d, "comment_check.py"), "w", encoding="utf-8") as fh:
+                fh.write(comment_check)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        r = subprocess.run([sys.executable, "-B", os.path.join(d, "tier.py"), "--cwd", self.repo, "--base", self.base],
+                           capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_missing_comment_check_means_no_cap(self):
+        self.change_comment()
+        self.assertEqual(self.run_copy()["tier"], 3)
+
+    def test_crashing_comment_check_means_no_cap(self):
+        self.change_comment()
+        self.assertEqual(self.run_copy("raise SystemExit(1)\n")["tier"], 3)
+
+    def test_exit_0_without_the_ok_line_means_no_cap(self):
+        self.change_comment()
+        self.assertEqual(self.run_copy("print('comment_check verify: 0 differences')\n")["tier"], 3)
+
+    def test_ok_line_with_other_changed_files_means_no_cap(self):
+        self.change_comment()
+        fake = ("print('comment_check verify: OK, Python and shell files changed only comments (1 lines deleted); "
+                "1 other changed file left to the suite')\n")
+        self.assertEqual(self.run_copy(fake)["tier"], 3)
+
+    def test_ok_line_not_last_means_no_cap(self):
+        self.change_comment()
+        fake = ("print('comment_check verify: OK, Python files changed only comments (1 lines deleted); "
+                "0 other changed files left to the suite')\nprint('x.py: deleted')\n")
+        self.assertEqual(self.run_copy(fake)["tier"], 3)
+
+    def test_hanging_comment_check_means_no_cap(self):
+        self.change_comment()
+        fake = os.path.join(self.tmp, "slow.py")
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write("import time\ntime.sleep(5)\nprint('comment_check verify: OK, Python files changed only comments "
+                     "(1 lines deleted); 0 other changed files left to the suite')\n")
+        with mock.patch.object(tier, "comment_check_path", return_value=fake):
+            self.assertTrue(tier.comments_only(self.repo, self.base, []))
+            with mock.patch.object(tier, "VERIFY_TIMEOUT", 1):
+                started = time.monotonic()
+                self.assertFalse(tier.comments_only(self.repo, self.base, []))
+                self.assertLess(time.monotonic() - started, 4)
+
+    def test_ok_from_a_flat_copy_like_ci(self):
+        self.change_comment()
+        with open(os.path.join(HERE, "comment_check.py"), encoding="utf-8") as fh:
+            out = self.run_copy(fh.read())
+        self.assertCapped(out)
 
 
 if __name__ == "__main__":

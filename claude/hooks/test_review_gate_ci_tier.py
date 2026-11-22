@@ -6,6 +6,7 @@ Throwaway files and git repos under a temp dir. Exit 0 passes, 2 blocks.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -15,6 +16,8 @@ from test_review_gate_check import GATE, Base  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TIER_PY = os.path.join(ROOT, "claude", "skills", "review-loop", "scripts", "tier.py")
+COMMENT_CHECK_PY = os.path.join(ROOT, "claude", "skills", "review-loop", "scripts", "comment_check.py")
+GIT_REFS_PY = os.path.join(ROOT, "claude", "hooks", "git_refs.py")
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "review-gate.yml")
 
 
@@ -175,6 +178,41 @@ class VerifyTier(Base):
         self.assertBlocked(self.verify("Review-Tier: 0\n", raw=out))
         self.assertPasses(self.verify("Review-Tier: 3\n", raw=out))
 
+    def comment_only_tier(self, new_text):
+        """NFX-252: tier.py, git_refs.py and comment_check.py side by side, as the CI step copies them from the base,
+        on a commit that changes claude/hooks/review-gate.py to new_text."""
+        gate_file = os.path.join(self.repo, "claude", "hooks", "review-gate.py")
+        os.makedirs(os.path.dirname(gate_file))
+        with open(gate_file, "w", encoding="utf-8") as f:
+            f.write("# Check the token here.\nLIMIT = 3\n")
+        self.sh("git", "add", "-A")
+        self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+        base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True, text=True,
+                              check=True).stdout.strip()
+        with open(gate_file, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        self.sh("git", "add", "-A")
+        self.sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "change")
+        gate_dir = os.path.join(self.tmp, "gate")
+        os.makedirs(gate_dir)
+        for src in (TIER_PY, GIT_REFS_PY, COMMENT_CHECK_PY):
+            shutil.copy(src, gate_dir)
+        return subprocess.run([sys.executable, "-B", os.path.join(gate_dir, "tier.py"), "--base", base, "--cwd",
+                               self.repo], capture_output=True, text=True, check=True,
+                              stdin=subprocess.DEVNULL).stdout
+
+    def test_ci_accepts_the_capped_tier_for_a_comment_only_diff(self):
+        out = self.comment_only_tier("# Check it.\nLIMIT = 3\n")
+        self.assertEqual(json.loads(out)["tier"], 1, out)
+        self.assertFalse(json.loads(out)["ui"], out)
+        self.assertPasses(self.verify("Review-Tier: 1 (Tier 1: comments only (verify OK))\n", raw=out))
+        self.assertBlocked(self.verify("Review-Tier: 0\n", raw=out))
+
+    def test_ci_keeps_tier_3_when_one_code_token_changed(self):
+        out = self.comment_only_tier("# Check it.\nLIMIT = 4\n")
+        self.assertEqual(json.loads(out)["tier"], 3, out)
+        self.assertBlocked(self.verify("Review-Tier: 1 (Tier 1: comments only (verify OK))\n", raw=out))
+
 
 class Workflow(unittest.TestCase):
     """Static checks on the CI step: base copies only, the body via env, a positive confirmation."""
@@ -216,6 +254,13 @@ class Workflow(unittest.TestCase):
     def test_git_refs_comes_from_the_base_and_is_optional(self):
         self.assertIn('git show "origin/$BASE_REF:claude/hooks/git_refs.py" > "$gate_dir/git_refs.py"', self.step)
         self.assertIn('|| rm -f "$gate_dir/git_refs.py"', self.step)
+
+    def test_comment_check_comes_from_the_base_and_is_optional(self):
+        """NFX-252: without it the base's tier.py caps nothing, so a base from before NFX-252 still runs."""
+        self.assertIn('git show "origin/$BASE_REF:claude/skills/review-loop/scripts/comment_check.py" > '
+                      '"$gate_dir/comment_check.py"', self.step)
+        self.assertIn('|| rm -f "$gate_dir/comment_check.py"', self.step)
+        self.assertLess(self.step.index("comment_check.py"), self.step.index('"$gate_dir/tier.py" --base'))
 
 
 if __name__ == "__main__":

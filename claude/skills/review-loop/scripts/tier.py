@@ -11,6 +11,9 @@ gates (NFX-200: a changed byte cap, see CAP_NAMES), each also in "reasons" as "G
 diff calls for (NFX-124): agentic-actions-auditor for a path under .github/workflows/, sharp-edges for a security
 keyword in a code file's path or changed lines. It is empty when none applies. Exits 2 (nothing on stdout) when the branch has no
 merge base with the default branch; any other error gives Tier 2 with the reason, never a lower tier.
+NFX-252: a keyword on a whole-line comment does not raise the tier. When `comment_check.py verify BASE` (next to this
+file) proves only comments changed and leaves no other changed file, "ui" is false and the tier is at most 1 (a
+fable-review label keeps 3), with the reason "Tier 1: comments only (verify OK)"; the reasons it replaces start "was ".
 """
 import argparse
 import fnmatch
@@ -128,6 +131,29 @@ def path_keyword(path, keywords=RISK_KEYWORDS):
     return None
 
 
+# NFX-252: whole-line comments by file type. A `*` line counts only where no statement can start with `*` (a pointer).
+HASH_COMMENT_EXTENSIONS = (".py", ".sh", ".bash", ".zsh", ".rb", ".yml", ".yaml", ".toml", ".pl", ".r", ".cmake")
+SLASH_COMMENT_EXTENSIONS = (".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".jsx", ".kt", ".kts", ".java",
+                            ".swift", ".dart", ".scala", ".gradle", ".go", ".rs", ".c", ".h", ".cpp", ".cs")
+POINTER_EXTENSIONS = (".go", ".rs", ".c", ".h", ".cpp", ".cs")
+
+
+def is_comment_line(path, line):
+    """True when the whole line is a comment in this file's language. Code before or after it keeps it code."""
+    ext = os.path.splitext(norm(path))[1].lower()
+    s = line.strip()
+    if ext in HASH_COMMENT_EXTENSIONS:
+        return s.startswith("#")
+    if ext not in SLASH_COMMENT_EXTENSIONS:
+        return False
+    if s.startswith("//"):
+        return True
+    star = s == "*" or s.startswith(("* ", "*/"))
+    block = s.startswith("/*") or (ext not in POINTER_EXTENSIONS and star)
+    end = s.find("*/", 2 if s.startswith("/*") else 0)
+    return block and end in (-1, len(s) - 2)
+
+
 def line_keywords(lines, keywords=RISK_KEYWORDS):
     found = []
     for line in lines:
@@ -237,9 +263,11 @@ def classify(files, labels=(), project_paths=()):
         hit = path_keyword(x["path"])
         if hit:
             keyword_reasons.append('Tier 3: keyword "%s" in the path %s' % (hit, x["path"]))
-        for w in line_keywords(x["added"]):
+        added, removed = ([y for y in part if not is_comment_line(x["path"], y)]
+                          for part in (x["added"], x.get("removed_lines", [])))
+        for w in line_keywords(added):
             keyword_reasons.append('Tier 3: keyword "%s" in %s' % (w, x["path"]))
-        for w in line_keywords(x.get("removed_lines", [])):  # deleting a security check is as risky as adding one
+        for w in line_keywords(removed):  # deleting a security check is as risky as adding one
             keyword_reasons.append('Tier 3: keyword "%s" removed in %s' % (w, x["path"]))
     if len(keyword_reasons) > MAX_KEYWORD_REASONS:
         extra = len(keyword_reasons) - MAX_KEYWORD_REASONS
@@ -527,6 +555,48 @@ def mark_synced(top, files):
             pass
 
 
+COMMENT_CHECK = "comment_check.py"
+COMMENT_ONLY = "Tier 1: comments only (verify OK)"
+VERIFY_OK = re.compile(r"comment_check verify: OK, .*; 0 other changed files left to the suite")
+VERIFY_TIMEOUT = 10
+MAX_VERIFIED_LINES = 1000  # NFX-252: a comment cleanup PR stays under ~800 lines, so a bigger diff is not worth the gate's time
+
+
+def comment_check_path():
+    """comment_check.py next to this file (the repo layout and CI's flat copy), else next to its real path."""
+    for folder in (os.path.dirname(os.path.abspath(__file__)), os.path.dirname(os.path.realpath(__file__))):
+        path = os.path.join(folder, COMMENT_CHECK)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def comments_only(top, base, files):
+    """NFX-252: True only when `comment_check.py verify BASE` exits 0 and its last line is the OK line with 0 other
+    changed files. A missing script, a crash, a timeout or any other output is False, and so is a deleted file (verify
+    skips one it cannot type)."""
+    path = comment_check_path()
+    if not path or any(not os.path.lexists(os.path.join(top, *x["path"].split("/"))) for x in files):
+        return False
+    try:
+        r = subprocess.run([sys.executable, "-I", "-B", path, "verify", base], cwd=top, capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=VERIFY_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    lines = r.stdout.decode("utf-8", "replace").strip().splitlines()
+    return r.returncode == 0 and bool(lines) and VERIFY_OK.fullmatch(lines[-1].strip()) is not None
+
+
+def cap_comment_only(result, labels):
+    """A proved comment-only diff: `ui` false and the tier capped at 1, unless a fable-review label asks for Tier 3.
+    The reasons it replaces read `was Tier N: ...`, since verify-tier takes each `Tier N:` reason as a measurement."""
+    result["ui"] = False
+    if "fable-review" in norm_labels(labels):
+        return
+    result["tier"] = min(result["tier"], 1)
+    result["reasons"] = [COMMENT_ONLY] + ["was " + r if re.match(r"Tier \d:", r) else r for r in result["reasons"]]
+
+
 def fallback(reason, labels, base=None):
     """Tier 2 with the reason when the diff could not be read. A tier never goes down: labels can still raise it.
     Same keys as classify(), so a reader of the JSON sees one shape."""
@@ -574,6 +644,9 @@ def run(cwd, base, labels, base_ref=None, synced=False):
     if project_error is not None:
         result["tier"] = max(result["tier"], 2)
         result["reasons"].insert(0, "Tier 2: could not read [review] risk_paths (%s)" % project_error)
+    if ((result["tier"] > 1 or result["ui"]) and result["stats"]["lines"] <= MAX_VERIFIED_LINES
+            and comments_only(top, base, files)):
+        cap_comment_only(result, labels)
     return result
 
 
