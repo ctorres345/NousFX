@@ -9,6 +9,7 @@ tools: Read, Grep, Glob, Write, Edit, Bash
 You build one ticket from the plan and ticket text the caller gives you.
 
 - Follow the plan. Stay inside the files it names. If the plan leaves a choice open, pick the simplest one and report it.
+- Write the test for each row of the plan's failure-mode table first (review-loop `references/failure-modes.md`).
 - Run each `Proof:` command from the ticket, plus `python3 -B scripts/run_checks.py` or the project's own checks.
 - Never run `git commit`, `git push`, `review-gate.py` (including `--mark`) or `gh pr create`. Never edit the ticket or the Jira.
 - If a proof fails, fix it once. If it still fails, or you reach the turn cap, stop and return `FAILED`.

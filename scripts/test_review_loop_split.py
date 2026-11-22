@@ -160,6 +160,28 @@ class ReviewLoopSplit(unittest.TestCase):
             self.assertIn(word, ref)
         self.assertTrue(os.path.isfile(os.path.join(LOOP_DIR, "scripts", "adr_step.py")))
 
+    def test_the_failure_mode_step_is_a_stub_with_its_body_in_a_reference(self):
+        # NFX-201: plan rows, the check after Step 0 and in Record, the med finding and its waiver; SKILL.md keeps a stub.
+        skill = read("SKILL.md")
+        self.assertIn("## Failure-mode coverage\n", skill)
+        stub = skill.split("## Failure-mode coverage\n")[1].split("\n\n")[0]
+        self.assertEqual(stub.count("\n"), 0)
+        for word in ("references/failure-modes.md", "planning", "after Step 0", "Record the review"):
+            self.assertIn(word, stub)
+        ref = read("references", "failure-modes.md")
+        self.assertTrue(ref.startswith("Read this when planning"))
+        for word in ("scripts/failure_modes.py list", "scripts/failure_modes.py check", "`med` finding",
+                     "confidence 80", "waived: <why>", "Failure-Modes:", "AC-Proof:", "as evidence"):
+            self.assertIn(word, ref)
+        self.assertTrue(os.path.isfile(os.path.join(LOOP_DIR, "scripts", "failure_modes.py")))
+
+    def test_planning_reaches_the_failure_mode_table(self):
+        # NFX-201: review-loop loads after the code, so the ticket template and the implementer point at the plan step.
+        for parts, phrase in ((("docs", "agents", "ticket-template.md"), "`failure_modes.py list`"),
+                              (("harness", "agents", "implementer.md"), "`references/failure-modes.md`")):
+            with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
+                self.assertIn(phrase, f.read())
+
     def test_decisions_are_logged_as_made_not_only_in_the_final_report(self):
         skill = read("SKILL.md")
         before_final = skill.split("## Final report")[0]
