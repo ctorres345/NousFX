@@ -261,6 +261,26 @@ class ArgonReviewTest(unittest.TestCase):
         self.assertEqual(self.logged("agy-files.log").split(), ["diff.txt"])
         self.assertNotIn("other/Private.kt", self.logged("agy-sent.log"))
 
+    def test_the_code_review_runs_the_agy_model_it_is_given(self):
+        self.stub_agy()
+        self.config({KEY: {"destinations": ["agy"], "gemini_code_paths": ["."]}})
+        r = self.argon(os.path.join(SKILLS, "gemini-review", "scripts", "review.py"), "--allow-list",
+                       "--agy-model", "gemini-4-neon-high", "HEAD")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["route"], "agy")
+        args = self.logged("agy-args.log").split("\n")
+        self.assertEqual(args[args.index("--model") + 1], "gemini-4-neon-high")
+
+    def test_with_an_agy_model_the_agy_limit_stops_without_the_billed_key(self):
+        for mode in ("limit", "signed-out"):
+            with self.subTest(mode=mode):
+                self.stub_agy(mode)
+                self.config({KEY: {"destinations": ["agy", "gemini"], "gemini_code_paths": ["."]}})
+                r = self.argon(os.path.join(SKILLS, "gemini-review", "scripts", "review.py"), "--allow-list",
+                               "--agy-model", "gemini-4-neon-high", "HEAD")
+                self.assertEqual(r.returncode, 9, r.stderr)
+                self.assertIsNone(self.logged("args.log"))
+
     def slow_outbound(self, slow_calls, only=""):
         """A copy of gemini-review whose via_outbound.py stub sleeps past the copy's OUTBOUND_LIMIT on its first
         `slow_calls` calls (-1: always; `only`: just that subcommand), then allows ui/ for gemini (not agy).

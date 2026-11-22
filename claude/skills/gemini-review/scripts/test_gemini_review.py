@@ -297,6 +297,45 @@ class ReviewCases:
                                 "GIT_CEILING_DIRECTORIES": os.path.dirname(self.tmp)})
         self.assertEqual(r.returncode, 3, r.stderr)
 
+    def test_agy_model_without_allow_list_stops_with_exit_3(self):
+        self.edit("a.txt", "first\nsecond\n")
+        r = self.run_script("--agy-model", "gemini-4-neon-high", "HEAD")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_agy_model_rejects_bad_model_name_with_exit_3(self):
+        self.two_folders()
+        self.config({"acme/app": {"destinations": ["agy"], "gemini_code_paths": ["src/"]}})
+        for bad in ("claude-opus", "gemini-UPPER", "gemini-" + "a" * 61, ""):
+            r = self.run_script("--allow-list", "--agy-model", bad, "HEAD")
+            self.assertEqual(r.returncode, 3, bad + r.stderr)
+            self.assertIsNone(self.logged("args.log"))
+
+    def test_agy_model_stops_with_exit_4_when_project_does_not_list_agy(self):
+        self.two_folders()
+        self.config({"acme/app": {"destinations": ["gemini"], "gemini_code_paths": ["src/"]}})
+        r = self.run_script("--allow-list", "--agy-model", "gemini-4-neon-high", "HEAD")
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertIn("not allow-listed for agy", r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_outside_paths_ignores_untracked_files_for_a_commit_range(self):
+        self.two_folders()
+        old = os.getcwd()
+        self.addCleanup(os.chdir, old)
+        os.chdir(self.repo)
+        self.assertIn("other/Out.kt", gemini_common.outside_paths(["src/"]))
+        self.assertEqual(gemini_common.outside_paths(["src/", "a.txt"], "HEAD..HEAD"), [])
+
+    def test_agy_model_stops_with_exit_4_when_the_diff_leaves_the_code_paths(self):
+        self.two_folders()
+        self.config({"acme/app": {"destinations": ["agy"], "gemini_code_paths": ["src/"]}})
+        r = self.run_script("--allow-list", "--agy-model", "gemini-4-neon-high", "HEAD")
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertIn("outside gemini_code_paths", r.stderr)
+        self.assertIn("other/Out.kt", r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
 
 class ReviewPosix(ReviewCases, unittest.TestCase):
     pass

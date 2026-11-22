@@ -29,6 +29,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 CLI_VERSION = "0.4.5"
 MODEL = "gemini-4-argon"
 AGY_MODEL = "gemini-4-argon-medium"
+AGY_MODEL_ARG_RE = re.compile(r"gemini-[a-z0-9.-]{1,60}")
 AGY_TIMEOUT = 600
 VIA_TIMEOUT = 30  # seconds for a via_outbound.py answer; it reads one small file and runs one git call
 VIA_SCRIPTS = os.path.join(HERE, "..", "..", "..", "..", "plugins", "via", "scripts")
@@ -252,6 +253,20 @@ def plan_route():
     return route
 
 
+def outside_paths(paths, rng=None):
+    """Files outside the allowed paths: those the diff `rng` changes plus untracked ones, or with no `rng` every
+    tracked and untracked file. A two-commit range (`a..b`) leaves out untracked files, which it does not change.
+    A caller that cannot limit what agy reads to the allowed paths stops on any."""
+    excludes = [":(exclude)%s" % p for p in paths]
+    listed = git("diff", "--no-ext-diff", "--name-only", "-z", rng, "--", ".", *excludes) if rng else \
+        git("ls-files", "-z", "--cached", "--", ".", *excludes)
+    untracked = git("ls-files", "-z", "--others", "--exclude-standard", "--", ".", *excludes) \
+        if not (rng and ".." in rng) else subprocess.CompletedProcess([], 0, b"", b"")
+    if listed.returncode != 0 or untracked.returncode != 0:
+        stop(3, "Stopped: git could not list the files outside gemini_code_paths. Nothing was sent.")
+    return sorted({os.fsdecode(n) for n in (listed.stdout + b"\0" + untracked.stdout).split(b"\0") if n})
+
+
 def new_files(paths, budget):
     """Untracked text files inside the allowed paths, as diff-like text. Regular files only: a symlink could point outside them."""
     if budget < 0:  # the tracked diff alone is over the limit: stop before any untracked file is read
@@ -316,7 +331,7 @@ def run_analyze(cli, args, files):
     return reply
 
 
-def run_agy(system, question, files):
+def run_agy(system, question, files, model=AGY_MODEL):
     """One Argon call through via_agy_call.py. Returns (reply, None), or (None, why) when the caller may fall back
     to the billed key: agy reached the subscription limit (exit 21), or is not installed or not signed in (22).
     Stops with exit 9 on any other failure."""
@@ -330,7 +345,7 @@ def run_agy(system, question, files):
         prompt = os.path.join(workdir, ".prompt")
         with open(prompt, "w", encoding="utf-8") as f:
             f.write("%s\n\nThe attached files: %s.\n\n%s" % (system, ", ".join(sorted(files)), question))
-        r = _via("via_agy_call.py", "text", "--prompt-file", prompt, "--model", AGY_MODEL, "--project", os.getcwd(),
+        r = _via("via_agy_call.py", "text", "--prompt-file", prompt, "--model", model, "--project", os.getcwd(),
                  "--timeout", str(AGY_TIMEOUT), *args, timeout=AGY_TIMEOUT + 120)  # inner wait is +30 s
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -349,12 +364,12 @@ def run_agy(system, question, files):
     return {"text": text, "usage": usage if isinstance(usage, dict) else {}}, None
 
 
-def ask(route, platform, system, question, files):
+def ask(route, platform, system, question, files, model=AGY_MODEL):
     """Sends the files to Argon on the route plan_route() chose, and prints the JSON reply: {"text", "usage",
     "route": "agy" or "gemini-api"}, plus "fallback" (why) when agy could not answer and the billed key did."""
     why = None
     if route["agy"]:
-        reply, why = run_agy(system, question, files)
+        reply, why = run_agy(system, question, files, model=model)
         if reply is not None:
             return _print(dict(reply, route="agy"))
         if not route["gemini"]:
