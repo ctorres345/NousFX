@@ -32,7 +32,7 @@ from <state-home>/local.toml, put in place of <prefix> in AGENTS.md. The home co
 the user record, never from the HOME variable. The state home defaults to <home>/.config/nousfx.
 
 Rules budget: every run except --check --summary warns on stderr when a tool's rules body (header excluded)
-is over 6400 bytes (NOUSFX_RULES_BUDGET, or a `rules-budget: <n>` line in local.md, overrides it), and lists
+is over 6450 bytes (NOUSFX_RULES_BUDGET, or a `rules-budget: <n>` line in local.md, overrides it), and lists
 each sentence of 6+ words that a local layer repeats from a harness source. Warn only: the exit code stays.
 
 Every write is preceded by a backup in <state-home>/backups/<stamp>/. A second run changes nothing.
@@ -68,7 +68,7 @@ CLAUDE_HOOK_FILES = HOOK_FILES + nousfx_agy.MARK_FILES + (DRIFT_HOOK,)  # git_re
 DRIFT_TIMEOUT = 5  # seconds; the hook keeps its own 2 s budget and skips quietly past it
 MATCHER = "Bash|PowerShell|mcp__.*create_pull_request"
 TOOLS = nousfx_mcp.TOOLS
-RULES_BUDGET = 6400  # bytes of generated rules (header excluded), local layers included; warn only (NFX-78; 6144 until NFX-158)
+RULES_BUDGET = 6450  # bytes of generated rules (header excluded), local layers included; warn only (NFX-78; 6144 until NFX-158, 6400 until NFX-281)
 # Bytes of harness/AGENTS.md + the Claude overlay, what every Claude session loads. A ratchet that test_rules_single_copy
 # enforces and --check --summary reports beside RULES_BUDGET; one constant, so the two cannot drift (NFX-96, NFX-133).
 CLAUDE_RULES_BUDGET = 3913  # 50 bytes over the rules at NFX-191 (decision-log pointer); 3846 at NFX-186, 3775 at NFX-158
