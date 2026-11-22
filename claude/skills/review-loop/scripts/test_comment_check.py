@@ -1026,10 +1026,77 @@ class Verify(RepoCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("git failed", result.stderr)
 
-    def test_verify_without_a_base_is_refused(self):
-        result = self.fixture().run("verify")
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("BASE", result.stderr)
+
+
+class VerifyMergeBase(RepoCase):
+    """NFX-248: verify compares with `git merge-base BASE HEAD`, so commits BASE gains later are not counted."""
+
+    def branched(self, branch_code="y = 2\n"):
+        """A repo whose branch `work` deleted a comment (and set app.py's last line to branch_code) after main's
+        base commit, while main has since gained a code commit of its own. The working tree is clean."""
+        repo = self.repo({"app.py": "x = 1  # one\ny = 2\n", "lib.py": "z = 1\n"})
+        repo.git("switch", "-q", "-c", "work")
+        repo.write("app.py", "x = 1\n" + branch_code)
+        repo.commit()
+        repo.git("switch", "-q", "main")
+        repo.write("lib.py", "z = 2\n")
+        repo.write("new.py", "w = 1\n")
+        repo.commit()
+        repo.git("switch", "-q", "work")
+        return repo
+
+    def test_a_comment_only_branch_passes_after_base_gains_code(self):
+        result = self.branched().run("verify", "main")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("lib.py", result.stdout)
+
+    def test_verify_prints_the_merge_base_it_compared_with(self):
+        repo = self.branched()
+        result = repo.run("verify", "main")
+        self.assertIn(f"comparing with {repo.base}", result.stdout)
+
+    def test_a_code_change_on_the_branch_still_exits_2(self):
+        result = self.branched(branch_code="y = 3\n").run("verify", "main")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("app.py", result.stdout)
+        self.assertNotIn("lib.py", result.stdout)
+
+    def test_a_base_with_no_common_ancestor_exits_2(self):
+        repo = self.branched()
+        repo.git("switch", "-q", "--orphan", "other")
+        repo.write("other.py", "o = 1\n")
+        repo.commit()
+        repo.git("switch", "-q", "work")
+        result = repo.run("verify", "other")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("no common ancestor", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_a_commit_on_the_branch_is_its_own_merge_base(self):
+        repo = self.branched()
+        tooling = repo.git("rev-parse", "HEAD").strip()
+        repo.write("lib.py", "z = 9\n")
+        repo.commit()
+        result = repo.run("verify", tooling)
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn(f"comparing with {tooling}", result.stdout)
+        self.assertIn("lib.py", result.stdout)
+
+    def test_bare_verify_uses_the_review_loop_base(self):
+        """ANI-227 retro F2: a bare `verify` takes `git merge-base origin/HEAD HEAD`, so a Proof line runs as
+        written."""
+        repo = self.branched()
+        repo.git("update-ref", "refs/remotes/origin/main", "main")
+        repo.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        bare, named = repo.run("verify"), repo.run("verify", "main")
+        self.assertEqual(bare.returncode, 0, bare.stdout + bare.stderr)
+        self.assertEqual(bare.stdout, named.stdout)
+
+    def test_bare_verify_without_origin_exits_2(self):
+        result = self.branched().run("verify")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("no origin/HEAD or origin/main shares history with HEAD; give BASE", result.stderr)
+        self.assertEqual(result.stdout, "")
 
 
 KOTLIN = src(
