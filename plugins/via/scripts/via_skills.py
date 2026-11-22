@@ -73,7 +73,6 @@ class Fail(Exception):
     pass
 
 
-# --- lock ---------------------------------------------------------------------------------------------------
 def check_path(path):
     parts = path.split("/")
     if (not path or path.startswith("/") or "\\" in path or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in path)
@@ -137,7 +136,6 @@ def write_lock(path, doc):
     via_home.write_atomic(os.path.abspath(path), json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
 
-# --- git ----------------------------------------------------------------------------------------------------
 def git_env(scratch):
     env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": scratch, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
@@ -269,7 +267,6 @@ def verified_many(entries, allow_file):
     return files
 
 
-# --- installed state ----------------------------------------------------------------------------------------
 def manifest_path():
     return os.path.join(via_home.anchor(), "locked-skills.json")
 
@@ -337,7 +334,6 @@ def classify(name, e, owned, shared, claude):
     return "replace", ""
 
 
-# --- commands -----------------------------------------------------------------------------------------------
 def show_plan(lock, owned, shared, claude):
     """Print the plan. Returns (has_collision, todo, digest); the digest binds an install to exactly this plan."""
     rows, bad, todo, h = [], False, [], hashlib.sha256()

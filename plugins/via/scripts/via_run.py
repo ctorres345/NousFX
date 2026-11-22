@@ -127,8 +127,6 @@ def emit(payload):
     print()
 
 
-# --- git ---
-
 def git(args, cwd, env=None):
     try:
         r = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=30)
@@ -186,8 +184,6 @@ def current_tree(gate, cwd):
     except Exception as e:  # RuntimeError from git, or the gate's timeout
         die("cannot hash the working tree (%s). Nothing was recorded." % (str(e) or type(e).__name__))
 
-
-# --- run record ---
 
 def is_text(value):
     return isinstance(value, str) and value.strip() != ""
@@ -468,8 +464,6 @@ def merge_findings(ledger, findings, scope, run_name, held=()):
     return counts
 
 
-# --- ledger file ---
-
 def ledger_path(project):
     path = os.path.join(project, LEDGER)
     if os.path.islink(path) or not inside(os.path.dirname(path), project):
@@ -562,8 +556,6 @@ def save_ledger(path, text, ledger, start, end):
     write_atomic(path, out)
 
 
-# --- run folder ---
-
 def ensure_ignored(project):
     path = os.path.join(project, ".gitignore")
     if os.path.islink(path):
@@ -608,8 +600,6 @@ def load_record(path):
         die("%s Nothing was changed." % problem)
     return rec
 
-
-# --- commands ---
 
 def cmd_init(project, args):
     base = os.path.join(project, RUN_AREA)

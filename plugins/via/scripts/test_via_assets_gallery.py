@@ -137,8 +137,6 @@ class GalleryTest(unittest.TestCase):
         return self.ok("add", "--name", "home_logo_main", "--file", self.raw_file(name, data),
                        "--conversation-id", "abcdef12")
 
-    # --- the page and the state file ---
-
     def test_an_empty_gallery_has_its_empty_state_and_ignores_itself_in_git(self):
         out = self.ok("status")
         self.assertEqual(out["counts"], {"pending": 0, "approved": 0, "rejected": 0})
@@ -632,8 +630,6 @@ class GalleryTest(unittest.TestCase):
                      "key AKIAABCDEFGHIJKLMNOP", code=2)
         self.assertFalse(os.path.exists(self.review("state.json")))
 
-    # --- Argon through a Via run ---
-
     def test_the_argon_step_reaches_the_second_opinion_through_a_run_with_the_assets_as_kept_shots(self):
         self.add_logo()
         self.ok("add", "--name", "home_hero_main", "--file", self.raw_file("hero.jpg", JPEG))
@@ -704,8 +700,6 @@ class GalleryTest(unittest.TestCase):
     def test_shots_needs_a_run_folder_made_by_init(self):
         self.add_logo()
         self.refused("shots", "--run-dir", self.root)
-
-    # --- the mode doc and route ---
 
     def test_the_mode_is_routed_and_its_doc_names_only_real_commands(self):
         skill = self.read(os.path.join(VIA, "SKILL.md"))
