@@ -1160,10 +1160,13 @@ class SyncedExempt(GitCase):
         self.base = self.git("rev-parse", "HEAD")
         self.git("checkout", "-qb", "cesar/PAP-70")
 
+    def reviewed(self, source):
+        """The NousFX file as tier.py compares it: from the default branch, not the working tree."""
+        ref = tier.default_ref(self.NOUSFX)
+        return tier.git(["show", "%s:%s" % (ref, source)], self.NOUSFX, raw=True).decode("utf-8")
+
     def copy(self, rel, source, edit=False):
-        with open(os.path.join(self.NOUSFX, *source.split("/")), encoding="utf-8", newline="") as fh:
-            text = fh.read()
-        self.write(rel, text + ("# hand edit\n" if edit else ""))
+        self.write(rel, self.reviewed(source) + ("# hand edit\n" if edit else ""))
 
     def rendered_hook(self):
         sys.path.insert(0, os.path.join(self.NOUSFX, "scripts"))
@@ -1171,7 +1174,7 @@ class SyncedExempt(GitCase):
             import nousfx_project
         finally:
             sys.path.pop(0)
-        return nousfx_project.rendered(self.NOUSFX)[os.path.join(".githooks", "pre-push")]
+        return nousfx_project.render_hook(self.reviewed("claude/githooks/pre-push"))
 
     def synced_result(self):
         self.commit("sync")
@@ -1215,7 +1218,7 @@ class SyncedExempt(GitCase):
         self.assertIn("Tier 3: touches " + self.GATE, out["reasons"])
 
     def test_pre_push_rendered_by_sync_counts_as_synced(self):
-        self.write(self.HOOK, self.rendered_hook())
+        self.make_hook(executable=True)
         out = self.synced_result()
         self.assertEqual(out["synced"], [self.HOOK])
         self.assertLessEqual(out["tier"], 1, out["reasons"])
@@ -1226,6 +1229,42 @@ class SyncedExempt(GitCase):
         out = self.synced_result()
         self.assertEqual(out["synced"], [])
         self.assertIn("Tier 3: touches " + self.HOOK, out["reasons"])
+
+    def make_hook(self, executable):
+        self.write(self.HOOK, self.rendered_hook())
+        os.chmod(os.path.join(self.repo, *self.HOOK.split("/")), 0o755 if executable else 0o644)
+
+    def test_pre_push_rendered_and_executable_counts_as_synced(self):
+        self.make_hook(executable=True)
+        self.assertEqual(self.synced_result()["synced"], [self.HOOK])
+
+    @unittest.skipIf(os.name == "nt", "no executable bit on Windows")
+    def test_pre_push_that_lost_its_executable_bit_is_counted_in_full(self):
+        self.make_hook(executable=True)
+        self.commit("hook")
+        self.base = self.git("rev-parse", "HEAD")
+        os.chmod(os.path.join(self.repo, *self.HOOK.split("/")), 0o644)
+        out = self.synced_result()
+        self.assertEqual(out["synced"], [])
+        self.assertIn("Tier 3: touches " + self.HOOK, out["reasons"])
+
+    @unittest.skipIf(os.name == "nt", "no executable bit on Windows")
+    def test_pre_push_added_without_executable_bit_is_counted_in_full(self):
+        self.make_hook(executable=False)
+        out = self.synced_result()
+        self.assertEqual(out["synced"], [])
+        self.assertIn("Tier 3: touches " + self.HOOK, out["reasons"])
+
+    @unittest.skipIf(os.name == "nt", "no executable bit on Windows")
+    def test_synced_copy_keeps_its_own_mode_as_sync_does(self):
+        self.copy(self.GATE, "claude/hooks/review-gate.py")
+        os.chmod(os.path.join(self.repo, *self.GATE.split("/")), 0o755)
+        self.assertEqual(self.synced_result()["synced"], [self.GATE])
+
+    def test_synced_empty_diff_keeps_its_tier_0_reason(self):
+        out = self.result("--base", self.base, "--synced")
+        self.assertEqual(out["tier"], 0)
+        self.assertTrue(out["reasons"] and out["reasons"][0].startswith("Tier 0: no code counted"), out["reasons"])
 
     def test_pre_push_source_copied_verbatim_is_not_synced(self):
         self.copy(self.HOOK, "claude/githooks/pre-push")
