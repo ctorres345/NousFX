@@ -10,6 +10,7 @@ Run `python3 -B <this skill's folder>/scripts/testfail.py run --base <base hash>
 | `build` | the restored run failed and named no test, so it proves nothing | report it with the log tail and its `suite:` lines, no finding. If it names an `added helper`, list that file in `[check] tests` and run again. Otherwise ask the reviewer to check that a test reaches the changed code |
 | `baseline-fail` | the check fails in the copy with the change | if `run-check` fails too, fix that before round 1. If it passes, the copy lacks gitignored setup (`node_modules`, `.venv`, `local.properties`): report it with the log tail, no finding |
 | `n/a` | no production file or no test file changed | report it. If it says no file matched a test glob, the project names tests another way: suggest `[check] tests = [...]` |
+| `n/a` ... `(comments only)` | `comment_check.py verify` found only comment changes and left no file to the suite, so nothing ran (NFX-251) | report it; the PR needs no hand-written reason. Comments here are verify's: it ignores docstrings a file does not read and lint suppressions, so where `[check]` runs doctests or a linter, `run-check --stamp` is what tests them |
 
 - Exit 2 (timeout, detached HEAD, no `[check]` command) is not a verdict: report why it stopped. A timeout is never a pass.
 - Give the reviewer the verdict line as evidence. The reviewer still judges test names, duplicated cases and tests that assert implementation details; pass/fail evidence comes from the script.

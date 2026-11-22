@@ -547,6 +547,73 @@ class ImportCauses(Base):
         self.assertIn("added helper newmod.py", r.stdout)
 
 
+COMMENTED = "# Adds two numbers.\n" + BUGGY
+UNRELATED_COMMENTED = "# Always true.\n" + UNRELATED
+
+
+class CommentsOnly(Base):
+    """NFX-251: a diff `comment_check.py verify` proves comment-only gets `n/a (comments only)`, with no run."""
+
+    def comment_only(self):
+        self.write("calc.py", COMMENTED)
+        self.write("test_truth.py", UNRELATED_COMMENTED)
+
+    def assertRanAsToday(self, r):
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.verdict(r), "no")
+        self.assertNotIn("comments only", r.stdout)
+
+    def test_a_comment_only_diff_prints_n_a_comments_only_and_exits_0(self):
+        self.comment_only()
+        r = self.run_base()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.verdict(r), "n/a")
+        self.assertIn(f"base:{self.base} (comments only)", r.stdout.splitlines()[0])
+
+    def test_the_same_diff_with_one_code_token_changed_runs_as_today(self):
+        self.comment_only()
+        self.write("calc.py", COMMENTED.replace("a - b", "a + b"))
+        self.assertRanAsToday(self.run_base())
+
+    def test_attest_prints_the_comments_only_line_the_run_recorded(self):
+        self.comment_only()
+        ran = self.run_base()
+        r = self.tf("attest", "--base", self.base)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], ran.stdout.splitlines()[0])
+
+    def test_fm2_a_file_verify_leaves_to_the_suite_runs_as_today(self):
+        self.comment_only()
+        self.write("README.md", "changed\n")
+        self.assertRanAsToday(self.run_base())
+
+    def checkout_with(self, comment_check):
+        """A NousFX checkout layout (claude/{hooks,skills}) whose comment_check.py is `comment_check`, or none."""
+        root = os.path.join(self._tmp.name, "NousFX", "claude")
+        source = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+        skip = shutil.ignore_patterns("test_*", "__pycache__")
+        shutil.copytree(os.path.join(source, "hooks"), os.path.join(root, "hooks"), ignore=skip)
+        scripts = os.path.join(root, "skills", "review-loop", "scripts")
+        shutil.copytree(HERE, scripts, ignore=skip)
+        os.remove(os.path.join(scripts, "comment_check.py"))
+        if comment_check is not None:
+            with open(os.path.join(scripts, "comment_check.py"), "w", encoding="utf-8") as f:
+                f.write(comment_check)
+        return os.path.join(scripts, "testfail.py")
+
+    def test_fm1_no_comment_check_next_to_testfail_runs_as_today(self):
+        script = self.checkout_with(None)
+        self.comment_only()
+        self.assertRanAsToday(run_script([script, "run", "--base", self.base], cwd=self.repo))
+
+    def test_fm1_a_verify_that_crashes_runs_as_today(self):
+        script = self.checkout_with("def differences(root, base):\n    raise RuntimeError('boom')\n")
+        self.comment_only()
+        r = run_script([script, "run", "--base", self.base], cwd=self.repo)
+        self.assertRanAsToday(r)
+        self.assertIn("boom", r.stderr)
+
+
 class GateLookup(GateLookupCases, unittest.TestCase):
     """NFX-214: a project copy never loads the repo's own .claude/hooks/review-gate.py."""
     SCRIPT = TESTFAIL
