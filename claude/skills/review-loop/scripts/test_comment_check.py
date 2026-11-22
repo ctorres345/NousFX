@@ -1076,6 +1076,7 @@ class VerifyMergeBase(RepoCase):
         repo = self.branched()
         tooling = repo.git("rev-parse", "HEAD").strip()
         repo.write("lib.py", "z = 9\n")
+        repo.commit()
         result = repo.run("verify", tooling)
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn(f"comparing with {tooling}", result.stdout)
@@ -1094,7 +1095,7 @@ class VerifyMergeBase(RepoCase):
     def test_bare_verify_without_origin_exits_2(self):
         result = self.branched().run("verify")
         self.assertEqual(result.returncode, 2, result.stdout)
-        self.assertIn("BASE", result.stderr)
+        self.assertIn("no origin/HEAD or origin/main shares history with HEAD; give BASE", result.stderr)
         self.assertEqual(result.stdout, "")
 
 
