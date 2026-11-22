@@ -16,7 +16,7 @@ Out: ...
 - [ ] Behavior a quota-limited or paid service shows. Proof: manual: the step Backup: a recorded output or a stubbed run
 
 ## Failure modes
-How it could break in production, and what it does then.
+- One bullet per way it could break in production, and what it does then. The plan maps each bullet to a test (review-loop `failure_modes.py list`).
 
 ## Environment
 env-none | env-emulator | env-device, and the devices needed
