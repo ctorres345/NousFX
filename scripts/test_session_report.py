@@ -3,6 +3,7 @@
 
 Run: python3 -B scripts/test_session_report.py
 """
+import datetime
 import json
 import os
 import shlex
@@ -37,7 +38,7 @@ class SessionReport(unittest.TestCase):
     def decide(self, *extra, key="NFX-191", decision="Use JSONL", why="Appending is crash safe",
                rejected="One JSON file", evidence="scripts/test_session_report.py:1", result="tests green"):
         return self.run_cli("decide", key, "--decision", decision, "--why", why, "--rejected", rejected,
-                            "--evidence", evidence, "--result", result, "--date", "2026-11-19", "--name", "t", *extra)
+                            "--evidence", evidence, "--result", result, "--date", "2026-11-19", "--name", "t", "--new", *extra)
 
     def render(self, *extra):
         return self.run_cli("render", "--date", "2026-11-19", "--name", "t", *extra)
@@ -234,10 +235,51 @@ class SessionReport(unittest.TestCase):
         self.assertEqual(len(examples), 1, r.stderr)
         argv = shlex.split(examples[0][len("Example: "):])
         self.assertEqual(argv[:2], ["session_report.py", "decide"])
-        ok = self.run_cli(*argv[1:], "--date", "2026-11-19", "--name", "t")
+        ok = self.run_cli(*argv[1:], "--date", "2026-11-19", "--name", "t", "--new")
         self.assertEqual(ok.returncode, 0, ok.stderr)
         h = self.run_cli("decide", "--help")
         self.assertIn(examples[0][len("Example: "):], " ".join(h.stdout.split()))
+
+    FULL = ("--decision", "d", "--why", "w", "--rejected", "r", "--evidence", "#1", "--result", "ok")
+
+    def folders(self):
+        return sorted(d for _b, ds, _f in os.walk(self.root) for d in ds)
+
+    def test_decide_refuses_an_unknown_name_and_lists_the_key_reports(self):
+        self.assertEqual(self.run_cli("decide", "NFX-214", *self.FULL, "--date", "2026-11-20").returncode, 0)
+        before = self.folders()
+        r = self.run_cli("decide", "NFX-214", *self.FULL, "--name", "checkout-rule")
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("2026-11-20-NFX-214", r.stderr)
+        self.assertIn("--new", r.stderr)
+        self.assertEqual(self.folders(), before)
+        self.assertFalse([d for d in self.folders() if d.endswith("-checkout-rule")])
+
+    def test_decide_refuses_an_unknown_name_when_no_report_exists_for_the_key(self):
+        r = self.run_cli("decide", "NFX-214", *self.FULL, "--name", "checkout-rule")
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("--new", r.stderr)
+        self.assertIn("No report folders exist for NFX-214", r.stderr)
+        self.assertFalse(os.path.exists(self.root))
+
+    def test_new_starts_a_named_report_and_later_calls_reuse_it(self):
+        today = datetime.date.today().isoformat()
+        self.assertEqual(self.run_cli("decide", "NFX-214", *self.FULL, "--name", "wave-1", "--new").returncode, 0)
+        self.assertIn(today + "-wave-1", self.folders())
+        r = self.run_cli("decide", "NFX-214", *self.FULL, "--name", "wave-1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(r.stdout.strip(), encoding="utf-8") as f:
+            self.assertEqual(len(f.read().splitlines()), 2)
+
+    def test_a_name_found_on_another_date_needs_no_new(self):
+        self.assertEqual(self.run_cli("decide", "NFX-214", *self.FULL, "--name", "wave-2", "--new",
+                                      "--date", "2026-11-18").returncode, 0)
+        r = self.run_cli("decide", "NFX-214", *self.FULL, "--name", "wave-2", "--date", "2026-11-19")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_name_equal_to_the_key_or_no_name_needs_no_new(self):
+        self.assertEqual(self.run_cli("decide", "NFX-214", *self.FULL).returncode, 0)
+        self.assertEqual(self.run_cli("decide", "NFX-215", *self.FULL, "--name", "NFX-215").returncode, 0)
 
     def test_decide_help_names_the_required_fields_and_evidence_forms(self):
         h = self.run_cli("decide", "--help")

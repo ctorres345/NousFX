@@ -4,12 +4,13 @@
 Usage:
   session_report.py decide KEY --decision T --why T --rejected T --evidence POINTER --result T
                     [--supersedes ID] [--lesson T] [--held REASON] [--unverified T] [--term "word: meaning"]
-                    [--adr TITLE] [--name N] [--date YYYY-MM-DD]
+                    [--adr TITLE] [--name N [--new]] [--date YYYY-MM-DD]
   session_report.py render [--name N] [--date YYYY-MM-DD] [--prs FILE] [--proofs FILE]
 
 `decide` appends one line to <root>/<project>/reports/<date>-<name>/decisions.jsonl. `render` writes report.md
 beside it: what shipped, decisions, one-way doors held for Cesar, what could not be verified, what to learn.
-<root> is $NOUSFX_REPORT_ROOT or ~/Releases; <name> defaults to the ticket key. Files never go inside a git
+<root> is $NOUSFX_REPORT_ROOT or ~/Releases; <name> defaults to the ticket key; `decide` refuses a --name that
+matches no report folder unless --new is passed (prevents stray folders). Files never go inside a git
 checkout, and a value that looks like a secret is refused before anything is written.
 
 The log is append-only (idea from pstack's show-me-your-work skill, MIT, github.com/cursor/plugins).
@@ -88,7 +89,7 @@ def branch_key():
     return last if KEY_RE.match(last) else None
 
 
-def report_dir(args, repo, key=None, guess=None):
+def report_dir(args, repo, key=None, guess=None, refuse_unknown=False):
     top, common = repo
     root = os.path.realpath(os.path.expanduser(os.environ.get("NOUSFX_REPORT_ROOT") or "~/Releases"))
     project = os.path.basename(os.path.dirname(common.rstrip("/"))) if common else os.path.basename(os.getcwd())
@@ -119,6 +120,16 @@ def report_dir(args, repo, key=None, guess=None):
         name = found[0][len(date) + 1:]
     if not NAME_RE.match(name):
         die("--name may hold letters, digits, dots, hyphens and underscores only.", 2)
+    if refuse_unknown:
+        def folders(n):
+            return sorted(d for d in os.listdir(parent) if re.match(r"^\d{4}-\d{2}-\d{2}-%s$" % re.escape(n), d)) \
+                if os.path.isdir(parent) else []
+        if not folders(name):
+            have = folders(key)
+            die("--name %s matches no report folder. %s Drop --name to log under %s, or pass --new to start a "
+                "report named %s on purpose (a wave report, for example)."
+                % (name, "Report folders for %s: %s." % (key, ", ".join(have)) if have
+                   else "No report folders exist for %s." % key, key, name), 2)
     return os.path.join(parent, "%s-%s" % (date, name))
 
 
@@ -141,7 +152,8 @@ def cmd_decide(args):
     if problems:
         die("\n".join(problems + ["A decision needs what, why, the alternative you rejected, evidence and a result.",
                                   "Example: " + EXAMPLE]), 2)
-    directory = report_dir(args, repo_paths(), args.key)
+    directory = report_dir(args, repo_paths(), args.key,
+                           refuse_unknown=bool(args.name and args.name != args.key and not args.new))
     existing, lines, _bad = read_log(directory)
     ids = {e["id"] for e in existing}
     entry["id"] = max(ids | {lines}) + 1  # past every line, so a bad line's place is never reused
@@ -335,6 +347,8 @@ def main():
         "Example:\n  " + EXAMPLE))
     d.add_argument("key")
     d.add_argument("--supersedes", type=int)
+    d.add_argument("--new", action="store_true",
+                   help="start a report under --name when no folder has that name (a wave report, for example)")
     for field in FIELDS:
         d.add_argument("--" + field)
     r = sub.add_parser("render")
