@@ -86,8 +86,9 @@ class FirstRun(Base):
             self.assertTrue(os.path.exists(os.path.join(self.home, ".claude", "hooks", name)), name)
         cfg = json.loads(read(self.settings))
         entries = cfg["hooks"]["PreToolUse"]
-        self.assertEqual(len(entries), 1)
+        self.assertEqual(len(entries), 2)  # the gate, then the testfail-running warning (NFX-271)
         self.assertIn("review-gate.py", entries[0]["hooks"][0]["command"])
+        self.assertIn("testfail-running.py", entries[1]["hooks"][0]["command"])
 
     def test_second_run_changes_nothing(self):
         self.sync()
@@ -484,6 +485,57 @@ class DriftHookRegistration(Base):
 
     def test_summary_without_check_is_a_usage_error(self):
         self.assertEqual(self.sync("--summary").returncode, 2)
+
+
+class TestfailRunningRegistration(Base):
+    """NFX-271: sync registers the Edit/Write hook that warns while testfail.py run is testing the tree."""
+
+    def entries(self):
+        cfg = json.loads(read(self.settings))
+        return [e for e in cfg["hooks"]["PreToolUse"] if any("testfail-running.py" in h["command"] for h in e["hooks"])]
+
+    def test_testfail_running_hook_is_registered_and_copied(self):
+        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
+        entries = self.entries()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["matcher"], "Edit|Write|NotebookEdit")
+        script = os.path.join(self.home, ".claude", "hooks", "testfail-running.py")
+        self.assertTrue(os.path.exists(script))
+        self.assertEqual(entries[0]["hooks"][0]["command"], f'python3 -I -B "{script}"')
+        self.assertEqual(entries[0]["hooks"][0]["timeout"], 5)
+        self.assertIn("review-gate.py", json.loads(read(self.settings))["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
+
+    def test_testfail_running_second_sync_is_idempotent_and_check_is_clean(self):
+        self.sync()
+        self.sync()
+        self.assertEqual(len(self.entries()), 1)
+        self.assertEqual(self.sync("--check").returncode, 0)
+
+    def test_testfail_running_keeps_the_users_own_pretooluse_entries(self):
+        mine = [{"matcher": "Bash", "hooks": [{"type": "command", "command": "first.sh"}]},
+                {"matcher": "Edit", "hooks": [{"type": "command", "command": "mine-edit.sh"}]}]
+        write(self.settings, json.dumps({"hooks": {"PreToolUse": mine}}))
+        self.sync()
+        self.sync()
+        pre = json.loads(read(self.settings))["hooks"]["PreToolUse"]
+        self.assertEqual(pre[0], mine[0])
+        self.assertIn(mine[1], pre)
+        self.assertEqual(len(self.entries()), 1)
+
+    def test_testfail_running_windows_command_uses_powershell(self):
+        self.sync("--platform", "windows")
+        hook = self.entries()[0]["hooks"][0]
+        self.assertTrue(hook["command"].startswith('python -I -B "'), hook["command"])
+        self.assertEqual(hook["shell"], "powershell")
+
+    def test_testfail_running_hook_is_not_copied_for_agy(self):
+        self.sync("--tools", "claude,agy")
+        for base, _, files in os.walk(os.path.join(self.home, ".gemini")):
+            self.assertNotIn("testfail-running.py", files, base)
+
+    def test_testfail_running_is_off_without_the_keyword(self):
+        cfg = json.loads(nousfx_sync.merge_settings(None, "/g/review-gate.py", False, prefix="me"))
+        self.assertEqual(len(cfg["hooks"]["PreToolUse"]), 1)
 
 
 class RulesBudget(Base):

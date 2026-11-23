@@ -64,8 +64,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 GATE_BUDGET, GATE_TIMEOUT = nousfx_agy.GATE_BUDGET, nousfx_agy.GATE_TIMEOUT  # one budget for every gate hook
 HOOK_FILES = nousfx_agy.GATE_FILES  # the gate and its parser: the same pair goes to Claude and to agy
 DRIFT_HOOK = "nousfx-drift.py"  # Claude only: agy has no session-start event, so its rules carry a line instead
-CLAUDE_HOOK_FILES = HOOK_FILES + nousfx_agy.MARK_FILES + (DRIFT_HOOK,)  # git_refs.py: --mark needs it (NFX-108)
+TESTFAIL_HOOK = "testfail-running.py"  # Claude only: agy's matcher is run_command, so it has no Edit/Write event (NFX-271)
+TESTFAIL_MATCHER = "Edit|Write|NotebookEdit"
+CLAUDE_HOOK_FILES = HOOK_FILES + nousfx_agy.MARK_FILES + (DRIFT_HOOK, TESTFAIL_HOOK)  # git_refs.py: --mark needs it (NFX-108)
 DRIFT_TIMEOUT = 5  # seconds; the hook keeps its own 2 s budget and skips quietly past it
+TESTFAIL_TIMEOUT = DRIFT_TIMEOUT
 MATCHER = "Bash|PowerShell|mcp__.*create_pull_request"
 TOOLS = nousfx_mcp.TOOLS
 RULES_BUDGET = 6450  # bytes of generated rules (header excluded), local layers included; warn only (NFX-78; 6144 until NFX-158, 6400 until NFX-281)
@@ -226,8 +229,9 @@ def replace_owned(entries, marker, entry):
     entries.insert(min(at, len(entries)), entry)
 
 
-def merge_settings(current, gate_path, win, drift=None, deny=None, where="settings.json", *, prefix):
-    """Register the review gate and, when `drift` is (script, repo, tools), the session-start drift warning.
+def merge_settings(current, gate_path, win, drift=None, deny=None, where="settings.json", *, prefix, testfail=None):
+    """Register the review gate, the testfail-running Edit/Write warning when `testfail` is its path, and, when
+    `drift` is (script, repo, tools), the session-start drift warning.
     `deny` is the list of deny rules sync owns (None: leave permissions as they are). The auto-mode allow entry
     for the `prefix` branches is always merged."""
     cfg = json.loads(current) if current else {}
@@ -238,6 +242,10 @@ def merge_settings(current, gate_path, win, drift=None, deny=None, where="settin
     # -I: PYTHONPATH must not shadow stdlib in the hooks
     gate = owned_hook(f'{py} -I -B "{gate_path}" --budget {GATE_BUDGET}', GATE_TIMEOUT, win)
     replace_owned(hooks.setdefault("PreToolUse", []), "review-gate.py", {"matcher": MATCHER, "hooks": [gate]})
+    if testfail:
+        warn_edit = owned_hook(f'{py} -I -B "{testfail}"', TESTFAIL_TIMEOUT, win)
+        replace_owned(hooks.setdefault("PreToolUse", []), TESTFAIL_HOOK,
+                      {"matcher": TESTFAIL_MATCHER, "hooks": [warn_edit]})
     if drift:
         script, repo, tools = drift
         warn = owned_hook(f'{py} -I -B "{script}" --repo "{repo}" --tools {",".join(tools)}', DRIFT_TIMEOUT, win)
@@ -257,6 +265,7 @@ def claude_files(repo, home, state, platform, tools, prefix):
     native = native_for(win)
     gate_cmd = native(os.path.join(claude, "hooks", "review-gate.py"))
     drift_cmd = native(os.path.join(claude, "hooks", DRIFT_HOOK))
+    testfail_cmd = native(os.path.join(claude, "hooks", TESTFAIL_HOOK))
     wanted = {os.path.join(claude, "CLAUDE.md"): build_rules(repo, state, home, prefix)}
     wanted.update(nousfx_agents.plan_agents(repo, claude, SyncError))
     for name in CLAUDE_HOOK_FILES:
@@ -270,7 +279,7 @@ def claude_files(repo, home, state, platform, tools, prefix):
     try:
         wanted[settings] = merge_settings(read_or_none(settings), gate_cmd, win,
                                           (drift_cmd, native(repo), sorted(tools, key=TOOLS.index)), deny, settings,
-                                          prefix=prefix)
+                                          prefix=prefix, testfail=testfail_cmd)
     except ValueError as e:
         raise SyncError(f"{settings} is not valid JSON ({e}); fix it first", 2)
     return wanted

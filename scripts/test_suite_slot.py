@@ -262,6 +262,8 @@ class TestfailRuns(Base):
             return got
 
         class FakeGate:  # takes no slot itself, so only testfail's own hold can make the slot busy
+            worktree_tree = staticmethod(gate.worktree_tree)  # the first-half tree check (NFX-271)
+
             @staticmethod
             def run_check(copy, check, log):
                 fd, _, _ = real_try(self.slots, 1)

@@ -80,6 +80,7 @@ UNITTEST_MODULE_UNLOADABLE = r"^ERROR: \S+ \(unittest\.loader\._FailedTest\.(\S+
 PYTEST_COLLECTION_ERROR = r"ERROR collecting (\S+)"
 SUITE_LINE = re.compile("|".join([RUN_CHECKS_SUITE_FAILED, UNITTEST_MODULE_UNLOADABLE, PYTEST_COLLECTION_ERROR]), re.M)
 GIT_ENV_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")  # as the gate's run_check drops them
+RUNNING_MARKER = "claude-testfail-running"  # read by claude/hooks/testfail-running.py (NFX-271)
 VERDICT_EXIT = {"yes": 0, "n/a": 0, "no": 1, "build": 1, "baseline-fail": 1}
 
 
@@ -439,11 +440,14 @@ def run_in_copy(gate, s, restore):
         git(["checkout", "-q", "-B", s.branch, head], copy, quiet)
         git(["read-tree", "--reset", "-u", s.tree], copy, quiet)
         slot.enter_context(suite_slot_hold())  # one slot for both runs, so a verdict never queues twice
+        write_marker(gate, s)  # NFX-271: time queued for the slot is not run time, so expires starts again
+        refuse_if_tree_changed(gate, s)
         ok, why = gate.run_check(copy, s.check, log1)
         if not ok:
             if why.startswith("did not finish"):
                 raise Refused(f"the check with the change {why}; a timeout is never a pass. No stamp recorded.")
             return "baseline-fail", [], tail(log1), []
+        refuse_if_tree_changed(gate, s, " Stopped after the first half.")
         in_base = set(paths_z(git(["ls-tree", "-r", "-z", "--name-only", s.base], copy)))
         # Remove the added files first, then check out the base ones: safe for a file turned into a folder (or back)
         # and for a case-only rename on a case-insensitive disk.
@@ -463,6 +467,46 @@ def run_in_copy(gate, s, restore):
     finally:
         slot.close()
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def refuse_if_tree_changed(gate, s, suffix=""):
+    """Refuse when the real working tree no longer hashes to s.tree."""
+    with refusing("cannot hash the working tree"):
+        after = gate.worktree_tree(s.top)
+        if after == s.tree:
+            return
+        moved = git(["diff-tree", "-r", "--name-only", s.tree, after], s.top).split()
+    raise Refused(f"the working tree changed during the run ({', '.join(moved[:5]) or 'unknown'}); "
+                  f"nothing was recorded. Run again.{suffix}")
+
+
+def write_marker(gate, s):
+    """Tell the Edit/Write hook a run is testing s.tree (NFX-271). Atomic, so the hook never reads half a file; a
+    failure is a note, never a stop."""
+    try:
+        path = gate.git_path(RUNNING_MARKER, s.top)
+        start = time.time()
+        body = {"tree": s.tree, "pid": os.getpid(), "start": start, "expires": start + 2 * s.check["timeout"] + 600}
+        fd, tmp = tempfile.mkstemp(prefix=RUNNING_MARKER + "-", dir=os.path.dirname(path))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(body, f)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+            raise
+    except Exception as e:
+        print(f"note: could not write the running marker ({e}); the edit warning is off", file=sys.stderr)
+
+
+def remove_marker(gate, top):
+    """Best effort: remove the marker only when this process wrote it, so a second run in the same work tree keeps
+    its warning; an OSError, bad JSON or git failing leaves it be."""
+    with contextlib.suppress(Exception):
+        with open(gate.git_path(RUNNING_MARKER, top), encoding="utf-8") as f:
+            if json.load(f).get("pid") == os.getpid():
+                gate.remove_stamp(top, RUNNING_MARKER)
 
 
 def line(verdict, tree, base, why=""):
@@ -485,21 +529,20 @@ def run(args):
     tier, s = setup(gate, args.base)
     with refusing("cannot read the stamp key"):
         key = gate.stamp_key(s.top)
-    tests, production, restore = split(tier, s.top, s.base, s.globs)
-    why = ""
-    if tests and production and comments_only(s):
-        verdict, named, detail, notes, why = "n/a", [], "", [], "comments only"
-    elif tests and production:
-        with refusing("the test-fail run stopped; nothing was recorded"):
-            verdict, named, detail, notes = run_in_copy(gate, s, restore)
-    else:
-        verdict, named, detail, notes = "n/a", [], "", []
-    with refusing("cannot hash the working tree"):
-        after = gate.worktree_tree(s.top)
-    if after != s.tree:
-        moved = git(["diff-tree", "-r", "--name-only", s.tree, after], s.top).split()
-        raise Refused(f"the working tree changed during the run ({', '.join(moved[:5]) or 'unknown'}); "
-                      "nothing was recorded. Run again.")
+    write_marker(gate, s)
+    try:
+        tests, production, restore = split(tier, s.top, s.base, s.globs)
+        why = ""
+        if tests and production and comments_only(s):
+            verdict, named, detail, notes, why = "n/a", [], "", [], "comments only"
+        elif tests and production:
+            with refusing("the test-fail run stopped; nothing was recorded"):
+                verdict, named, detail, notes = run_in_copy(gate, s, restore)
+        else:
+            verdict, named, detail, notes = "n/a", [], "", []
+        refuse_if_tree_changed(gate, s)
+    finally:
+        remove_marker(gate, s.top)
     with refusing("cannot write the test-fail stamp"):
         gate.write_stamp(s.top, {**s.fields, "verdict": verdict, "why": why, "named": named, "notes": notes,
                                  "exit": 0, "time": time.strftime("%Y-%m-%dT%H:%M:%S")}, key, gate.TESTFAIL_STAMP_FILE)
