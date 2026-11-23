@@ -6,7 +6,9 @@ Python only, standard library only; runs the same on macOS and Windows.
     python3 -B tier.py [--base HASH] [--base-ref BRANCH] [--labels fable-review,size-L] [--synced] [--cwd DIR]
 
 Prints one JSON object: {"tier", "reasons", "ui", "fallback", "security", "gates", "synced", "stats"}. "synced" (NFX-216,
-only with --synced) lists changed files byte-equal to their NousFX sync source: not counted, not keyword-scanned. "gates" lists human
+only with --synced) lists changed files byte-equal to their NousFX sync source on NousFX's default branch (origin/HEAD,
+else origin/main), or to the text sync renders from it for a generated file such as .githooks/pre-push. NFX-261: a synced file adds no path, keyword, line or gate reason; it is
+named only in the "synced: N files" reason, since NousFX reviewed that change. "gates" lists human
 gates (NFX-200: a changed byte cap, see CAP_NAMES), each also in "reasons" as "Gate: ...". "security" lists the security skills the
 diff calls for (NFX-124): agentic-actions-auditor for a path under .github/workflows/, sharp-edges for a security
 keyword in a code file's path or changed lines. It is empty when none applies. Exits 2 (nothing on stdout) when the branch has no
@@ -244,7 +246,7 @@ def bump_size_l(tier, reasons, labels):
 
 def classify(files, labels=(), project_paths=()):
     """files: [{"path", "added": [line, ...], "removed": int, "hunks": int, "synced"?: True}]. Returns {tier, reasons,
-    ui, stats, ...}. A synced file still meets the risk paths and cap gates, nothing else."""
+    ui, stats, ...}. A synced file meets no rule (NFX-261): NousFX reviewed it, and the project cannot fix it."""
     labels = norm_labels(labels)
     synced = [x["path"] for x in files if x.get("synced")]
     unsynced = [x for x in files if not x.get("synced")]
@@ -255,7 +257,7 @@ def classify(files, labels=(), project_paths=()):
     stats = {"lines": lines, "files": len(code), "hunks": hunks, "synced": len(synced)}
 
     why3 = []  # every reason for Tier 3
-    for x in files:
+    for x in unsynced:
         if risk_path_hit(x["path"], project_paths):
             why3.append("Tier 3: touches " + x["path"])
     keyword_reasons = []
@@ -282,6 +284,8 @@ def classify(files, labels=(), project_paths=()):
 
     if why3:
         tier, reasons = 3, why3
+    elif synced and not unsynced:  # only synced files: the synced reason below is the whole story (NFX-261)
+        tier, reasons = 0, []
     elif not code:
         tier, reasons = 0, ["Tier 0: no code counted (only docs, text, lock, generated or binary files)"]
     elif lines <= TINY_LINES and len(code) <= TINY_FILES and hunks <= TINY_HUNKS:
@@ -292,13 +296,14 @@ def classify(files, labels=(), project_paths=()):
         tier, reasons = 2, ["Tier 2: %d lines, %d file(s), %d hunk(s)" % (lines, len(code), hunks)]
 
     if synced:
-        reasons.append("synced: %d files (byte-equal to their NousFX source, not counted)" % len(synced))
+        reasons.append("synced: %d files (byte-equal to their NousFX source: reviewed in NousFX, not counted here)"
+                       % len(synced))
     tier = bump_size_l(tier, reasons, labels)
     ui_path = next((x["path"] for x in code if is_ui(x["path"], x.get("content", []) + x["added"] + x.get("removed_lines", []))), None)
     if ui_path and tier < 1:
         tier = 1
         reasons.append("Tier 1: UI change (%s)" % ui_path)
-    gates = cap_gates(files)  # a gate never changes the tier; it is printed with the reasons so the loop stops to ask
+    gates = cap_gates(unsynced)  # a gate never changes the tier; it is printed with the reasons so the loop stops to ask
     reasons += ["Gate: " + g for g in gates]
     return {"tier": tier, "reasons": reasons, "ui": ui_path is not None, "fallback": False,
             "security": security_skills(unsynced), "gates": gates, "synced": synced, "stats": stats}
@@ -443,7 +448,8 @@ def load_project_risk_paths(top, base_ref=None):
 
 
 def parse_diff(text):
-    """Files of a `git diff -U0 --no-renames` text as classify() wants them."""
+    """Files of a `git diff -U0 --no-renames` text as classify() wants them. "mode" is the file's git mode after the
+    change, when the diff names one (a new file or a mode change)."""
     files, current, in_hunk = [], None, False
     for line in text.split("\n"):
         if line.startswith("diff --git "):
@@ -454,6 +460,8 @@ def parse_diff(text):
             in_hunk = False
         elif current is None:
             continue
+        elif not in_hunk and line.startswith(("new mode ", "new file mode ")):
+            current["mode"] = line.rsplit(" ", 1)[1]
         elif line.startswith("@@"):
             current["hunks"] += 1
             in_hunk = True
@@ -507,51 +515,97 @@ NOUSFX_MANIFEST = ("scripts", "nousfx_project.py")
 
 @functools.lru_cache(maxsize=1)
 def nousfx_copies():
-    """(NousFX root, {project path: NousFX path}) from the sync manifest (nousfx_project.COPIES) of the NousFX
-    checkout this file's real path sits in, or (None, {}) when there is none (a flat or project copy). Its folder goes
-    on sys.path while it loads, for its sibling import of nousfx_agents."""
+    """(NousFX root, {project path: NousFX path}, {project path: (NousFX path, render)}) from the sync manifest
+    (nousfx_project.COPIES and GENERATED_FILES, such as .githooks/pre-push) of the NousFX checkout this file's real
+    path sits in, or (None, {}, {}) when there is none (a flat or project copy). Its folder goes on sys.path while it
+    loads, for its sibling import of nousfx_agents."""
     root = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."))
     scripts = os.path.join(root, NOUSFX_MANIFEST[0])
     path = os.path.join(scripts, NOUSFX_MANIFEST[1])
     if not os.path.isfile(path):
-        return None, {}
+        return None, {}, {}
     sys.dont_write_bytecode = True
     sys.path.insert(0, scripts)
     try:
         spec = importlib.util.spec_from_file_location("nousfx_project", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return root, {norm(k): norm(v) for k, v in module.COPIES.items()}
+        copies = {norm(k): norm(v) for k, v in module.COPIES.items()}
+        generated = {norm(k): (norm(src), render) for k, (src, render) in
+                     getattr(module, "GENERATED_FILES", {}).items()}
+        return root, copies, generated
     except Exception:
-        return None, {}
+        return None, {}, {}
     finally:
         sys.path.remove(scripts)
 
 
+EXECUTABLE, REGULAR = "100755", "100644"
+
+
+def nousfx_source(root, ref, rel, copies, generated):
+    """(bytes, git mode) sync writes for the project path `rel`, from NousFX's commit `ref`. The mode is None for a
+    copy (sync keeps a copy's existing mode) and executable for a generated file (sync sets it). Raises when git
+    cannot read it."""
+    if rel in copies:
+        return git(["show", "%s:%s" % (ref, copies[rel])], root, raw=True), None
+    source, render = generated[rel]
+    text = git(["show", "%s:%s" % (ref, source)], root, raw=True).decode("utf-8")
+    return render(as_text_mode_read(text)).encode("utf-8"), EXECUTABLE
+
+
+def file_mode(x, full):
+    """The project file's git mode: the diff's when it names one, else the working tree's executable bit (POSIX), else
+    None (Windows has no executable bit to read)."""
+    if x.get("mode"):
+        return x["mode"]
+    if os.name == "nt":
+        return None
+    return EXECUTABLE if os.access(full, os.X_OK) else REGULAR
+
+
+def as_text_mode_read(text):
+    """`text` with the newlines Python's text-mode read gives, as sync reads a source."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def mark_synced(top, files):
-    """NFX-216: set "synced" on each file whose working-tree bytes equal its NousFX sync source. Off when the repo
-    under review and the NousFX checkout hold one another (a NousFX worktree, or a manifest that is branch code). A
-    link, a deleted file or a path the manifest does not name is never synced."""
-    root, copies = nousfx_copies()
+    """NFX-216: set "synced" on each file whose working-tree bytes equal what sync writes from its NousFX source on
+    NousFX's default branch: the file itself, or the text sync renders (NFX-261: .githooks/pre-push). Never the NousFX
+    working tree's bytes: a feature branch or an uncommitted edit there is not reviewed, and a synced file skips every
+    rule. A generated file's mode must match too (a hook that lost its executable bit no longer runs). The manifest and its render
+    function still load from the working tree, so they are trusted as the checkout's own code.
+    Off when the repo under review and the NousFX checkout hold one another (a NousFX worktree, or a manifest that is
+    branch code). A link, a deleted file, a path the manifest does not name or a NousFX checkout with no default
+    branch is never synced, nor is a file git cannot read or render."""
+    root, copies, generated = nousfx_copies()
     real_top = os.path.realpath(top)
     try:
         nested = os.path.commonpath([root, real_top]) in (root, real_top) if root else True
     except ValueError:  # Windows: different drives, so neither holds the other
         nested = False
-    if nested:
+    wanted = [x for x in files if norm(x["path"]) in copies or norm(x["path"]) in generated]
+    if nested or not wanted:
         return
-    for x in files:
+    try:
+        ref = default_ref(root)
+    except Exception:
+        return
+    if not ref:
+        return
+    for x in wanted:
         rel = norm(x["path"])
-        source = copies.get(rel)
         full = os.path.join(top, *rel.split("/"))
-        no_link_on_the_way = os.path.realpath(full) == os.path.join(real_top, *rel.split("/"))
-        if not source or not no_link_on_the_way:
+        if os.path.realpath(full) != os.path.join(real_top, *rel.split("/")):
             continue
         try:
             if os.path.isfile(full) and os.path.getsize(full) <= MAX_UNTRACKED_BYTES:
-                with open(full, "rb") as mine, open(os.path.join(root, *source.split("/")), "rb") as theirs:
-                    x["synced"] = mine.read() == theirs.read()
-        except OSError:
+                data, mode = nousfx_source(root, ref, rel, copies, generated)
+                with open(full, "rb") as mine:
+                    same = mine.read() == data
+                mine_mode = file_mode(x, full) if mode else None
+                x["synced"] = same and (mode is None or mine_mode is None or mine_mode == mode)
+        except Exception:
             pass
 
 
