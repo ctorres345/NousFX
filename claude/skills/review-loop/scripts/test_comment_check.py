@@ -1572,6 +1572,26 @@ class PilotTuning(RepoCase):
              (11, "flag:comment"), (13, "flag:comment"), (15, "flag:comment"),
              (17, "flag:comment"), (18, "flag:comment"), (20, "flag:comment")])
 
+    def test_a_hyphenated_banner_is_a_banner(self):
+        self.assertEqual(self.verdicts("a.dart", src(
+            "// ---- Built-in badges --------------------------------------------------------",
+            "var a = 0;")),
+            [(1, "flag:banner")])
+        self.assertEqual(self.verdicts("b.py", src(
+            "# --- write-through cache",
+            "b = 0",
+            "# --- re-run after deploy",
+            "c = 0",
+            "# --- --dry-run ---",
+            "d = 0",
+            "# ---- i-- ----",
+            "e = 0",
+            "# --- don't re-run ---",
+            "f = 0",
+            "# === Read-only views ===")),
+            [(1, "flag:comment"), (3, "flag:comment"), (5, "flag:comment"), (7, "flag:comment"),
+             (9, "flag:comment"), (11, "flag:banner")])
+
     def test_a_long_banner_like_line_is_judged_quickly(self):
         start = time.monotonic()
         for text in ("# --- " + " " * 2000 + ";", "# " + "-" * 2000 + ";", "#" * 2000 + ";"):
