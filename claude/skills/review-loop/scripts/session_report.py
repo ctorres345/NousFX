@@ -89,6 +89,12 @@ def branch_key():
     return last if KEY_RE.match(last) else None
 
 
+def dated_folders(parent, name):
+    """The <date>-<name> folders in parent, oldest first."""
+    pattern = r"^\d{4}-\d{2}-\d{2}-%s$" % re.escape(name)
+    return sorted(d for d in os.listdir(parent) if re.match(pattern, d)) if os.path.isdir(parent) else []
+
+
 def report_dir(args, repo, key=None, guess=None, refuse_unknown=False):
     top, common = repo
     root = os.path.realpath(os.path.expanduser(os.environ.get("NOUSFX_REPORT_ROOT") or "~/Releases"))
@@ -103,9 +109,7 @@ def report_dir(args, repo, key=None, guess=None, refuse_unknown=False):
     name = args.name or key
     if not args.date:  # a name keeps one folder across days: the newest one made for it
         for candidate in (name, guess):  # guess: render's ticket key from the branch, tried only with no name
-            same = sorted(d for d in os.listdir(parent)
-                          if re.match(r"^\d{4}-\d{2}-\d{2}-%s$" % re.escape(candidate), d)) \
-                if candidate and os.path.isdir(parent) else []
+            same = dated_folders(parent, candidate) if candidate else []
             if same:
                 return os.path.join(parent, same[-1])
             if name:
@@ -120,16 +124,12 @@ def report_dir(args, repo, key=None, guess=None, refuse_unknown=False):
         name = found[0][len(date) + 1:]
     if not NAME_RE.match(name):
         die("--name may hold letters, digits, dots, hyphens and underscores only.", 2)
-    if refuse_unknown:
-        def folders(n):
-            return sorted(d for d in os.listdir(parent) if re.match(r"^\d{4}-\d{2}-\d{2}-%s$" % re.escape(n), d)) \
-                if os.path.isdir(parent) else []
-        if not folders(name):
-            have = folders(key)
-            die("--name %s matches no report folder. %s Drop --name to log under %s, or pass --new to start a "
-                "report named %s on purpose (a wave report, for example)."
-                % (name, "Report folders for %s: %s." % (key, ", ".join(have)) if have
-                   else "No report folders exist for %s." % key, key, name), 2)
+    if refuse_unknown and not dated_folders(parent, name):
+        have = dated_folders(parent, key)
+        die("--name %s matches no report folder. %s Drop --name to log under %s, or pass --new to start a "
+            "report named %s on purpose (a wave report, for example)."
+            % (name, "Report folders for %s: %s." % (key, ", ".join(have)) if have
+               else "No report folders exist for %s." % key, key, name), 2)
     return os.path.join(parent, "%s-%s" % (date, name))
 
 
@@ -147,7 +147,7 @@ def cmd_decide(args):
     if entry["evidence"] and (len(entry["evidence"]) > 300 or re.search(r"[\s`]", entry["evidence"])):
         problems.append("--evidence is a pointer, not prose: a commit SHA, #PR, file:line or URL, "
                         "with no spaces or backticks, at most 300 characters.")
-    if any(has_secret(v) for v in entry.values()):
+    if any(has_secret(v) for v in list(entry.values()) + [args.name or ""]):
         problems.append("a value looks like a secret. Nothing was written.")
     if problems:
         die("\n".join(problems + ["A decision needs what, why, the alternative you rejected, evidence and a result.",

@@ -263,11 +263,15 @@ class SessionReport(unittest.TestCase):
         self.assertFalse(os.path.exists(self.root))
 
     def test_new_starts_a_named_report_and_later_calls_reuse_it(self):
-        today = datetime.date.today().isoformat()
-        self.assertEqual(self.run_cli("decide", "NFX-214", *self.FULL, "--name", "wave-1", "--new").returncode, 0)
-        self.assertIn(today + "-wave-1", self.folders())
+        days = {datetime.date.today().isoformat()}
+        first = self.run_cli("decide", "NFX-214", *self.FULL, "--name", "wave-1", "--new")
+        days.add(datetime.date.today().isoformat())  # a run that crosses midnight may use either day
+        self.assertEqual(first.returncode, 0, first.stderr)
+        made = os.path.basename(os.path.dirname(first.stdout.strip()))
+        self.assertIn(made, {d + "-wave-1" for d in days})
         r = self.run_cli("decide", "NFX-214", *self.FULL, "--name", "wave-1")
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), first.stdout.strip())
         with open(r.stdout.strip(), encoding="utf-8") as f:
             self.assertEqual(len(f.read().splitlines()), 2)
 
@@ -276,6 +280,22 @@ class SessionReport(unittest.TestCase):
                                       "--date", "2026-11-18").returncode, 0)
         r = self.run_cli("decide", "NFX-214", *self.FULL, "--name", "wave-2", "--date", "2026-11-19")
         self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_cli("decide", "NFX-214", *self.FULL, "--name", "wave-2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(os.path.basename(os.path.dirname(r.stdout.strip())), "2026-11-19-wave-2")
+
+    def test_a_name_on_an_older_date_is_reused_without_new(self):
+        self.assertEqual(self.run_cli("decide", "NFX-214", *self.FULL, "--name", "wave-3", "--new",
+                                      "--date", "2026-11-18").returncode, 0)
+        r = self.run_cli("decide", "NFX-214", *self.FULL, "--name", "wave-3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(os.path.basename(os.path.dirname(r.stdout.strip())), "2026-11-18-wave-3")
+
+    def test_a_secret_shaped_name_is_refused_and_never_echoed(self):
+        r = self.run_cli("decide", "NFX-214", *self.FULL, "--name", GH_SECRET)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertNotIn(GH_SECRET, r.stderr + r.stdout)
+        self.assertFalse(os.path.exists(self.root))
 
     def test_a_name_equal_to_the_key_or_no_name_needs_no_new(self):
         self.assertEqual(self.run_cli("decide", "NFX-214", *self.FULL).returncode, 0)
