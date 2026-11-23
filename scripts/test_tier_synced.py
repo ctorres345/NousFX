@@ -24,6 +24,18 @@ PAP_68 = ("testfail.py", "prove.py", "session_report.py")
 COPY_DIR = ".claude/skills/review-loop/scripts/"
 
 
+def reviewed(rel):
+    """A NousFX file as tier.py compares it: from the default branch, not the working tree."""
+    ref = tier.default_ref(ROOT)
+    if not ref:
+        raise unittest.SkipTest("NousFX has no origin/HEAD or origin/main: fetch origin first")
+    return tier.git(["show", "%s:%s" % (ref, rel)], ROOT, raw=True)
+
+
+def script(name):
+    return reviewed("claude/skills/review-loop/scripts/" + name)
+
+
 def one_byte_off(data):
     return data[:-1] + (b"\n" if data[-1:] != b"\n" else b" ")
 
@@ -57,8 +69,7 @@ class SyncedFiles(unittest.TestCase):
 
     def copy_pap_68(self, mutate=None):
         for name in PAP_68:
-            with open(os.path.join(SCRIPTS, name), "rb") as fh:
-                data = fh.read()
+            data = script(name)
             if name == mutate:
                 data = one_byte_off(data)
             self.write(COPY_DIR + name, data)
@@ -82,8 +93,7 @@ class SyncedFiles(unittest.TestCase):
         out = self.result()
         self.assertTrue(any("synced: 2 files" in r for r in out["reasons"]), out["reasons"])
         self.assertNotIn(COPY_DIR + "session_report.py", out["synced"])
-        with open(os.path.join(SCRIPTS, "session_report.py"), "rb") as fh:
-            full = len(fh.read().decode("utf-8").splitlines())
+        full = len(script("session_report.py").decode("utf-8").splitlines())
         self.assertEqual(out["stats"]["lines"], full)
         self.assertEqual(out["tier"], 3, out["reasons"])
 
@@ -95,8 +105,7 @@ class SyncedFiles(unittest.TestCase):
         self.assertFalse(any("synced:" in r for r in out["reasons"]), out["reasons"])
 
     def test_a_renamed_copy_outside_the_manifest_is_counted(self):
-        with open(os.path.join(SCRIPTS, "prove.py"), "rb") as fh:
-            self.write("tools/prove.py", fh.read())
+        self.write("tools/prove.py", script("prove.py"))
         self.git("add", "-A")
         self.git("commit", "-qm", "renamed copy")
         out = self.result()
@@ -120,34 +129,74 @@ class SyncedFiles(unittest.TestCase):
         self.assertEqual(out["synced"], [])
         self.assertGreater(out["stats"]["lines"], 0)
 
-    def test_risk_paths_still_count_for_a_synced_file(self):
-        with open(os.path.join(ROOT, "claude", "hooks", "review-gate.py"), "rb") as fh:
-            self.write(".claude/hooks/review-gate.py", fh.read())
+    def test_a_synced_gate_meets_no_risk_path(self):
+        self.write(".claude/hooks/review-gate.py", reviewed("claude/hooks/review-gate.py"))
         self.git("add", "-A")
         self.git("commit", "-qm", "gate")
         out = self.result()
         self.assertEqual(out["synced"], [".claude/hooks/review-gate.py"])
-        self.assertEqual(out["tier"], 3)
-        self.assertIn("Tier 3: touches .claude/hooks/review-gate.py", out["reasons"])
+        self.assertLessEqual(out["tier"], 1, out["reasons"])
+        self.assertNotIn("Tier 3: touches .claude/hooks/review-gate.py", out["reasons"])
 
     def test_untracked_byte_equal_copies_are_synced_too(self):
-        with open(os.path.join(SCRIPTS, "prove.py"), "rb") as fh:
-            self.write(COPY_DIR + "prove.py", fh.read())
+        self.write(COPY_DIR + "prove.py", script("prove.py"))
         self.assertEqual(self.result()["synced"], [COPY_DIR + "prove.py"])
 
-    def mark_against(self, root):
-        """mark_synced with a fake NousFX checkout at `root` whose source has the copy's exact bytes."""
-        self.write(COPY_DIR + "prove.py", b"same\n")
+    def mark_against(self, root, merged=b"same\n", working=None, copy=b"same\n"):
+        """mark_synced with a fake NousFX checkout at `root`: `merged` is src/prove.py on its origin/main, `working`
+        (default: the same) its working-tree bytes, `copy` the project's copy."""
+        self.write(COPY_DIR + "prove.py", copy)
         os.makedirs(os.path.join(root, "src"), exist_ok=True)
-        with open(os.path.join(root, "src", "prove.py"), "wb") as fh:
-            fh.write(b"same\n")
+        source = os.path.join(root, "src", "prove.py")
+        with open(source, "wb") as fh:
+            fh.write(merged)
+        nousfx = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=root,
+                                           capture_output=True, check=True)
+        if not os.path.isdir(os.path.join(root, ".git")):
+            nousfx("init", "-q", "-b", "main")
+        nousfx("add", os.path.join("src", "prove.py"))
+        nousfx("commit", "-qm", "source")
+        nousfx("update-ref", "refs/remotes/origin/main", "HEAD")
+        if working is not None:
+            with open(source, "wb") as fh:
+                fh.write(working)
         files = [{"path": COPY_DIR + "prove.py"}]
-        with mock.patch.object(tier, "nousfx_copies", return_value=(os.path.realpath(root), {COPY_DIR + "prove.py": "src/prove.py"})):
+        with mock.patch.object(tier, "nousfx_copies", return_value=(os.path.realpath(root), {COPY_DIR + "prove.py": "src/prove.py"}, {})):
             tier.mark_synced(self.repo, files)
         return files[0].get("synced")
 
     def test_a_sibling_nousfx_checkout_marks_the_copy(self):
         self.assertTrue(self.mark_against(os.path.join(self.tmp, "nousfx")))
+
+    def test_an_uncommitted_nousfx_edit_is_not_synced(self):
+        self.assertFalse(self.mark_against(os.path.join(self.tmp, "nousfx"), working=b"unreviewed\n",
+                                           copy=b"unreviewed\n"))
+
+    def test_a_nousfx_feature_branch_is_not_synced(self):
+        root = os.path.join(self.tmp, "nousfx")
+        self.assertTrue(self.mark_against(root))
+        self.assertFalse(self.mark_on_branch(root))
+
+    def test_a_nousfx_without_a_default_branch_is_not_synced(self):
+        root = os.path.join(self.tmp, "nousfx")
+        with mock.patch.object(tier, "default_ref", return_value=None), \
+                mock.patch.object(tier, "nousfx_source") as source:
+            self.assertFalse(self.mark_against(root))
+        source.assert_not_called()
+
+    def mark_on_branch(self, root):
+        """A commit on a NousFX feature branch, never merged: origin/main still has the old bytes."""
+        run = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=root,
+                                        capture_output=True, check=True)
+        run("checkout", "-qb", "feature")
+        with open(os.path.join(root, "src", "prove.py"), "wb") as fh:
+            fh.write(b"branch\n")
+        run("commit", "-qam", "feature")
+        self.write(COPY_DIR + "prove.py", b"branch\n")
+        files = [{"path": COPY_DIR + "prove.py"}]
+        with mock.patch.object(tier, "nousfx_copies", return_value=(os.path.realpath(root), {COPY_DIR + "prove.py": "src/prove.py"}, {})):
+            tier.mark_synced(self.repo, files)
+        return files[0].get("synced")
 
     def test_a_repo_inside_the_nousfx_checkout_is_never_synced(self):
         self.assertIsNone(self.mark_against(self.tmp))

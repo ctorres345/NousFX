@@ -106,9 +106,19 @@ def _hook_text(repo, SyncError):
     text = _read(src)
     if text is None:
         raise SyncError(f"missing pre-push hook source: {src}", 2)
+    return render_hook(text)
+
+
+def render_hook(text):
+    """The pre-push hook sync writes for the hook source `text`."""
     first, _, rest = text.partition("\n")
     return (f"{first}\n# {GENERATED} from NousFX {HOOK_SOURCE.replace(os.sep, '/')}. "
             f"Do not edit; change the source and re-run.\n{rest}")
+
+
+# Generated repo file -> (NousFX source, render). tier.py --synced renders the source with the same function, so a
+# hook sync wrote unchanged counts as synced (NFX-261).
+GENERATED_FILES = {HOOK_REL: (HOOK_SOURCE, render_hook)}
 
 
 def _has_check_command(path):

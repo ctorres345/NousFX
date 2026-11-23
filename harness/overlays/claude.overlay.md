@@ -2,6 +2,7 @@
 - A missing tool is not a stop: load it with `ToolSearch`. Report a blocker only after the obvious fix failed, with what you tried.
 - Lookups (Haiku): `Explore` for code, `researcher` for docs and APIs, `local-assist`, then `test-runner`, for noisy build/test output.
 - Exception: `implementer` codes S/M tickets.
+- Weekly limit past 50%: `budget-mode` skill.
 - When done, ask once whether to open the PR; on yes, run `review-loop` yourself, then `gh pr create`. If the `review-gate.py` hook blocks, run the loop, never work around it; skip only with the user's explicit approval.
 - Log decisions as made: `session_report.py decide` (review-loop).
 - UI work: `/via spec` at kickoff, `/via check` before asking about the PR, unasked. Requests to review, critique, polish or optimize UI/UX, design, responsiveness or accessibility: `/via audit`.
