@@ -14,7 +14,7 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
         v   python3 -B scripts/nousfx_sync.py [--tools claude,agy]
 ~/.claude/CLAUDE.md                generated, header holds a hash of the sources and names them by path
 ~/.claude/settings.json            review gate, drift warning, deny list and auto-mode allow rules (other settings kept)
-~/.claude/hooks/                   review-gate.py, pr_create_parser.py, git_refs.py and nousfx-drift.py
+~/.claude/hooks/                   review-gate.py, pr_create_parser.py, git_refs.py, nousfx-drift.py and testfail-running.py
 ~/.gemini/config/plugins/nousfx/   (agy) hooks.json, and hooks/ with agy_gate.py and its own copy of the gate
 ```
 
@@ -52,6 +52,8 @@ What it never does: sync, pull or write a file of mine. The background fetch is 
 A rules warning is one more line, for example `NousFX rules: 9492 bytes, over the 6450 byte budget. Run python3 -B scripts/nousfx_sync.py --dry-run in <clone> to see which, then trim the local files (docs/sync.md).`
 
 To turn it off, remove the `SessionStart` entry that names `nousfx-drift.py` from `~/.claude/settings.json`. The next sync puts it back.
+
+While `testfail.py run` tests a work tree, it keeps a `claude-testfail-running` marker in that tree's git dir, and sync's `PreToolUse` hook `~/.claude/hooks/testfail-running.py` (matcher `Edit|Write|NotebookEdit`) warns before an edit that would void the run. It only warns, reads one small file, and says nothing past 2 seconds or on any error. To turn it off, remove the `PreToolUse` entry that names `testfail-running.py`; the next sync puts it back.
 
 agy has no session-start hook (only `PreToolUse` is proven), so its rules carry a line that asks the model to run `--check --summary --tools agy` at the start of a session and report drift. Sync fills the clone's path into that line.
 

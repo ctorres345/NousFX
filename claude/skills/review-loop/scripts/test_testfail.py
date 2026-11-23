@@ -232,6 +232,174 @@ class Attest(Base):
         self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "claude-testfail-pass")))
 
 
+class RunningMarker(Base):
+    """NFX-271: a run stops after the first half when the tree changes, and leaves a marker while it runs."""
+    MARKER = "claude-testfail-running"
+
+    def check_script(self, body):
+        """A check command that runs `body` (Python) from a file outside the repo."""
+        script = os.path.join(self._tmp.name, "check.py")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(body)
+        self.write(".nousfx/project.toml", f"[check]\ncommand = '\"{sys.executable}\" \"{script}\"'\ntimeout = 60\n")
+
+    def marker_path(self):
+        return os.path.join(self.repo, self.git("rev-parse", "--git-path", self.MARKER))
+
+    def test_stops_after_first_half(self):
+        counter = os.path.join(self._tmp.name, "counter")
+        calc = os.path.join(self.repo, "calc.py")
+        self.check_script(
+            "import os, subprocess, sys\n"
+            f"first = not os.path.exists({counter!r})\n"
+            f"open({counter!r}, 'a').write('x\\n')\n"
+            f"if first:\n    open({calc!r}, 'a').write('# edited\\n')\n"
+            "sys.exit(subprocess.call([sys.executable, '-B', '-m', 'unittest', '-q']))\n")
+        self.fix()
+        r = self.run_base()
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("changed during the run", r.stderr)
+        self.assertIn("Stopped after the first half", r.stderr)
+        with open(counter, encoding="utf-8") as f:
+            self.assertEqual(len(f.read().splitlines()), 1)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "claude-testfail-pass")))
+
+    def test_running_marker_holds_tree_pid_start_and_expires(self):
+        copy = os.path.join(self._tmp.name, "marker-copy.json")
+        marker = self.marker_path()
+        self.check_script(
+            "import shutil, subprocess, sys\n"
+            f"shutil.copy({marker!r}, {copy!r})\n"
+            "sys.exit(subprocess.call([sys.executable, '-B', '-m', 'unittest', '-q']))\n")
+        self.fix()
+        r = self.run_base()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        import json
+        with open(copy, encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(set(data), {"tree", "pid", "start", "expires"})
+        self.assertEqual(data["tree"], re.search(r"^Tests-Fail-Without: \S+ (\S+)", r.stdout, re.M).group(1))
+        self.assertIsInstance(data["pid"], int)
+        self.assertEqual(data["expires"], data["start"] + 2 * 60 + 600)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_running_marker_is_removed_after_a_refusal(self):
+        self.fix()
+        self.write(".nousfx/project.toml", '[check]\ncommand = "sleep 30"\ntimeout = 1\n')
+        self.assertEqual(self.run_base().returncode, 2)
+        self.assertFalse(os.path.exists(self.marker_path()))
+
+    def test_running_marker_is_removed_after_an_exception(self):
+        import importlib.util
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("testfail_in_process", TESTFAIL)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        gate_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "hooks")
+        self.fix()
+        old = os.getcwd()
+        self.addCleanup(os.chdir, old)
+        os.chdir(self.repo)
+        marker = self.marker_path()
+        with mock.patch.object(module, "split", side_effect=RuntimeError("boom")), \
+                mock.patch.object(module, "find_gate", return_value=(os.path.join(gate_dir, "review-gate.py"), "checkout")):
+            with self.assertRaises(RuntimeError):
+                module.main(["run", "--base", self.base])
+        self.assertFalse(os.path.exists(marker))
+
+    def test_running_marker_is_rewritten_once_the_slot_is_held(self):
+        import contextlib
+        import importlib.util
+        import io
+        import json
+        import time
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location("testfail_in_process", TESTFAIL)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        gate_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "hooks")
+        copy = os.path.join(self._tmp.name, "marker-copy.json")
+        self.check_script(
+            "import shutil, subprocess, sys\n"
+            f"shutil.copy({self.marker_path()!r}, {copy!r})\n"
+            "sys.exit(subprocess.call([sys.executable, '-B', '-m', 'unittest', '-q']))\n")
+        self.fix()
+        held = []
+
+        @contextlib.contextmanager
+        def slot_free_after_a_wait():
+            time.sleep(0.5)
+            held.append(time.time())
+            yield
+
+        old = os.getcwd()
+        self.addCleanup(os.chdir, old)
+        os.chdir(self.repo)
+        with mock.patch.object(module, "suite_slot_hold", slot_free_after_a_wait), \
+                mock.patch.object(module, "find_gate", return_value=(os.path.join(gate_dir, "review-gate.py"), "checkout")), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(module.main(["run", "--base", self.base]), 0)
+        with open(copy, encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertGreaterEqual(data["start"], held[0])
+        self.assertEqual(data["expires"], data["start"] + 2 * 60 + 600)
+
+    def in_process(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("testfail_in_process", TESTFAIL)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        gate = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "hooks", "review-gate.py")
+        old = os.getcwd()
+        self.addCleanup(os.chdir, old)
+        os.chdir(self.repo)
+        return module, gate
+
+    def test_an_edit_while_queued_for_the_slot_stops_before_the_first_half(self):
+        import contextlib
+        import io
+        from unittest import mock
+        counter = os.path.join(self._tmp.name, "counter")
+        self.check_script(f"open({counter!r}, 'a').write('x\\n')\n")
+        self.fix()
+        module, gate = self.in_process()
+
+        @contextlib.contextmanager
+        def slot_free_after_an_edit():
+            self.write("calc.py", FIXED + "# edited while queued\n")
+            yield
+
+        err = io.StringIO()
+        with mock.patch.object(module, "suite_slot_hold", slot_free_after_an_edit), \
+                mock.patch.object(module, "find_gate", return_value=(gate, "checkout")), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(module.main(["run", "--base", self.base]), 2)
+        self.assertIn("changed during the run", err.getvalue())
+        self.assertFalse(os.path.exists(counter), "the first half ran after the tree changed")
+        self.assertFalse(os.path.exists(self.marker_path()))
+
+    def test_running_marker_of_another_run_is_kept(self):
+        import json
+        from unittest import mock
+        module, gate_path = self.in_process()
+        with mock.patch.object(module, "find_gate", return_value=(gate_path, "checkout")):
+            gate = module.load_gate()
+        with open(self.marker_path(), "w", encoding="utf-8") as f:
+            json.dump({"tree": "t", "pid": os.getpid() + 1, "start": 0, "expires": 1}, f)
+        module.remove_marker(gate, self.repo)
+        self.assertTrue(os.path.exists(self.marker_path()))
+        with open(self.marker_path(), "w", encoding="utf-8") as f:
+            json.dump({"tree": "t", "pid": os.getpid(), "start": 0, "expires": 1}, f)
+        module.remove_marker(gate, self.repo)
+        self.assertFalse(os.path.exists(self.marker_path()))
+
+    def test_running_marker_absent_after_a_pass(self):
+        self.fix()
+        self.assertEqual(self.run_base().returncode, 0)
+        self.assertFalse(os.path.exists(self.marker_path()))
+
+
 class Limits(Base):
     def test_a_timeout_is_a_refusal_never_a_pass(self):
         self.fix()
