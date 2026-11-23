@@ -11,10 +11,10 @@ This runs from Cesar's Mac. The script is `~/.claude/skills/review-loop/scripts/
 ## 1. Inventory
 
 ```bash
-python3 -B ~/.claude/skills/review-loop/scripts/comment_check.py --all <path>
+python3 -B ~/.claude/skills/review-loop/scripts/comment_check.py --all <path> [<path> ...]
 ```
 
-One line per comment: `file:line form verdict text`. Form is `docstring`, `inline`, `line` or `shell`. Verdict is `keep:<rule>` or `flag:<kind>`. The last line counts the forms and the lines the cleanup could shed.
+One line per comment: `file:line form verdict text`. Form is `docstring`, `inline`, `line` or `shell`. Verdict is `keep:<rule>` or `flag:<kind>`. The last line counts the forms and the lines the cleanup could shed; with several paths, each path gets its own count line and the last line is the total.
 
 The keep list lives only in the script's `KEEP`: print it with `comment_check.py --keep-list`. Never copy it here or into the table. A `keep:` item stays as it is. Leave every module docstring in a file that reads `__doc__` whole: argparse builds the CLI from it.
 
