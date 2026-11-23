@@ -197,9 +197,9 @@ class Replay(Base):
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "NFX-218: base")
         base = git(self.repo, "rev-parse", "HEAD")
-        for rel in ("scripts/prove.py", "scripts/test_prove.py"):
+        for rel in ("scripts/prove.py", "scripts/test_prove.py"):  # code, not a comment: a comments-only diff skips the run
             with open(os.path.join(self.repo, rel), "a", encoding="utf-8") as f:
-                f.write("# change\n")
+                f.write("CHANGED = True\n")
         argv, env = python()
         proc = subprocess.Popen([*argv, TESTFAIL, "run", "--base", base], cwd=self.repo, env=env,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
