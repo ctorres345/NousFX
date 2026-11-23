@@ -35,7 +35,7 @@ class AdrStep(unittest.TestCase):
     def decide(self, decision, *extra):
         r = subprocess.run([sys.executable, "-B", REPORT, "decide", "NFX-191", "--decision", decision,
                             "--why", "w", "--rejected", "r", "--evidence", "#1", "--result", "open",
-                            "--date", "2026-11-19", "--name", "t", *extra],
+                            "--date", "2026-11-19", "--name", "t", "--new", *extra],
                            cwd=ROOT, env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
 
