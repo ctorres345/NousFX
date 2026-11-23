@@ -119,6 +119,7 @@ GENERATED = re.compile(r"(?i)@generated\b|\bgenerated (?:code|file)\b.*\bdo not 
                        r"|\bcode generated\b.*\bdo not edit|\bauto-?generated\b.*\bdo not (?:edit|modify)"
                        r"|\bauto-?generated (?:file|code)\b|\bthis (?:file|code) (?:is|was) auto-?generated\b")
 BANNER = re.compile(r"(?:#|//+)[ \t]*[-=*~#]{3,}(?:[ \t]+[\w.,/'()]+){0,4}(?:[ \t]+[-=*~#]+)?")
+HYPHEN_BANNER = re.compile(r"(?:#|//+)[ \t]*[-=*~#]{3,}(?:[ \t]+[\w.,/'()]+(?:-[\w.,/'()]+)*){1,4}[ \t]+[-=*~#]{3,}")
 HISTORY_WORDS = {"moved", "added", "removed", "renamed", "fixed", "fix", "new", "the", "a", "an", "section"}
 CONTRACT = re.compile(r"\b[Rr]aises?\s+[A-Z]\w+|(?:\b(?:None|True|False)|\{\}|\[\])\s+(?:when|if|unless|on)\b"
                       r"|\b[Rr]eturns?\b[^.\n]{0,200}?\b(?:when|if|unless)\b")
@@ -196,7 +197,7 @@ def classify(c):
         return None, "guard"
     if is_doc:
         return None, "docstring"
-    if c.style == "line" and len(c.text) <= 200 and "-*-" not in c.text and not NEGATION.search(c.text) and BANNER.fullmatch(c.text.strip()):
+    if c.style == "line" and len(c.text) <= 200 and "-*-" not in c.text and not NEGATION.search(c.text) and (BANNER.fullmatch(c.text.strip()) or HYPHEN_BANNER.fullmatch(c.text.strip())):
         return None, "banner"
     return None, "comment"
 
