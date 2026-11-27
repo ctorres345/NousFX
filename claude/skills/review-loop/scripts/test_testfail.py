@@ -828,6 +828,115 @@ class CommentsOnly(Base):
         self.assertIn("boom", r.stderr)
 
 
+GATE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "hooks", "review-gate.py")
+
+
+class StampReuse(Base):
+    """NFX-209: a `run-check --stamp` stamp for this tree, branch and check stands in for the with-change half."""
+
+    def setUp(self):
+        super().setUp()
+        self.counter = os.path.join(self._tmp.name, "runs")
+        script = os.path.join(self._tmp.name, "check.py")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write("import subprocess, sys\n"
+                    f"open({self.counter!r}, 'a').write('x\\n')\n"
+                    "sys.exit(subprocess.call([sys.executable, '-B', '-m', 'unittest', '-q']))\n")
+        self.commit_base(".nousfx/project.toml", f"[check]\ncommand = '\"{sys.executable}\" \"{script}\"'\ntimeout = 60\n")
+
+    def runs(self):
+        """Check runs since the last call."""
+        if not os.path.exists(self.counter):
+            return 0
+        with open(self.counter, encoding="utf-8") as f:
+            n = len(f.read().splitlines())
+        os.remove(self.counter)
+        return n
+
+    def stamp(self):
+        r = run_script([GATE, "run-check", "--stamp"], cwd=self.repo)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), 1)
+
+    def test_a_matching_stamp_runs_only_the_restored_half_and_still_says_yes(self):
+        self.fix()
+        self.stamp()
+        r = self.run_base()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.verdict(r), "yes")
+        self.assertIn("failing: test_add", r.stdout)
+        self.assertEqual(self.runs(), 1)
+        self.assertIn("with change: run-check --stamp", r.stdout)
+        self.assertEqual(self.tf("attest", "--base", self.base).stdout, r.stdout)
+
+    def test_a_matching_stamp_still_says_no_for_a_test_that_passes_without_the_change(self):
+        self.write("calc.py", FIXED)
+        self.write("test_truth.py", UNRELATED_MORE)
+        self.stamp()
+        r = self.run_base()
+        self.assertEqual(self.verdict(r), "no", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.runs(), 1)
+
+    def test_the_stamp_is_left_for_the_next_mark(self):
+        self.fix()
+        self.stamp()
+        self.run_base()
+        self.assertTrue(os.path.exists(os.path.join(self.repo, ".git", "claude-review-check-pass")))
+
+    def assertRanBothHalves(self, r):
+        self.assertEqual(self.verdict(r), "yes", r.stdout + r.stderr)
+        self.assertEqual(self.runs(), 2)
+        self.assertIn("with change: run in the clone", r.stdout)
+
+    def test_without_a_stamp_both_halves_run(self):
+        self.fix()
+        self.assertRanBothHalves(self.run_base())
+
+    def test_a_stamp_for_another_tree_is_not_used(self):
+        self.fix()
+        self.stamp()
+        self.write("README.md", "edited after the stamp\n")
+        self.assertRanBothHalves(self.run_base())
+
+    def test_a_stamp_for_another_branch_is_not_used(self):
+        self.fix()
+        self.stamp()
+        self.git("checkout", "-q", "-b", "cesar/NFX-2")
+        self.assertRanBothHalves(self.run_base())
+
+    def gate_module(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("review_gate_in_test", GATE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_a_signed_stamp_for_another_command_is_not_used(self):
+        self.fix()
+        self.stamp()
+        gate = self.gate_module()
+        path = os.path.join(self.repo, ".git", "claude-review-check-pass")
+        import json
+        with open(path, encoding="utf-8") as f:
+            fields = json.load(f)
+        del fields["mac"]
+        gate.write_stamp(self.repo, {**fields, "command": "true"}, gate.stamp_key(self.repo))
+        self.assertRanBothHalves(self.run_base())
+
+    def test_a_forged_stamp_is_not_used(self):
+        self.fix()
+        self.stamp()
+        path = os.path.join(self.repo, ".git", "claude-review-check-pass")
+        import json
+        with open(path, encoding="utf-8") as f:
+            fields = json.load(f)
+        fields["mac"] = "0" * 64
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(fields, f)
+        self.assertRanBothHalves(self.run_base())
+
+
 class GateLookup(GateLookupCases, unittest.TestCase):
     """NFX-214: a project copy never loads the repo's own .claude/hooks/review-gate.py."""
     SCRIPT = TESTFAIL

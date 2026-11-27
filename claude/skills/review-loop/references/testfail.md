@@ -1,7 +1,7 @@
 Read this after Step 0 and in Record the review (NFX-190). It shows whether the tests in the diff fail without the change.
 
 ## After Step 0, before round 1
-Run `python3 -B <this skill's folder>/scripts/testfail.py run --base <base hash>` (`python` on Windows) and show the verdict line. It copies the working tree to a temporary clone, runs the project's check there with the change, then with the production files restored to the base. The real tree is never touched. When other sessions already run N full suites, it prints `waiting for a suite slot (k of N busy)` to stderr and waits: that is not a hang, so do not kill it (NFX-217).
+Run `python3 -B <this skill's folder>/scripts/testfail.py run --base <base hash>` (`python` on Windows) and show the verdict line. It copies the working tree to a temporary clone, runs the project's check there with the change, then with the production files restored to the base. A `run-check --stamp` pass for the same tree, branch and check stands in for the first run, so run `run-check --stamp` first when you need it anyway; the `with change:` line says which source it used (NFX-209). The real tree is never touched. When other sessions already run N full suites, it prints `waiting for a suite slot (k of N busy)` to stderr and waits: that is not a hang, so do not kill it (NFX-217).
 
 | Verdict | Meaning | What you do |
 |---|---|---|

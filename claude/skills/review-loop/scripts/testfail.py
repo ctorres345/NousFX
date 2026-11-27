@@ -10,7 +10,9 @@ Python 3.11+, standard library only; runs the same on macOS and Windows.
 copies the working tree into a temporary git clone outside the repo, and runs the project's check command there twice:
 with the change (it must pass), then with every changed file that is not a test restored to the base (docs too;
 files the change added are deleted), so only the changed tests differ from the base. A name the passing run also
-printed does not count. It prints
+printed does not count. A valid `run-check --stamp` stamp for the same tree, branch and check (matched as --mark
+matches it, and left for --mark) stands in for the with-change run, so only the restored run runs; a
+`  with change:` line says which source was used (NFX-209). It prints
     Tests-Fail-Without: <verdict> <tree> base:<hash>
 and, for `yes`, one `  failing: <name>` line per failing test. Verdicts:
     yes            the restored run failed and named a failing test, or could not import  exit 0
@@ -424,8 +426,22 @@ def verdict_from_logs(s, added, log1, log2):
     return ("yes" if named else "build"), named, notes
 
 
+def check_stamp(gate, s):
+    """The pass time of a `run-check --stamp` stamp for this tree, branch and check (NFX-209), else None. Checked the
+    way --mark checks it (signed, same gate tree hash) and left in place: the next --mark still uses it. A gate without
+    stamp_fields, or a stamp it cannot read, is None, so the with-change half runs."""
+    if not hasattr(gate, "stamp_fields"):
+        return None
+    try:
+        stamp = gate.valid_stamp(s.top, gate.stamp_fields(s.tree, s.branch, s.check))
+    except Exception:
+        return None
+    return (stamp.get("time") or "an unknown time") if stamp else None
+
+
 def run_in_copy(gate, s, restore):
-    """(verdict, named, log tail, notes) from the two runs in a temporary clone, which is always removed."""
+    """(verdict, named, log tail, notes, stamped) from the runs in a temporary clone, which is always removed.
+    stamped is the run-check stamp's time when it stood in for the with-change run (NFX-209), else None."""
     scratch = tempfile.mkdtemp(prefix="testfail-")
     copy = os.path.join(scratch, "repo")
     log1, log2 = os.path.join(scratch, "with-change.log"), os.path.join(scratch, "restored.log")
@@ -442,12 +458,14 @@ def run_in_copy(gate, s, restore):
         slot.enter_context(suite_slot_hold())  # one slot for both runs, so a verdict never queues twice
         write_marker(gate, s)  # NFX-271: time queued for the slot is not run time, so expires starts again
         refuse_if_tree_changed(gate, s)
-        ok, why = gate.run_check(copy, s.check, log1)
-        if not ok:
-            if why.startswith("did not finish"):
-                raise Refused(f"the check with the change {why}; a timeout is never a pass. No stamp recorded.")
-            return "baseline-fail", [], tail(log1), []
-        refuse_if_tree_changed(gate, s, " Stopped after the first half.")
+        stamped = check_stamp(gate, s)
+        if not stamped:
+            ok, why = gate.run_check(copy, s.check, log1)
+            if not ok:
+                if why.startswith("did not finish"):
+                    raise Refused(f"the check with the change {why}; a timeout is never a pass. No stamp recorded.")
+                return "baseline-fail", [], tail(log1), [], None
+            refuse_if_tree_changed(gate, s, " Stopped after the first half.")
         in_base = set(paths_z(git(["ls-tree", "-r", "-z", "--name-only", s.base], copy)))
         # Remove the added files first, then check out the base ones: safe for a file turned into a folder (or back)
         # and for a case-only rename on a case-insensitive disk.
@@ -459,11 +477,11 @@ def run_in_copy(gate, s, restore):
             git(["checkout", s.base, "--", *back[i:i + RESTORE_BATCH]], copy, quiet)
         ok, why = gate.run_check(copy, s.check, log2)
         if ok:
-            return "no", [], "", []
+            return "no", [], "", [], stamped
         if why.startswith("did not finish"):
             raise Refused(f"the restored check {why}; a timeout is never a pass. No stamp recorded.")
         verdict, named, notes = verdict_from_logs(s, added, log1, log2)
-        return verdict, named, ("" if verdict == "yes" else tail(log2)), notes
+        return verdict, named, ("" if verdict == "yes" else tail(log2)), notes, stamped
     finally:
         slot.close()
         shutil.rmtree(scratch, ignore_errors=True)
@@ -513,13 +531,16 @@ def line(verdict, tree, base, why=""):
     return f"Tests-Fail-Without: {verdict} {tree} base:{base}" + (f" ({why})" if why else "")
 
 
-def report(verdict, tree, base, named, notes, why=""):
-    """What run and attest both print: the verdict line, then the failing names and the notes (NFX-222)."""
+def report(verdict, tree, base, named, notes, why="", source=""):
+    """What run and attest both print: the verdict line, then the failing names, the notes (NFX-222) and where the
+    with-change pass came from (NFX-209)."""
     print(line(verdict, tree, base, why))
     for name in named:
         print(f"  failing: {name}")
     for note in notes:
         print(f"  {note}")
+    if source:
+        print(f"  with change: {source}")
 
 
 def run(args):
@@ -532,12 +553,15 @@ def run(args):
     write_marker(gate, s)
     try:
         tests, production, restore = split(tier, s.top, s.base, s.globs)
-        why = ""
+        why, source = "", ""
         if tests and production and comments_only(s):
             verdict, named, detail, notes, why = "n/a", [], "", [], "comments only"
         elif tests and production:
             with refusing("the test-fail run stopped; nothing was recorded"):
-                verdict, named, detail, notes = run_in_copy(gate, s, restore)
+                verdict, named, detail, notes, stamped = run_in_copy(gate, s, restore)
+            if verdict != "baseline-fail":
+                source = (f"run-check --stamp pass at {stamped} for this tree; not run again" if stamped
+                          else "run in the clone")
         else:
             verdict, named, detail, notes = "n/a", [], "", []
         refuse_if_tree_changed(gate, s)
@@ -545,8 +569,8 @@ def run(args):
         remove_marker(gate, s.top)
     with refusing("cannot write the test-fail stamp"):
         gate.write_stamp(s.top, {**s.fields, "verdict": verdict, "why": why, "named": named, "notes": notes,
-                                 "exit": 0, "time": time.strftime("%Y-%m-%dT%H:%M:%S")}, key, gate.TESTFAIL_STAMP_FILE)
-    report(verdict, s.tree, s.base, named, notes, why)
+                                 "with_change": source, "exit": 0, "time": time.strftime("%Y-%m-%dT%H:%M:%S")}, key, gate.TESTFAIL_STAMP_FILE)
+    report(verdict, s.tree, s.base, named, notes, why, source)
     if why:
         print("  comment_check.py verify: only comments changed, so no run")
     elif verdict == "n/a" and production:
@@ -565,7 +589,8 @@ def attest(args):
     stamp = gate.valid_stamp(s.top, s.fields, gate.TESTFAIL_STAMP_FILE)
     if not stamp or stamp.get("verdict") not in VERDICT_EXIT:
         raise Refused("no valid test-fail stamp for this tree, branch, base and check; run `testfail.py run` again")
-    report(stamp["verdict"], s.tree, s.base, stamp.get("named", []), stamp.get("notes", []), stamp.get("why", ""))
+    report(stamp["verdict"], s.tree, s.base, stamp.get("named", []), stamp.get("notes", []), stamp.get("why", ""),
+           stamp.get("with_change", ""))
     return VERDICT_EXIT[stamp["verdict"]]
 
 
