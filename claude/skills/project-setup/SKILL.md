@@ -62,4 +62,4 @@ Claude never appears as a contributor. No `Co-Authored-By: Claude ...` trailer o
 
 ## 6. Finish
 
-Show the before and after table, then follow the normal PR flow: `review-loop`, then a PR. A re-sync PR body names each NousFX CHANGELOG entry since the project's last sync that makes its review stricter (NousFX `docs/sync.md`, Project mode). Done when every audit row is fixed or has a stated reason, and the PR link is reported.
+Show the before and after table, then follow the normal PR flow: `review-loop`, then a PR. A re-sync PR body names each NousFX CHANGELOG entry or `changelog.d/` fragment since the project's last sync that makes its review stricter (NousFX `docs/sync.md`, Project mode). Done when every audit row is fixed or has a stated reason, and the PR link is reported.

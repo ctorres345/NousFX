@@ -61,7 +61,7 @@ class Docs(unittest.TestCase):
 
     def test_re_sync_prs_are_told_to_say_review_gets_stricter(self):
         setup = read(ROOT, "claude", "skills", "project-setup", "SKILL.md")
-        self.assertIn("A re-sync PR body names each NousFX CHANGELOG entry since the project's last sync", setup)
+        self.assertIn("A re-sync PR body names each NousFX CHANGELOG entry or `changelog.d/` fragment since the project's last sync", setup)
         self.assertIn("that makes its review stricter", setup)
         self.assertIn("makes its review stricter", section(read(ROOT, "docs", "sync.md"), "## Project mode"))
 

@@ -33,7 +33,7 @@ Skills I write live in `claude/skills/<name>/`. Via's live in `plugins/via/skill
 - [ ] **No secrets.** Never read, print or store a key. A script that sends anything out says so and asks first.
 - [ ] **No new always-on rules.** The generated rules file has a byte budget. Put guidance in the skill, not in `CLAUDE.md`.
 - [ ] **Via skills get an eval case.** Add a case to `plugins/via/evals/cases.json`, then run `python3 -B plugins/via/scripts/via_eval.py`.
-- [ ] **Docs.** One line in the README table or `docs/` if people need to know it exists, and an entry in `CHANGELOG.md`.
+- [ ] **Docs.** One line in the README table or `docs/` if people need to know it exists, and a changelog entry in `changelog.d/<KEY>.md`, not in `CHANGELOG.md` (format: [changelog.d/README.md](changelog.d/README.md)).
 - [ ] **Run it.** Try the skill on a real task, then `python3 -B scripts/run_checks.py`.
 
 To see the skill on your machine, run `python3 -B scripts/nousfx_sync.py --dry-run` to see what it would change. The real sync installs my whole harness (rules, agents, hooks, the review gate and a deny list in `~/.claude/settings.json`), not only skill links, so read [docs/sync.md](docs/sync.md) first.

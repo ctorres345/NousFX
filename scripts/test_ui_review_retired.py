@@ -29,7 +29,8 @@ class Retired(unittest.TestCase):
         self.assertEqual(r.stdout.split(), [])
 
     def test_only_the_changelog_names_the_old_skill(self):
-        self.assertEqual(grep(OLD), {"CHANGELOG.md"})
+        history = {f for f in grep(OLD) if f.startswith("changelog.d/")}
+        self.assertEqual(grep(OLD) - history, {"CHANGELOG.md"})
 
     def test_the_old_skill_folder_is_gone(self):
         folder = "claude/skills/" + OLD
