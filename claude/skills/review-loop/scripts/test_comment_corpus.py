@@ -15,12 +15,15 @@ A disputed verdict goes in as `known` with `got`, never as `expected`. The sourc
 never reads the six repos. A cleanup that finds a classifier miss adds an entry here (the delete-comments skill).
 """
 import ast
+import functools
+import io
 import json
 import os
 import re
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CORPUS = os.path.join(HERE, "comment_corpus")
@@ -42,8 +45,9 @@ ITEM = re.compile(r"^(\d+) (docstring|inline|line|shell) ((?:keep|flag):[\w-]+)$
 KNOWN = re.compile(r"^NFX-\d+$")
 
 
+@functools.lru_cache(maxsize=None)
 def load():
-    """{language: [entry]} for every corpus file."""
+    """{language: [entry]} for every corpus file, read once per run (callers never change it)."""
     out = {}
     for name in MINIMUM:
         with open(os.path.join(CORPUS, name + ".json"), encoding="utf-8") as f:
@@ -62,15 +66,17 @@ def shape_problems(name, entry):
     out = [f"missing {f}" for f in FIELDS if f not in entry]
     if out:
         return out
-    if set(entry) - set(FIELDS) - {"known", "got"}:
-        out.append(f"unknown fields {sorted(set(entry) - set(FIELDS) - {'known', 'got'})}")
+    extra = set(entry) - set(FIELDS) - {"known", "got"}
+    if extra:
+        out.append(f"unknown fields {sorted(extra)}")
     if ("known" in entry) != ("got" in entry):
         out.append("known and got go together")
     if "known" in entry and not KNOWN.match(str(entry["known"])):
         out.append(f"known {entry['known']!r} is not an NFX-<n> key")
     for field in ("expected", "got"):
-        bad = [i for i in entry.get(field, []) if not ITEM.match(str(i))]
-        if bad or not isinstance(entry.get(field, []), list):
+        items = entry.get(field, [])
+        bad = [i for i in items if not ITEM.match(str(i))] if isinstance(items, list) else [items]
+        if bad:
             out.append(f"{field} items must read `line form verdict`: {bad}")
     source, path = entry["source"], entry["path"]
     if PRIVATE.search(source):
@@ -91,11 +97,21 @@ def shape_problems(name, entry):
             ast.parse(entry["text"])
         except SyntaxError as e:
             out.append(f"does not parse: {e}")
+    if LANGUAGE[name] in ("kotlin", "dart", "js"):
+        out += doc_without_code(path, entry["text"])
     if name == "shell":
-        r = subprocess.run(["bash", "-n"], input=entry["text"], capture_output=True, text=True)
-        if r.returncode:
-            out.append(f"fails bash -n: {r.stderr.strip()}")
+        err = comment_check.syntax_error("bash", entry["text"])
+        if err is not None:
+            out.append(f"fails bash -n: {err}")
     return out
+
+
+def doc_without_code(path, text):
+    """A doc comment needs its declaration in the excerpt: cut off from it, the doc's target and verdict change."""
+    lines = comment_check.text_lines(text)
+    return [f"line {c.line}: a doc comment with no code after it" for c, f, _, _ in comment_check.judged(path, text)
+            if f == "docstring" and not any(l.strip() and not l.strip().startswith(("//", "/*", "*"))
+                                            for l in lines[c.end:])]
 
 
 def listed(entry):
@@ -116,7 +132,8 @@ def verdict_problem(label, entry):
 
 def strip(path, text):
     """The text with every flagged comment cut. A whole-line comment drops its lines; an inline one is cut from
-    its line; a docstring that was its body's only statement leaves `pass`. Annotations are code and stay."""
+    its line; a docstring that was its body's only statement leaves `pass`; a JSX `{/* note */}` child goes with its
+    braces. Annotations are code and stay."""
     lines = comment_check.text_lines(text)
     cuts = [c for c, _, kept, _ in comment_check.judged(path, text) if not kept and c.style != "annotation"]
     for c in sorted(cuts, key=lambda c: c.line, reverse=True):
@@ -125,7 +142,7 @@ def strip(path, text):
         head = first[:first.find(rows[0])] if rows[0] in first else ""
         tail = last[last.rfind(rows[-1]) + len(rows[-1]):] if rows[-1] in last else ""
         if comment_check.is_jsx(path) and head.rstrip().endswith("{") and tail.lstrip().startswith("}"):
-            head, tail = head.rstrip()[:-1], tail.lstrip()[1:]  # a `{/* note */}` JSX child goes as a whole
+            head, tail = head.rstrip()[:-1], tail.lstrip()[1:]
         keep = (head + tail).rstrip()
         if keep.strip():
             lines[c.line - 1:c.end] = [keep]
@@ -151,7 +168,7 @@ def code_differences(name, path, old, new):
         return ["the excerpt does not parse"] if found is None else found
     if name == "shell":
         return comment_check.shell_differences(path, old, new)
-    return comment_check.c_differences(path, old, new)
+    return [f"line {row}: {d}" for row, d in comment_check.c_differences(path, old, new)]
 
 
 class Shape(unittest.TestCase):
@@ -182,6 +199,13 @@ class Shape(unittest.TestCase):
                  "expected": ["1 docstring keep:public-doc"]}
         self.assertTrue(any(p.startswith("does not parse") for p in shape_problems("python", entry)))
 
+    def test_shape_refuses_a_kotlin_doc_cut_off_from_its_declaration(self):
+        entry = {"source": "hemisphere@abc1234:x.kt:1", "path": "x.kt", "text": "/** Opens the folder. */\n",
+                 "expected": ["1 docstring keep:public-doc"]}
+        self.assertIn("line 1: a doc comment with no code after it", shape_problems("kotlin", entry))
+        entry["text"] += "fun open() = Unit\n"
+        self.assertNotIn("line 1: a doc comment with no code after it", shape_problems("kotlin", entry))
+
 
 class Verdicts(unittest.TestCase):
     def test_verdicts_every_entry_without_known_gets_its_list(self):
@@ -206,10 +230,11 @@ class KnownMisses(unittest.TestCase):
         contract = by_source.get("demonica@6f98839:lib/design_system/components.dart:433")
         self.assertIsNotNone(banner, "PAP-69 banner")
         self.assertIsNotNone(contract, "DEM-72 contract")
-        self.assertIn("1 line flag:banner", banner["expected"])  # NFX-267 landed: no known
-        self.assertEqual(contract.get("known"), "NFX-269")
+        self.assertIn("1 line flag:banner", banner["expected"], "NFX-267 is Done, so the banner is a plain entry")
         self.assertIn("1 docstring keep:contract", contract["expected"])
-        self.assertIn("1 docstring flag:docstring", contract["got"])
+        if "known" in contract:
+            self.assertEqual(contract["known"], "NFX-269", "the DEM-72 contract waits on NFX-269 until it lands")
+            self.assertIn("1 docstring flag:docstring", contract["got"])
 
     def test_stale_known_entry_that_gives_expected_fails_naming_it(self):
         entry = {"source": "nousfx@abc1234:x.py:1", "path": "x.py", "text": "x = 1  # one\n",
@@ -243,11 +268,35 @@ class StripCompare(unittest.TestCase):
         self.assertNotEqual(code_differences("kotlin", "x.kt", old, "val a = 1\n"), [])
 
 
+class Provenance(unittest.TestCase):
+    def test_shape_reads_only_the_corpus_never_the_source_repos(self):
+        opened, real = [], io.open
+
+        def spy(path, *a, **k):
+            if isinstance(path, (str, bytes, os.PathLike)):
+                opened.append(os.path.abspath(path))
+            return real(path, *a, **k)
+
+        load.cache_clear()
+        with mock.patch("builtins.open", spy), mock.patch("io.open", spy), \
+                mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            for label, name, entry in entries():
+                shape_problems(name, entry)
+                listed(entry)
+                code_differences(name, entry["path"], entry["text"], strip(entry["path"], entry["text"]))
+        self.assertTrue(opened)
+        self.assertEqual([p for p in opened if not p.startswith(CORPUS + os.sep)], [])
+        self.assertEqual({tuple(c.args[0][1:]) for c in run.call_args_list}, {("-n",)}, "only `<shell> -n` runs")
+
+
 class Secrets(unittest.TestCase):
     def test_secrets_none_in_the_corpus(self):
         for name in MINIMUM:
             with open(os.path.join(CORPUS, name + ".json"), encoding="utf-8") as f:
                 self.assertIsNone(SECRET_RE.search(f.read()), name)
+        for label, _, entry in entries():
+            for field in ("source", "path", "text"):
+                self.assertIsNone(SECRET_RE.search(entry[field]), f"{label} {field}")
 
 
 if __name__ == "__main__":

@@ -653,7 +653,6 @@ class Inventory(RepoCase):
         ])
 
     def test_verdicts_gives_line_form_and_verdict_for_text_alone(self):
-        """NFX-276: the corpus test's seam, no files and no git."""
         text = src('"""Public module doc."""', "def _bump(x):", '    """Bump x."""',
                    "    return x + 1  # plus one")
         self.assertEqual(comment_check.verdicts("pkg/tool.py", text), [
