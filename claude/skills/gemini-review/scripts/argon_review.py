@@ -4,7 +4,7 @@
 It goes through agy when the outbound allow-list entry lists agy, else (or when agy is at its limit, missing or
 signed out) through the billed gemini-api key; see gemini_common.py.
 
-Usage: python3 -I -B argon_review.py --shot a.png [--shot b.png ...] [--range BASE] [--brief "what changed"]
+Usage: python3 -I -B argon_review.py --check | --shot a.png [--shot b.png ...] [--range BASE] [--brief "what changed"]
 Default range: merge base with the default branch, plus uncommitted and new files.
 Exit codes: 3 setup, 4 project not allowed by the via.json outbound allow-list, 5 no UI changes, 6 too large,
 7 likely secret, 8 bad screenshots, 9 the Argon call failed.
@@ -31,10 +31,16 @@ If nothing is worth changing, reply exactly: NO FINDINGS."""
 
 
 def parse(args):
-    shots, rng, brief = [], "", ""
+    shots, rng, brief, check = [], "", "", False
     i = 0
     while i < len(args):
         flag = args[i]
+        if flag == "--check":
+            if check:
+                gc.stop(3, "Duplicate argument: --check")
+            check = True
+            i += 1
+            continue
         if flag not in ("--shot", "--range", "--brief"):
             gc.stop(3, "Unknown argument: %s" % flag)
         if i + 1 >= len(args):
@@ -47,7 +53,9 @@ def parse(args):
         else:
             brief = value
         i += 2
-    return shots, rng, brief
+    if check and (shots or rng or brief):
+        gc.stop(3, "Stopped: --check takes no other arguments. Nothing was sent.")
+    return shots, rng, brief, check
 
 
 def check_shots(shots):
@@ -84,7 +92,12 @@ def default_range():
 
 def main(argv):
     platform, args = gc.take_platform(argv)
-    shots, rng, brief = parse(args)
+    shots, rng, brief, check = parse(args)
+
+    if check:
+        gc.go_to_root()
+        gc.plan_route()
+        return
 
     gc.check_range(rng)
     loaded = check_shots(shots)  # read before the move to the repo root, so relative paths still resolve

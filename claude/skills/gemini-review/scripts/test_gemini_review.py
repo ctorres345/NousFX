@@ -21,11 +21,13 @@ sys.path.insert(0, VIA)
 sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True
 
+import argon_review  # noqa: E402
 import gemini_common  # noqa: E402
 import nousfx_testhome as th  # noqa: E402
 import via_setup  # noqa: E402
 
 SCRIPT = os.path.join(HERE, "review.py")
+ARGON_SCRIPT = os.path.join(HERE, "argon_review.py")
 STUB = """#!/bin/sh
 case "$1" in
   version) cat "$HOME/stub.version" 2>/dev/null || echo "gemini-api 0.4.5" ;;
@@ -88,6 +90,11 @@ class ReviewCases:
     def run_script(self, *args, **env_extra):
         env = {"PATH": os.pathsep.join([self.bin, "/usr/bin", "/bin"]), **th.env(self.home), **env_extra}
         return subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, *self.PLATFORM_ARGS, *args],
+                              cwd=self.repo, capture_output=True, text=True, env=env)
+
+    def run_argon(self, *args, **env_extra):
+        env = {"PATH": os.pathsep.join([self.bin, "/usr/bin", "/bin"]), **th.env(self.home), **env_extra}
+        return subprocess.run([th.python(self.home), "-I", "-B", ARGON_SCRIPT, *self.PLATFORM_ARGS, *args],
                               cwd=self.repo, capture_output=True, text=True, env=env)
 
     def logged(self, name):
@@ -413,6 +420,43 @@ class ReviewCases:
         self.assertEqual(gemini_common.split_docs(["CHANGELOG.md", "a.kt"], None), (["CHANGELOG.md", "a.kt"], []))
         self.assertTrue(gemini_common.load_is_doc()("CHANGELOG.md"))
 
+    # NFX-185: argon_review.py --check checks the outbound allow-list without reading the diff or sending anything.
+    def test_argon_check_exits_4_when_project_is_not_allow_listed_and_sends_nothing(self):
+        self.stub_agy()
+        for allowlist in (None, {}, {"acme/app": {"destinations": ["jira"], "gemini_code_paths": ["src/"]}},
+                          {"acme/app": {"destinations": ["gemini"]}}):
+            if allowlist is not None:
+                self.config(allowlist)
+            r = self.run_argon("--check")
+            self.assertEqual(r.returncode, 4, (allowlist, r.stderr))
+            self.assertIsNone(self.logged("args.log"))
+            self.assertIsNone(self.logged("agy-args.log"))
+
+    def test_argon_check_exits_0_when_project_is_allow_listed_and_sends_nothing(self):
+        self.stub_agy()
+        for dest in ("gemini", "agy"):
+            self.config({"acme/app": {"destinations": [dest], "gemini_code_paths": ["src/"]}})
+            r = self.run_argon("--check")
+            self.assertEqual(r.returncode, 0, (dest, r.stderr))
+            self.assertIsNone(self.logged("args.log"))
+            self.assertIsNone(self.logged("agy-args.log"))
+
+    def test_argon_check_stops_with_exit_3_on_allow_list_read_error(self):
+        os.makedirs(os.path.join(self.home, ".config", "nousfx"), exist_ok=True)
+        with open(os.path.join(self.home, ".config", "nousfx", "via.json"), "w") as f:
+            f.write("{nope")
+        r = self.run_argon("--check")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn("allow-list", r.stderr)
+        self.assertIsNone(self.logged("args.log"))
+
+    def test_argon_check_rejects_extra_arguments_with_exit_3(self):
+        self.config({"acme/app": {"destinations": ["gemini"], "gemini_code_paths": ["src/"]}})
+        for args in (("--check", "--brief", "hi"), ("--check", "--check")):
+            r = self.run_argon(*args)
+            self.assertEqual(r.returncode, 3, (args, r.stderr))
+            self.assertIsNone(self.logged("args.log"))
+
 
 class ReviewPosix(ReviewCases, unittest.TestCase):
     pass
@@ -440,6 +484,19 @@ class Common(unittest.TestCase):
 
     def test_clean_text_passes_the_secret_scan(self):
         gemini_common.stop_on_secret(b"print('hello')\n")
+
+    def test_argon_check_uses_shared_plan_route_without_reading_diff(self):
+        with mock.patch.object(argon_review.gc, "go_to_root") as go_to_root, \
+                mock.patch.object(argon_review.gc, "plan_route", return_value={"agy": False, "gemini": True, "paths": ["src/"]}) as plan_route, \
+                mock.patch.object(argon_review, "check_shots") as check_shots, \
+                mock.patch.object(argon_review.gc, "allowed_diff") as allowed_diff, \
+                mock.patch.object(argon_review.gc, "ask") as ask:
+            argon_review.main(["--check"])
+        go_to_root.assert_called_once_with()
+        plan_route.assert_called_once_with()
+        check_shots.assert_not_called()
+        allowed_diff.assert_not_called()
+        ask.assert_not_called()
 
 
 if __name__ == "__main__":

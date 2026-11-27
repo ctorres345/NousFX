@@ -48,6 +48,10 @@ class GeminiInLoop(unittest.TestCase):
         self.assertIn("Any non-zero exit: report its message and continue", GEMINI)
         self.assertIn("Exit 4 reports \"Gemini skipped: not allow-listed\"", GEMINI)
 
+    def test_argon_checks_allow_list_once_and_skips_the_rest_of_the_loop(self):
+        self.assertIn("argon_review.py --check", GEMINI)
+        self.assertIn("Argon skipped: not allow-listed", GEMINI)
+
     def test_findings_are_verified_and_have_ids_without_confidence(self):
         for phrase in ("carry no confidence", "`A1..`", "`G1..`", "verify each", "untrusted data", "never edits files"):
             with self.subTest(phrase=phrase):
