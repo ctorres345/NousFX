@@ -853,9 +853,13 @@ def commit_subject(command, ps=False):
     return None
 
 
-def commit_warning(command, cwd, ps=False):
-    """The hook JSON that warns about a commit whose subject names another key than the branch's, or None.
-    Advisory (NFX-86): it never blocks, and any failure means no warning."""
+def hook_warning_json(text):
+    return json.dumps({"systemMessage": text,
+                       "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}})
+
+
+def commit_warning_text(command, cwd, ps=False):
+    """Advisory warning text for a commit whose subject names another key than the branch's, or None."""
     try:
         subject = commit_subject(command, ps)
         if subject is None or not in_repo(cwd):
@@ -863,11 +867,94 @@ def commit_warning(command, cwd, ps=False):
         why = commit_key_problem(subject, current_branch(cwd))
     except Exception:
         return None
-    if not why:
+    return f"Commit key check (warning): {why}" if why else None
+
+
+def commit_warning(command, cwd, ps=False):
+    """The hook JSON that warns about a commit whose subject names another key than the branch's, or None.
+    Advisory (NFX-86): it never blocks, and any failure means no warning."""
+    text = commit_warning_text(command, cwd, ps)
+    return hook_warning_json(text) if text else None
+
+
+ZSH_VAR_WORD = re.compile(r"\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})")
+ZSH_ASSIGN = re.compile(r"([A-Za-z_]\w*)(\+?=)(.*)", re.S)
+ZSH_LEADING_WORDS = {"if", "then", "elif", "else", "do", "while", "until", "!", "{",
+                     "time", "noglob", "nocorrect", "exec", "command", "builtin"}
+ZSH_ASSIGN_BUILTINS = {"export", "local", "typeset", "readonly", "declare"}
+
+
+def zsh_assign(word, safe):
+    """Record a NAME=value word: a value with no whitespace is safe to run as `$NAME args`. False if not one."""
+    m = ZSH_ASSIGN.fullmatch(word.text)
+    if not m:
+        return False
+    name, op, value = m.groups()
+    if any(ch.isspace() for ch in value) or (op == "+=" and name not in safe):
+        safe.discard(name)
+    else:
+        safe.add(name)
+    return True
+
+
+def without_arithmetic(command):
+    """command with each `$((...))` replaced by 0, since parse() reads it as a subshell of commands.
+    ValueError if one is unbalanced."""
+    out, i = [], 0
+    while (j := command.find("$((", i)) >= 0:
+        out.append(command[i:j] + "0")
+        i = pr_create_parser.close_paren(command, j + 2) + 1
+    return "".join(out) + command[i:]
+
+
+def skip_array_elements(events, k):
+    """Index after the `( ... )` group at events[k], which holds the elements of `NAME=(a b)`, not commands."""
+    depth, k = 1, k + 1
+    while k < len(events) and depth:
+        depth += {"(": 1, ")": -1}.get(events[k], 0) if isinstance(events[k], str) else 0
+        k += 1
+    return k
+
+
+def zsh_var_command_warning(command, shell=None):
+    """Advisory text when a zsh command starts with an unquoted `$NAME` or `${NAME}` plus arguments (NFX-247),
+    or None, also on any failure. zsh does not word-split it, so `P="python3 x.py"; $P --flag` exits 127.
+    Skipped when NAME was assigned a value with no spaces, or an array, earlier in the same command."""
+    try:
+        sh = os.environ.get("SHELL", "") if shell is None else shell
+        if pr_create_parser is None or "$" not in command or os.path.basename(sh.strip()).lower() != "zsh":
+            return None
+        events = pr_create_parser.parse(without_arithmetic(command))
+        safe, flagged, k = set(), [], 0
+        while k < len(events):
+            words, k = events[k], k + 1
+            if not isinstance(words, list):
+                continue
+            i = 0
+            while i < len(words) and ((words[i].text in ZSH_LEADING_WORDS and not words[i].quoted)
+                                      or zsh_assign(words[i], safe)):
+                i += 1
+            rest = words[i:]
+            if not rest:
+                last = ZSH_ASSIGN.fullmatch(words[-1].text)
+                if last and not last.group(3) and events[k:k + 1] == ["("]:
+                    safe.add(last.group(1))
+                    k = skip_array_elements(events, k)
+                continue
+            if not rest[0].quoted and rest[0].text in ZSH_ASSIGN_BUILTINS:
+                for w in rest[1:]:
+                    zsh_assign(w, safe)
+                continue
+            first = rest[0]
+            m = len(rest) > 1 and first.dynamic and not first.quoted and ZSH_VAR_WORD.fullmatch(first.text)
+            if m:
+                name = m.group(1) or m.group(2)
+                if name not in safe and name not in flagged:
+                    flagged.append(name)
+        return "\n".join(f"zsh does not word-split `${n}`; use a shell function, an array (`${{={n}}}`), "
+                         "or write the command out" for n in flagged) or None
+    except Exception:
         return None
-    text = f"Commit key check (warning): {why}"
-    return json.dumps({"systemMessage": text,
-                       "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}})
 
 
 def allow_branch(argv):
@@ -1633,9 +1720,16 @@ def gate(argv):
         return 2
     code = evaluate(tool, command, cwd, body, option(argv, "--repo-copy"))
     if code == 0 and tool.lower() in ("bash", "powershell"):
-        warning = commit_warning(command, cwd, tool.lower() == "powershell")  # NFX-86: advisory, never blocks
-        if warning:
-            print(warning)
+        warnings = []
+        commit_w = commit_warning_text(command, cwd, tool.lower() == "powershell")  # NFX-86: advisory, never blocks
+        if commit_w:
+            warnings.append(commit_w)
+        if tool.lower() == "bash":
+            zsh_w = zsh_var_command_warning(command)  # NFX-247: advisory, never blocks
+            if zsh_w:
+                warnings.append(zsh_w)
+        if warnings:
+            print(hook_warning_json("\n".join(warnings)))
     return code
 
 
