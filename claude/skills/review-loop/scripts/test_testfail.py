@@ -858,81 +858,93 @@ class StampReuse(Base):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.runs(), 1)
 
-    def test_a_matching_stamp_runs_only_the_restored_half_and_still_says_yes(self):
+    def uncovered(self):
+        """A change whose test passes without it: the restored run passes, so the verdict is `no`."""
+        self.write("calc.py", FIXED)
+        self.write("test_truth.py", UNRELATED_MORE)
+
+    def test_a_matching_stamp_and_a_passing_restored_run_say_no_after_one_run(self):
+        self.uncovered()
+        self.stamp()
+        r = self.run_base()
+        self.assertEqual(self.verdict(r), "no", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.runs(), 1)
+        self.assertIn("with change: run-check --stamp pass for this tree; not run again", r.stdout)
+        self.assertEqual(self.tf("attest", "--base", self.base).stdout, r.stdout)
+
+    def test_a_matching_stamp_and_a_failing_restored_run_still_run_the_change_and_say_yes(self):
         self.fix()
         self.stamp()
         r = self.run_base()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.verdict(r), "yes")
         self.assertIn("failing: test_add", r.stdout)
-        self.assertEqual(self.runs(), 1)
-        self.assertIn("with change: run-check --stamp", r.stdout)
+        self.assertEqual(self.runs(), 2)
+        self.assertIn("with change: run in the clone after the restored run failed", r.stdout)
         self.assertEqual(self.tf("attest", "--base", self.base).stdout, r.stdout)
 
-    def test_a_matching_stamp_still_says_no_for_a_test_that_passes_without_the_change(self):
-        self.write("calc.py", FIXED)
-        self.write("test_truth.py", UNRELATED_MORE)
+    def test_a_stamp_never_hides_a_clone_that_cannot_run_the_check(self):
+        self.commit_base(".gitignore", "secret.env\n")
+        self.write("secret.env", "TOKEN=x\n")
+        self.fix()
+        self.write("test_secret.py", "import os\nimport unittest\n\n\nclass S(unittest.TestCase):\n"
+                   "    def test_secret_is_there(self):\n        self.assertTrue(os.path.exists('secret.env'))\n")
         self.stamp()
         r = self.run_base()
-        self.assertEqual(self.verdict(r), "no", r.stdout + r.stderr)
+        self.assertEqual(self.verdict(r), "baseline-fail", r.stdout + r.stderr)
         self.assertEqual(r.returncode, 1)
-        self.assertEqual(self.runs(), 1)
 
     def test_the_stamp_is_left_for_the_next_mark(self):
-        self.fix()
+        self.uncovered()
         self.stamp()
         self.run_base()
         self.assertTrue(os.path.exists(os.path.join(self.repo, ".git", "claude-review-check-pass")))
 
     def assertRanBothHalves(self, r):
-        self.assertEqual(self.verdict(r), "yes", r.stdout + r.stderr)
+        self.assertEqual(self.verdict(r), "no", r.stdout + r.stderr)
         self.assertEqual(self.runs(), 2)
-        self.assertIn("with change: run in the clone", r.stdout)
+        self.assertRegex(r.stdout, r"(?m)^  with change: run in the clone$")
 
     def test_without_a_stamp_both_halves_run(self):
-        self.fix()
+        self.uncovered()
         self.assertRanBothHalves(self.run_base())
 
     def test_a_stamp_for_another_tree_is_not_used(self):
-        self.fix()
+        self.uncovered()
         self.stamp()
         self.write("README.md", "edited after the stamp\n")
         self.assertRanBothHalves(self.run_base())
 
     def test_a_stamp_for_another_branch_is_not_used(self):
-        self.fix()
+        self.uncovered()
         self.stamp()
         self.git("checkout", "-q", "-b", "cesar/NFX-2")
         self.assertRanBothHalves(self.run_base())
 
-    def gate_module(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("review_gate_in_test", GATE)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+    def read_stamp(self):
+        import json
+        with open(os.path.join(self.repo, ".git", "claude-review-check-pass"), encoding="utf-8") as f:
+            return json.load(f)
 
     def test_a_signed_stamp_for_another_command_is_not_used(self):
-        self.fix()
+        import importlib.util
+        self.uncovered()
         self.stamp()
-        gate = self.gate_module()
-        path = os.path.join(self.repo, ".git", "claude-review-check-pass")
-        import json
-        with open(path, encoding="utf-8") as f:
-            fields = json.load(f)
+        spec = importlib.util.spec_from_file_location("review_gate_in_test", GATE)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        fields = self.read_stamp()
         del fields["mac"]
         gate.write_stamp(self.repo, {**fields, "command": "true"}, gate.stamp_key(self.repo))
         self.assertRanBothHalves(self.run_base())
 
     def test_a_forged_stamp_is_not_used(self):
-        self.fix()
-        self.stamp()
-        path = os.path.join(self.repo, ".git", "claude-review-check-pass")
         import json
-        with open(path, encoding="utf-8") as f:
-            fields = json.load(f)
-        fields["mac"] = "0" * 64
-        with open(path, "w", encoding="utf-8") as f:
+        self.uncovered()
+        self.stamp()
+        fields = {**self.read_stamp(), "mac": "0" * 64}
+        with open(os.path.join(self.repo, ".git", "claude-review-check-pass"), "w", encoding="utf-8") as f:
             json.dump(fields, f)
         self.assertRanBothHalves(self.run_base())
 
