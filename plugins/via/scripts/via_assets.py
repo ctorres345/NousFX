@@ -5,9 +5,10 @@ Usage: via_assets.py audit    [--project DIR]
        via_assets.py convert  [--project DIR] [--dry-run] [--only NAME ...]
        via_assets.py generate --kind image|svg --name NAME --key KEY (--prompt TEXT | --prompt-file FILE)
                               [--project DIR] [--timeout SECONDS] [--ref IMAGE ...] [--missing] [--any-order]
+                              [--gemini]
        via_assets.py probe-image [--project DIR] [--timeout SECONDS (120)]
        via_assets.py plan     --key KEY [--project DIR]
-       via_assets.py prompts  --key KEY [--project DIR] [--name NAME ...] [--note TEXT] [--title TEXT]
+       via_assets.py prompts  --key KEY [--project DIR] [--name NAME ...] [--note TEXT] [--title TEXT] [--gemini]
 
 The spec is design/assets.toml in the project:
 
@@ -18,6 +19,9 @@ The spec is design/assets.toml in the project:
     android = "app/src/main/res"
     flutter = "assets/images"
     web = "public/images"
+
+    [makers]                               # optional: how this project makes images on Cesar's PC, as text Via
+    local = "tool/pixel_gen.py; docs/RUNBOOK.md, Local art generation"   # shows and never runs
 
     [[asset]]
     name = "home_logo_main"                # <feature>_<what>_<variant>, snake_case
@@ -30,6 +34,8 @@ The spec is design/assets.toml in the project:
                                            # background and approve keys it out into real alpha
     set = "frames"                         # optional: rows in one set share one layout text in their prompts
     layout = "8% margins, 6 px lines"      # optional, needs set; give it once per set (or the same on each row)
+    maker = "gemini"                       # optional, image rows: the suggested source, local or gemini
+                                           # (local needs [makers] local); Cesar still chooses before a batch
 
 Targets. image: Android drawable-mdpi..xxxhdpi PNG (1, 1.5, 2, 3, 4x); Flutter <name>.png, 2.0x/, 3.0x/; web
 <name>.webp and <name>@2x.webp. svg: Android drawable/<name>.xml (VectorDrawable); Flutter and web <name>.svg (a copy).
@@ -53,6 +59,7 @@ found only from the path named in agy's reply, inside that conversation's folder
 is the one <svg> document in the reply text, saved as text with its audit findings. An SVG that breaks a safety
 rule (parse, DOCTYPE, script, embedded content) stops with exit 1 and nothing is written. It needs no assets.toml and no
 Pillow; when assets.toml has a row for --name, the row's set layout and transparent key color go into the prompt.
+A row whose maker is local is refused (exit 1, nothing sent) unless --gemini says Cesar chose Gemini for it.
 --missing prints {"skipped": NAME, "reason"} and sends nothing when the name already has a pending or approved
 candidate in design/asset-review/<KEY>/state.json. An image is refused (exit 1, nothing sent) while an svg row of
 assets.toml with no source file yet has no candidate for KEY in any state, so a batch makes its SVGs first (see
@@ -66,30 +73,20 @@ find or remove, also after a failed call, stays there) and written nowhere else.
 {"image": "ok" | "quota" | "unavailable" | "unknown", "reset", "detail"}; exit 0 for ok and unknown (an answer it
 does not know, or a failed call such as a timeout), 21 for quota, 22 when agy is not installed or not signed in.
 
-Billed image fallback (NFX-172, off by default). When the project's allow-list entry sets
-assets.image_fallback to "api" (see via_outbound.py) and also lists gemini, an image that hits agy's quota is made
-once through `gemini-api image -m <assets.image_model, default gemini-3.1-flash-image>` instead: the art prompt goes
-over stdin from an empty folder, style references go as -i inputs, and gemini-api reads its key from the OS keyring
-only (as Argon's billed route, NFX-164; the key variables are hidden from it, and the key is never read or printed).
-stderr says the image is billed before the call. It prints {"path", "kind", "conversation_id": null, "findings": [],
-"route": "gemini-api", "model", "fallback"}; an agy image prints "route": "agy", "model": null. Pass the route to
-via_assets_review.py add --origin "gemini-api <model>". SVGs never fall back. With the fallback off, or gemini not
-allowed, the quota stop is exit 21 as before and gemini-api is never started. Any fallback failure is exit 23 and
-stops the batch, since the next image would be billed again: gemini-api missing, its key not in the keyring (whoami
-must report every credential as keyring), or the billed call failing, timing out or returning no image. Never retried.
-
 `plan` lists the open assets.toml rows (no source file yet; rows an earlier ticket approved are left out) in the
 order a batch generates them: SVG rows first, then image rows, each kind in file order. SVGs use agy's text models and images its much smaller image quota, so a quota stop on an image never
-blocks an SVG. Prints {"order": [{"name", "kind", "candidate"}], "images": N, "image_fallback": {"mode": "off"|"api", "model",
-"billed_max"}} (N open image rows with no pending or approved candidate; billed_max is how many of them the billed
-fallback could make, 0 when it is off or gemini is not allowed); candidate is true when the row
-already has a pending or approved candidate for KEY (generate --missing would skip it). Sends nothing.
+blocks an SVG. Prints {"order": [{"name", "kind", "maker", "candidate"}], "images": N, "makers": {"local": TEXT or
+null}} (N open image rows with no pending or approved candidate); candidate is true when the row
+already has a pending or approved candidate for KEY (generate --missing would skip it); maker is the row's suggested
+source or null. Sends nothing.
 
 `prompts` is for an image source outside agy that Claude drives, such as Gemini on the web (modes/assets.md step 3c). It
 sends nothing. It prints {"chat": "<KEY> <title>", "context": the style message (design/brief.md, the palette, each
 set's layout, the web design tokens), "prompts": [{"name", "kind", "size", "file", "base", "prompt", "agy_prompt"}]}:
 the open image rows with no pending or approved candidate for KEY (a later run picks up where the last one stopped),
-in file order, or the --name rows. SVG rows stay with agy. "prompt" is the art prompt generate would send for the row;
+in file order, or the --name rows. SVG rows stay with agy. Rows whose maker is local are left out and named in
+"local", and a --name for one is refused, unless --gemini says Cesar chose Gemini for them. "prompt" is the art
+prompt generate would send for the row;
 "agy_prompt" is exactly what agy gets after agy_call's safety lines. It stops (exit 1) on a name not in assets.toml,
 an SVG row, an unreadable brief.md, or a value shaped like a key or token in its input or output, and never prints
 that value.
@@ -101,7 +98,6 @@ import io
 import json
 import os
 import re
-import secrets
 import struct
 import subprocess
 import sys
@@ -117,7 +113,6 @@ sys.path.insert(0, HERE)  # -I leaves the script folder off sys.path
 import via_agy_call  # noqa: E402
 import via_home  # noqa: E402
 import via_outbound  # noqa: E402
-import via_run  # noqa: E402
 SPEC = os.path.join("design", "assets.toml")
 SCREEN, SOURCE = "assets", "via-assets"
 NAME_RE = re.compile(r"^[a-z0-9]+(_[a-z0-9]+){2,}$")
@@ -128,6 +123,7 @@ DEFAULT_PATHS = {"android": os.path.join("app", "src", "main", "res"), "flutter"
                  "web": os.path.join("public", "images")}
 PLATFORMS = tuple(DEFAULT_PATHS)
 KINDS = ("svg", "image")
+MAKERS = ("local", "gemini")
 ANDROID_DENSITIES = (("mdpi", 1.0), ("hdpi", 1.5), ("xhdpi", 2.0), ("xxhdpi", 3.0), ("xxxhdpi", 4.0))
 FLUTTER_SCALES = (("", 1.0), ("2.0x", 2.0), ("3.0x", 3.0))
 WEB_SCALES = (("", 1.0), ("@2x", 2.0))
@@ -233,6 +229,14 @@ def load_spec(project):
         if os.path.isabs(value) or not inside(os.path.join(project, value), project):
             raise SpecError("%s: [paths] %s must be a folder inside the project." % (SPEC, key))
         paths[key] = os.path.normpath(value)
+    makers = data.get("makers", {})
+    if not isinstance(makers, dict):
+        raise SpecError("%s: [makers] must be a table." % SPEC)
+    if set(makers) - {"local"}:
+        raise SpecError("%s: [makers] takes only local (how this project makes images on Cesar's PC)." % SPEC)
+    if "local" in makers and not (isinstance(makers["local"], str) and makers["local"].strip()
+                                  and len(makers["local"]) <= MAX_LAYOUT):
+        raise SpecError("%s: [makers] local must be non-empty text of at most %d characters." % (SPEC, MAX_LAYOUT))
     assets = data.get("asset", [])
     if not isinstance(assets, list):
         raise SpecError("%s: assets are written as [[asset]] tables." % SPEC)
@@ -262,6 +266,13 @@ def load_spec(project):
                 bad(i, 'transparent must be a key color such as "#00FF00"')
             if a["kind"] != "image" or os.path.splitext(a["source"])[1].lower() != ".png":
                 bad(i, "transparent is for an image row with a .png source")
+        if "maker" in a:
+            if a["maker"] not in MAKERS:
+                bad(i, "maker must be local or gemini")
+            if a["kind"] != "image":
+                bad(i, "maker is for image rows; SVGs always come from agy")
+            if a["maker"] == "local" and "local" not in makers:
+                bad(i, 'maker = "local" needs [makers] local, the steps for making it on the PC')
         for key in ("set", "layout"):
             if key in a and not (isinstance(a[key], str) and a[key].strip() and len(a[key]) <= MAX_LAYOUT):
                 bad(i, "%s must be non-empty text of at most %d characters" % (key, MAX_LAYOUT))
@@ -275,7 +286,8 @@ def load_spec(project):
     for a in assets:  # every row in a set gets the set's layout
         if "set" in a and a["set"] in layouts:
             a["layout"] = layouts[a["set"]]
-    return {"palette": palette, "ignore": ignore, "paths": paths, "assets": assets}
+    return {"palette": palette, "ignore": ignore, "paths": paths, "makers": {"local": makers.get("local")},
+            "assets": assets}
 
 
 def size_of(asset):
@@ -1093,21 +1105,12 @@ def reset_clause(text):
     return reset, "It resets: %s." % reset if reset else "agy gave no reset time; try again later."
 
 
-class QuotaHit(Exception):
-    """agy said it is out of quota; the text is what it said."""
-
-
 def quota_stop(text, prompt=None):
-    """Raise QuotaHit when text shows a quota error. generate turns it into the billed fallback or the stop."""
+    """Stop with exit QUOTA when text shows a quota error, naming the reset time when agy gave one."""
     if is_quota(text, prompt):
-        raise QuotaHit(text)
-
-
-def quota_die(text, note=""):
-    """Stop with exit QUOTA, naming the reset time when agy gave one."""
-    die("agy is out of quota (RESOURCE_EXHAUSTED or 429). %s Stop the batch here; the assets without a "
-        "candidate can be made later with generate --missing.%s Nothing was written" % (reset_clause(text)[1], note),
-        QUOTA)
+        die("agy is out of quota (RESOURCE_EXHAUSTED or 429). %s Stop the batch here; the assets without a "
+            "candidate can be made later with generate --missing. Nothing was written" % reset_clause(text)[1],
+            QUOTA)
 
 
 def agy_allowed(project):
@@ -1166,30 +1169,10 @@ def plan(project, key):
     rows = sorted(open_rows(project), key=lambda a: a["kind"] != "svg")  # stable: file order kept
     import via_assets_review  # imports this module, so not at the top
     state = via_assets_review.load_state(project, key)["assets"]
-    images = sum(a["kind"] == "image" and not candidate(state, a["name"]) for a in rows)
-    return {"order": [{"name": a["name"], "kind": a["kind"],
+    return {"order": [{"name": a["name"], "kind": a["kind"], "maker": a.get("maker"),
                        "candidate": candidate(state, a["name"])} for a in rows],
-            "images": images, "image_fallback": fallback_plan(project, images)}
-
-
-def fallback_plan(project, images):
-    """{"mode", "model", "billed_max"}: "api" only when the fallback is on and gemini is allowed, so the batch can
-    say before its first call how many images could go to the billed Gemini API. Sends nothing."""
-    mode, model, why_not = image_fallback(project)
-    if mode != "api" or why_not:
-        return {"mode": "off", "model": None, "billed_max": 0}
-    return {"mode": "api", "model": model, "billed_max": images}
-
-
-def image_fallback(project):
-    """(mode, model, why not) of the project's billed image fallback from its allow-list entry; why not is the reason
-    gemini is not allowed, or None. One read of the allow-list."""
-    try:
-        code, result = via_outbound.decide(project, "gemini")
-    except via_outbound.Bad as e:
-        raise SpecError("%s. Nothing was sent" % e)
-    assets = result["assets"]
-    return assets["image_fallback"], assets["image_model"], None if code == via_outbound.ALLOWED else result["reason"]
+            "images": sum(a["kind"] == "image" and not candidate(state, a["name"]) for a in rows),
+            "makers": load_spec(project)["makers"]}
 
 
 def spec_row(project, name):
@@ -1272,12 +1255,13 @@ def style_line(brief):
 
 def no_secret(text, where):
     """Stop, printing nothing, when text holds a value shaped like a key or token. The value itself is never shown."""
+    import via_run  # the shared secret pattern; imported late like via_assets_review
     if via_run.has_secret(text):
         raise SpecError("%s holds a value shaped like a key or token. Remove it and run again. Nothing was printed"
                         % where)
 
 
-def outside_prompts(project, key, names=(), note="", title=""):
+def outside_prompts(project, key, names=(), note="", title="", gemini=False):
     """The context message (the project's style, for a Gemini Gem or a chat's first message) and one prompt per row,
     each the art prompt generate would send for that row. Sends nothing anywhere."""
     if not KEY_RE.match(key):
@@ -1314,6 +1298,10 @@ def outside_prompts(project, key, names=(), note="", title=""):
     if svgs:
         raise SpecError("%s: SVG rows come from agy (step 3); an outside source makes image rows only"
                         % ", ".join(svgs))
+    local = [n for n in names if rows[n].get("maker") == "local"]
+    if local and not gemini:
+        raise SpecError("%s suggests local for %s: make it on the PC (%s). Pass --gemini only when Cesar chose Gemini "
+                        "for it. Nothing was printed" % (SPEC, ", ".join(local), spec["makers"]["local"]))
     if names:
         chosen = [rows[n] for n in names]
     else:  # the open image rows with no pending or approved candidate yet, like generate --missing
@@ -1322,6 +1310,8 @@ def outside_prompts(project, key, names=(), note="", title=""):
         open_names = {a["name"] for a in open_rows(project)}
         chosen = [a for a in spec["assets"]
                   if a["kind"] == "image" and a["name"] in open_names and not candidate(state, a["name"])]
+        local = [a["name"] for a in chosen if a.get("maker") == "local" and not gemini]
+        chosen = [a for a in chosen if a["name"] not in local]
     style = style_line(brief)
     palette = spec.get("palette") or []
     layouts = {}
@@ -1349,7 +1339,8 @@ def outside_prompts(project, key, names=(), note="", title=""):
         prompts.append({"name": a["name"], "kind": a["kind"], "size": a["size"],
                         "file": os.path.basename(a["source"]), "base": base,
                         "prompt": art_prompt(a["kind"], base, a), "agy_prompt": agy_prompt(a["kind"], base, a)})
-    out = {"chat": "%s %s" % (key, title.strip() or "assets"), "context": "\n\n".join(context), "prompts": prompts}
+    out = {"chat": "%s %s" % (key, title.strip() or "assets"), "context": "\n\n".join(context), "prompts": prompts,
+           "local": [] if names else local}
     if warnings:
         out["warnings"] = warnings
     for text in strings(out):  # each printed value, as parsed TOML escapes can hide a key from the raw scan
@@ -1387,7 +1378,7 @@ def token_lines(project):
     return lines[:MAX_TOKENS]
 
 
-def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, any_order=False):
+def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, any_order=False, gemini=False):
     if not NAME_RE.match(name):
         raise SpecError("--name %r is not <feature>_<what>_<variant> in snake_case" % name)
     if not KEY_RE.match(key):
@@ -1399,21 +1390,12 @@ def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, 
     if kind == "image" and not any_order:
         svgs_first(project, key)
     row = spec_row(project, name)
+    if row and row.get("maker") == "local" and not gemini:
+        raise SpecError("%s suggests local for %s: make it on the PC (%s), then bring it in with via_assets_review.py "
+                        "import --origin \"local <tool>\". Pass --gemini only when Cesar chose Gemini for it. "
+                        "Nothing was sent" % (SPEC, name, load_spec(project)["makers"]["local"]))
     agy_allowed(project)
     files = read_refs(refs)
-    try:
-        return agy_generate(project, kind, name, key, prompt, timeout, row, files)
-    except QuotaHit as hit:
-        mode, model, why_not = image_fallback(project) if kind == "image" else ("off", None, None)
-        if mode != "api":
-            quota_die(str(hit))
-        if why_not:
-            quota_die(str(hit), " The billed image fallback is on but was not used: %s." % why_not)
-        return api_image(project, name, key, art_prompt(kind, prompt, row), timeout, files, model, str(hit))
-
-
-def agy_generate(project, kind, name, key, prompt, timeout, row, files):
-    """One asset through agy; see generate at the top of this file. Raises QuotaHit on agy's quota error."""
     started = via_agy_call.now()
     try:
         asked = agy_prompt(kind, prompt, row)
@@ -1455,94 +1437,7 @@ def agy_generate(project, kind, name, key, prompt, timeout, row, files):
         if unsafe:  # checked in memory: model output that could run or pull in content never lands as an .svg
             die("agy's SVG breaks the safety rules (%s). Nothing was written" % ", ".join(unsafe))
     write_atomic(path, data)
-    return {"path": path, "kind": kind, "conversation_id": reply["conversation_id"], "findings": findings,
-            "route": "agy", "model": None}
-
-
-# --- the billed Gemini API as the image fallback (NFX-172) ---
-
-BILLED_STOP = 23
-STOP_BATCH = " Stop the batch: the next image would be billed again. Not retried. Nothing was written"
-
-
-def keyring_only(cli, work):
-    """True when gemini-api reports every credential it would use as coming from the OS keyring, as Argon's billed
-    route requires (NFX-164). Only the sources are read, never the key."""
-    try:
-        out = subprocess.run([cli, "whoami", "--output-format", "json"], cwd=work, stdin=subprocess.DEVNULL,
-                             capture_output=True, text=True, errors="replace", env=via_agy_call.agy_env(),
-                             timeout=30).stdout
-        creds = json.loads(out)["credentials"]
-        if not creds or not all(isinstance(e, dict) for e in creds.values()):
-            return False
-        sources = {e.get("source") for e in creds.values()} - {None, "unset"}
-    except (OSError, subprocess.SubprocessError, ValueError, AttributeError, KeyError, TypeError):
-        return False
-    return sources == {"keyring"}
-
-
-def one_image(folder):
-    """(bytes, extension) of the single PNG, JPEG or WebP file gemini-api wrote into folder, or None."""
-    made = [os.path.join(folder, f) for f in os.listdir(folder)]
-    if len(made) != 1 or os.path.islink(made[0]):
-        return None
-    try:
-        data = via_agy_call.read_file(made[0])
-    except (OSError, via_agy_call.AgyError):
-        return None
-    ext = via_agy_call.image_type(data)
-    return (data, ext) if ext and len(data) <= via_agy_call.MAX_IMAGE else None
-
-
-def api_image(project, name, key, prompt, timeout, files, model, said):
-    """One image through `gemini-api image` after agy ran out of quota. The prompt goes over stdin, from an empty
-    folder, with the key variables hidden, so gemini-api reads its key from the keyring. Never retried."""
-    cli = via_agy_call.find_program("gemini-api", skip=(project,))
-    if not cli:
-        die("the billed image fallback is on, but gemini-api is not installed. Install it (see /via setup) or set "
-            "image_fallback to \"off\". Stop the batch. Nothing was sent", BILLED_STOP)
-    with tempfile.TemporaryDirectory(prefix="via-gemini-") as work:
-        if not keyring_only(cli, work):
-            die("the billed image fallback is on, but the Gemini key is not in the OS keyring. Run `gemini-api auth "
-                "login`, or set image_fallback to \"off\". Stop the batch. Nothing was sent", BILLED_STOP)
-        sys.stderr.write("agy is out of image quota: making 1 image for %s through the billed Gemini API (%s).\n"
-                         % (name, model))
-        out = os.path.join(work, "out")
-        os.mkdir(out)
-        cmd = [cli, "image", "-m", model, "--out", out, "--stdin", "--no-interactive"]
-        for ref, data in sorted(files.items()):
-            with open(os.path.join(work, ref), "wb") as f:
-                f.write(data)
-            cmd += ["-i", ref]
-        if files:
-            prompt += " Match the style of the reference images."
-        try:
-            r = subprocess.run(cmd, cwd=work, input=prompt, capture_output=True, text=True, errors="replace",
-                               env=via_agy_call.agy_env(), timeout=timeout)
-        except subprocess.TimeoutExpired:
-            die("the billed Gemini API did not answer in %d seconds (it may still bill).%s" % (timeout, STOP_BATCH),
-                BILLED_STOP)
-        except OSError as e:
-            die("gemini-api could not run (%s).%s" % (type(e).__name__, STOP_BATCH), BILLED_STOP)
-        told = " ".join(r.stderr.split())
-        told = ("(its message held a value shaped like a key, so it is not shown)" if via_run.has_secret(told)
-                else told[:300])
-        if r.returncode == 3:
-            die("the billed Gemini API refused the key (gemini-api exit 3: %s). Run `gemini-api auth login`.%s"
-                % (told, STOP_BATCH), BILLED_STOP)
-        if r.returncode != 0:
-            die("the billed Gemini API failed (gemini-api exit %d: %s).%s" % (r.returncode, told, STOP_BATCH),
-                BILLED_STOP)
-        got = one_image(out)
-    if not got:
-        die("the billed Gemini API returned no PNG, JPEG or WebP image.%s" % STOP_BATCH, BILLED_STOP)
-    data, ext = got
-    path = os.path.join(raw_dir(project, key), "%s-%s-api%s%s" % (name, time.strftime("%Y%m%d-%H%M%S"),
-                                                                 secrets.token_hex(3), ext))
-    write_atomic(path, data)
-    return {"path": path, "kind": "image", "conversation_id": None, "findings": [], "route": "gemini-api",
-            "model": model, "fallback": "agy is out of quota (%s), so the billed Gemini API made this image."
-            % reset_clause(said)[1].rstrip(".")}
+    return {"path": path, "kind": kind, "conversation_id": reply["conversation_id"], "findings": findings}
 
 
 def main():
@@ -1575,6 +1470,8 @@ def main():
     g.add_argument("--timeout", type=int, default=300)
     g.add_argument("--ref", action="append", default=[], help="a style reference image (up to %d)" % MAX_REFS)
     g.add_argument("--any-order", action="store_true", help="make an image even while an svg row has no candidate")
+    g.add_argument("--gemini", action="store_true", help="make a row whose maker is local through agy (Cesar "
+                   "chose Gemini for it)")
     g.add_argument("--missing", action="store_true", help="skip the name when it already has a pending or "
                    "approved candidate in the review gallery")
     pl = sub.add_parser("plan")
@@ -1588,12 +1485,14 @@ def main():
     po.add_argument("--key", required=True)
     po.add_argument("--name", action="append", default=[], help="a row of assets.toml (default: every open row)")
     po.add_argument("--note", default="", help="added to every prompt, such as a rejection note")
+    po.add_argument("--gemini", action="store_true", help="include rows whose maker is local (Cesar chose Gemini "
+                    "for them)")
     po.add_argument("--title", default="", help="a few words after the key in the chat name")
     args = ap.parse_args()
     project = os.path.realpath(args.project)
     try:
         if args.cmd == "prompts":
-            emit(outside_prompts(project, args.key, args.name, args.note, args.title))
+            emit(outside_prompts(project, args.key, args.name, args.note, args.title, args.gemini))
             return
         if args.cmd == "plan":
             emit(plan(project, args.key))
@@ -1611,7 +1510,7 @@ def main():
                 except OSError as e:
                     raise SpecError("cannot read the prompt file (%s)" % e.strerror)
             emit(generate(project, args.kind, args.name, args.key, prompt, args.timeout, args.ref, args.missing,
-                          args.any_order))
+                          args.any_order, args.gemini))
             return
         spec = load_spec(project)
         if args.cmd == "audit":
