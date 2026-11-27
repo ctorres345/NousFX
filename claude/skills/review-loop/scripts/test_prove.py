@@ -266,6 +266,21 @@ class ReuseCheckStamp(Base):
         self.assertEqual(a.returncode, 0, a.stderr)
         self.assertIn("AC-Proof: 2/2 manual:0", a.stdout)
 
+    def test_base_option_does_not_rerun_the_check_command_at_the_base(self):
+        self.stamp()
+        base = self.git("rev-parse", "HEAD~1")
+        r = self.prove("run", self.write_list(ac(f"`{self.check}`")), "--base", base)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("proof 1: the [check] command, not run at the base", r.stdout)
+        self.assertEqual(self.runs(), 0)
+
+    def test_base_option_skips_the_check_command_without_a_check_stamp_too(self):
+        base = self.git("rev-parse", "HEAD~1")
+        r = self.prove("run", self.write_list(ac(f"`{self.check}`")), "--base", base)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("proof 1: the [check] command, not run at the base", r.stdout)
+        self.assertEqual(self.runs(), 1, "only the normal run")
+
     def test_the_check_stamp_is_left_for_the_mark(self):
         self.stamp()
         self.run_list(f"`{self.check}`")
@@ -367,6 +382,142 @@ class ReuseCheckStamp(Base):
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertEqual("reused check stamp" in r.stdout, reused, r.stdout)
                 self.assertEqual(self.runs(), 0 if reused else 1)
+
+
+class BaseRun(Base):
+    """NFX-213: `run --base` runs each command proof in a clone at the base and says which pass without the change.
+    The fixture: the base commit has a.txt only; the change adds feature.txt (committed) and new.txt (uncommitted)."""
+
+    def setUp(self):
+        super().setUp()
+        self.base = self.git("rev-parse", "HEAD")
+        with open(os.path.join(self.repo, "feature.txt"), "w") as f:
+            f.write("feature\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "NFX-1: feature")
+        with open(os.path.join(self.repo, "new.txt"), "w") as f:
+            f.write("new\n")
+
+    def run_base(self, *proofs, extra=()):
+        r = self.prove("run", self.write_list(ac(*proofs)), "--base", self.base, *extra)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout
+
+    def test_base_flags_a_proof_whose_grep_already_matches_at_the_base(self):
+        out = self.run_base("`grep -q feature feature.txt`", "`grep -q a a.txt`")
+        self.assertIn("proof 2: passes without the change", out)
+        self.assertNotIn("proof 1: passes without the change", out)
+        self.assertTrue(os.path.exists(self.stamp_path()), "a flag is print-only: the stamp is still written")
+
+    def test_base_not_flagged_when_the_grep_matches_only_after_the_change(self):
+        out = self.run_base("`grep -q feature feature.txt`", "`grep -q new new.txt`")
+        self.assertIn("proof 1: fails without the change", out)
+        self.assertIn("proof 2: fails without the change", out, "the uncommitted file is part of the change")
+        self.assertNotIn("passes without the change", out.replace("No proof passes without the change", ""))
+        self.assertIn("No proof passes without the change.", out)
+
+    def test_base_unknown_when_the_proof_needs_a_file_git_does_not_track(self):
+        with open(os.path.join(self.repo, ".gitignore"), "w") as f:
+            f.write("local.properties\n")
+        with open(os.path.join(self.repo, "local.properties"), "w") as f:
+            f.write("sdk=1\n")
+        out = self.run_base("`test -f local.properties && grep -q feature feature.txt`")
+        self.assertIn("proof 1: unknown", out)
+        self.assertNotIn("fails without the change", out)
+
+    def test_base_unknown_when_the_base_run_does_not_finish(self):
+        out = self.run_base("`test -f feature.txt || sleep 30`", extra=("--timeout", "1"))
+        self.assertIn("proof 1: unknown, the base run did not finish", out)
+
+    def test_base_run_runs_no_git_hooks_in_its_clone(self):
+        hooks = os.path.join(self._tmp.name, "hooks")
+        os.makedirs(hooks)
+        marker = os.path.join(self._tmp.name, "hook-ran")
+        with open(os.path.join(hooks, "post-checkout"), "w") as f:
+            f.write(f"#!/bin/sh\ntouch '{marker}'\n")
+        os.chmod(os.path.join(hooks, "post-checkout"), 0o755)
+        home = os.path.join(self._tmp.name, "home")
+        os.makedirs(home)
+        with open(os.path.join(home, ".gitconfig"), "w") as f:
+            f.write(f"[core]\n\thooksPath = {hooks}\n")
+        r = run_script([PROVE, "run", self.write_list(ac("`grep -q new new.txt`")), "--base", self.base],
+                       cwd=self.repo, env={**os.environ, "HOME": home, "XDG_CONFIG_HOME": home})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("proof 1: fails without the change", r.stdout, "both the base and the control checkout ran")
+        self.assertFalse(os.path.exists(marker))
+
+    def test_base_run_leaves_the_working_tree_and_no_clone_behind(self):
+        before = self.git("status", "--porcelain", "--ignored")
+        tmp = os.path.join(self._tmp.name, "tmp")
+        os.makedirs(tmp)
+        r = run_script([PROVE, "run", self.write_list(ac("`grep -q a a.txt`", "`grep -q new new.txt`")),
+                        "--base", self.base], cwd=self.repo, env={**os.environ, "TMPDIR": tmp})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.git("status", "--porcelain", "--ignored"), before)
+        self.assertEqual([n for n in os.listdir(tmp) if n.startswith("prove-base-")], [])
+
+
+class Guard(Base):
+    """NFX-213 adds the `guard:` parse NFX-299 names: a no-regression proof that runs and is never flagged at base."""
+
+    def test_guard_runs_like_a_command_proof_and_counts(self):
+        path = self.write_list(ac("`true`", "guard: `true`"))
+        r = self.prove("run", path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("2/2 proofs passed", r.stdout)
+        a = self.prove("attest", path)
+        self.assertEqual(LINE.search(a.stdout).group(1, 2), ("2", "2"))
+
+    def test_a_failing_guard_fails_run(self):
+        r = self.prove("run", self.write_list(ac("`true`", "guard: `false`")))
+        self.assertEqual(r.returncode, 2)
+        self.assertFalse(os.path.exists(self.stamp_path()))
+
+    def test_a_guard_only_list_has_something_to_run(self):
+        self.assertEqual(self.prove("run", self.write_list(ac("guard: `true`"))).returncode, 0)
+
+    def test_guard_empty_is_refused_naming_the_form(self):
+        for bad in ("guard:", "guard:   ", "guard: true", "guard: ``"):
+            with self.subTest(bad=bad):
+                r = self.prove("lint", self.write_list(ac(bad)))
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn("`Proof: guard:` takes a `command`", r.stdout)
+
+    def test_turning_a_proof_into_a_guard_invalidates_an_older_stamp(self):
+        self.assertEqual(self.prove("run", self.write_list(ac("`true`"))).returncode, 0)
+        r = self.prove("attest", self.write_list(ac("guard: `true`")))
+        self.assertEqual(r.returncode, 2)
+
+    def test_guard_passing_at_the_base_is_not_flagged(self):
+        base = self.git("rev-parse", "HEAD")
+        r = self.prove("run", self.write_list(ac("guard: `grep -q a a.txt`")), "--base", base)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("proof 1: guard, not checked at the base", r.stdout)
+        self.assertIn("No proof passes without the change.", r.stdout)
+
+
+class BaseOption(Base):
+    def test_base_option_absent_prints_no_base_check(self):
+        r = self.prove("run", self.write_list(ac("`grep -q a a.txt`")))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("Base check", r.stdout)
+        self.assertNotIn("without the change", r.stdout)
+
+    def test_base_option_that_is_not_a_commit_exits_2_before_any_proof_runs(self):
+        for bad in ("", "nope", "0" * 40, "HEAD:a.txt"):
+            with self.subTest(bad=bad):
+                r = self.prove("run", self.write_list(ac("`touch ran.txt`")), "--base", bad)
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertIn("is not a commit", r.stderr)
+                self.assertFalse(os.path.exists(os.path.join(self.repo, "ran.txt")))
+                self.assertFalse(os.path.exists(self.stamp_path()))
+
+    def test_base_option_skips_manual_proofs_and_numbers_the_run_ones(self):
+        base = self.git("rev-parse", "HEAD")
+        r = self.prove("run", self.write_list(ac("manual: look", "`grep -q a a.txt`")), "--base", base)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("proof 1: passes without the change", r.stdout)
+        self.assertNotIn("proof 2:", r.stdout)
 
 
 class Attest(Base):

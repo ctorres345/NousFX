@@ -3,13 +3,15 @@
 
 Python only, standard library only; runs the same on macOS and Windows.
 
-    python3 -B prove.py run LIST [--timeout SECONDS]
+    python3 -B prove.py run LIST [--timeout SECONDS] [--base HASH]
     python3 -B prove.py attest LIST
     python3 -B prove.py lint LIST
 
 LIST is a Markdown file taken from the ticket's acceptance criteria (a PR table's cells have no `Proof:` prefix, so
 they are not read). Every line with `Proof:` is one proof:
     Proof: `command`        run at the repo top level; must exit 0 and leave the working tree unchanged
+    Proof: guard: `command` the same, for a no-regression check that may pass without the change: `--base` never
+                            flags it (NFX-213; NFX-299 owns attest's guard count and the reviewer's exemption)
     Proof: manual: <step>   listed by attest, never run and never counted
     Proof: manual: <step> Backup: <other proof>
                             the same, with a backup that counts when the step needs a quota-limited or paid service
@@ -25,6 +27,13 @@ about the list, not a line.
 A command proof that is exactly the trusted `[check]` command is not run again when a valid `run-check --stamp` stamp
 matches the tree, branch and check, as --mark matches it (NFX-218, reusable_check): `run` prints
 "proof N: reused check stamp <tree>" and counts it as passed. In every other case the proof runs.
+
+`run --base HASH` (NFX-213) then runs each command proof in a temporary clone at HASH and prints one line per proof:
+"passes without the change" (flagged: a proof that cannot fail), "fails without the change", or "unknown" when the
+base run timed out or the proof also fails in a clean clone of the change tree (the control testfail.py runs too:
+the clone lacks gitignored setup). Guards and the trusted [check] command get no base run. Flags are print-only: the
+exit code and the stamp are those of the normal run; review-loop's Record step turns each flag into a `med` finding.
+A HASH that is not a commit exits 2 before any proof runs.
 
 `run` stops at the first failing proof (exit 2, no stamp). When all pass, it writes a signed stamp in the git dir
 (claude-proof-pass) that binds the working-tree hash, the branch and a hash of the normalized proofs. `attest`
@@ -44,14 +53,18 @@ import hashlib
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 DEFAULT_TIMEOUT = 600
 PROOF_LINE = re.compile(r"(?<![-`\w])Proof:[ \t]*(.*?)[ \t]*$")
 COMMAND = re.compile(r"`([^`]*)`\.?")
 MANUAL = "manual:"
+GUARD = "guard:"
+RUNS = ("command", "guard")  # the kinds `run` runs; a guard is never flagged by --base (NFX-213, NFX-299)
 BACKUP = re.compile(r"\s+Backup:\s*")
 KIND = "proof"
 
@@ -153,8 +166,8 @@ def read_text(path):
 
 
 def parse(text):
-    """(proofs, problems): the one parser `run`, `attest` and `lint` share (NFX-208). A proof is ("command", text) or
-    ("manual", text), in file order; a problem is "line N: why" for a `Proof:` line that is neither."""
+    """(proofs, problems): the one parser `run`, `attest` and `lint` share (NFX-208). A proof is ("command", text),
+    ("guard", text) or ("manual", text), in file order; a problem is "line N: why" for a `Proof:` line that is none."""
     proofs, problems = [], []
     for number, line in enumerate(text.splitlines(), 1):
         m = PROOF_LINE.search(line)
@@ -171,11 +184,16 @@ def parse(text):
             else:
                 proofs.append(("manual", step))
             continue
+        kind = "command"
+        if rest.startswith(GUARD):
+            kind, rest = "guard", rest[len(GUARD):].strip()
         c = COMMAND.fullmatch(rest)
         if not c or not c.group(1).strip():
-            problems.append(f"line {number}: a Proof must be `command` or manual: <step>, got: {rest or '(nothing)'}")
+            form = "`Proof: guard:` takes a `command`" if kind == "guard" else \
+                "a Proof must be `command` or manual: <step>"
+            problems.append(f"line {number}: {form}, got: {rest or '(nothing)'}")
             continue
-        proofs.append(("command", c.group(1).strip()))
+        proofs.append((kind, c.group(1).strip()))
     return proofs, problems
 
 
@@ -185,14 +203,14 @@ def read_list(path):
     proofs, problems = parse(read_text(path))
     if problems:
         raise Refused(problems[0])
-    if not any(kind == "command" for kind, _ in proofs):
+    if not any(kind in RUNS for kind, _ in proofs):
         raise Refused("the list has no `command` proof, so there is nothing to run")
     return proofs, proofs_sha(proofs)
 
 
 def split(proofs):
-    """(commands, manual): the texts of the command proofs and of the manual ones."""
-    return ([t for kind, t in proofs if kind == "command"], [t for kind, t in proofs if kind == "manual"])
+    """(commands, manual): the texts of the proofs `run` runs (guards included) and of the manual ones."""
+    return ([t for kind, t in proofs if kind in RUNS], [t for kind, t in proofs if kind == "manual"])
 
 
 def proofs_sha(proofs):
@@ -229,6 +247,115 @@ def reusable_check(gate, cwd, tree, branch):
     return None
 
 
+def check_command(gate, cwd):
+    """The trusted [check] command, stamped or not, else None: the project's own suite passes at the base whenever
+    the change adds tests, so --base never runs it there."""
+    try:
+        check, _ = gate.trusted_check(cwd)
+        return check["command"] if check else None
+    except Exception:
+        return None
+
+
+def git(args, cwd, extra=None):
+    """git's stdout; Refused on a non-zero exit. Every GIT_* variable is dropped (gate_paths), then `extra` added."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update({"GIT_OPTIONAL_LOCKS": "0", **(extra or {})})
+    try:
+        r = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=300)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise Refused(f"git {args[0]} failed: {e}") from None
+    if r.returncode != 0:
+        raise Refused(f"git {args[0]} failed: {r.stderr.strip() or r.returncode}")
+    return r.stdout
+
+
+def base_commit(cwd, base):
+    """The full hash of --base, else Refused before any proof runs."""
+    try:
+        return git(["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], cwd).strip()
+    except Refused:
+        raise Refused(f"--base {base} is not a commit here") from None
+
+
+def base_statuses(gate, cwd, base, tree, branch, proofs, suite, timeout):
+    """[(n, flagged, text)] for each proof `run` runs, numbered as `run` numbers them, from a temporary clone that is
+    always removed (NFX-213). First every proof runs at the base: a pass there is flagged, a timeout is unknown, never
+    good. Then each proof that failed at the base runs again on a clean copy of the change tree, the control
+    testfail.py also runs: a pass there means it fails without the change, a fail means the clone lacks something git
+    does not track, so the result is unknown. A guard is never checked, and the [check] command (`suite`) gets no
+    base run."""
+    scratch = tempfile.mkdtemp(prefix="prove-base-")
+    copy = os.path.join(scratch, "repo")
+    log = os.path.join(scratch, "proof.log")
+    nohooks = os.path.join(scratch, "no-hooks")
+    os.mkdir(nohooks)
+    # The user's global core.hooksPath would run its hooks on the clone's checkouts; point it at an empty folder.
+    quiet = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": nohooks}
+    check = {"timeout": timeout, "source": "proof list"}
+    statuses, controls = {}, []
+    try:
+        head = git(["rev-parse", "HEAD"], cwd).strip()
+        git(["clone", "-q", "--shared", "--no-checkout", git(["rev-parse", "--show-toplevel"], cwd).strip(), copy],
+            scratch, quiet)
+
+        def fresh_checkout(commit, files=None):
+            git(["checkout", "-q", "-f", "-B", branch, commit], copy, quiet)
+            if files:
+                git(["read-tree", "--reset", "-u", files], copy, quiet)
+            git(["clean", "-q", "-ffdx"], copy, quiet)
+
+        for i, (kind, command) in enumerate([p for p in proofs if p[0] in RUNS], 1):
+            if kind == "guard":
+                statuses[i] = (False, "guard, not checked at the base")
+            elif command == suite:
+                statuses[i] = (False, "the [check] command, not run at the base")
+            else:
+                print(f"  base run, proof {i}", flush=True)
+                fresh_checkout(base)
+                ok, why = gate.run_check(copy, {**check, "command": command}, log)
+                if ok:
+                    statuses[i] = (True, f"passes without the change (base {base[:10]})")
+                elif why.startswith("did not finish"):
+                    statuses[i] = (False, f"unknown, the base run {why}")
+                else:
+                    controls.append((i, command))
+        for i, command in controls:
+            print(f"  control run, proof {i}: on a clean clone of the change", flush=True)
+            fresh_checkout(head, tree)
+            ok, why = gate.run_check(copy, {**check, "command": command}, log)
+            if ok:
+                statuses[i] = (False, "fails without the change")
+            elif why.startswith("did not finish"):
+                statuses[i] = (False, f"unknown, the run on a clean clone of the change {why}")
+            else:
+                statuses[i] = (False, f"unknown, it also fails in a clean clone of the change ({why}); it may need "
+                               "files git does not track")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return [(i, *statuses[i]) for i in sorted(statuses)]
+
+
+def report_base(gate, cwd, base, tree, branch, proofs, timeout):
+    """Print the base check after the stamp: it is advice for the reviewer, so a clone that cannot be made never
+    takes the stamp of proofs that passed."""
+    print(f"Base check against {base[:10]}:", flush=True)
+    try:
+        statuses = base_statuses(gate, cwd, base, tree, branch, proofs, check_command(gate, cwd), timeout)
+    except Exception as e:
+        print(f"  base check not run: {e}")
+        return
+    for i, _, text in statuses:
+        print(f"  proof {i}: {text}")
+    flagged = [f"proof {i}" for i, bad, _ in statuses if bad]
+    if flagged:
+        print(f"{len(flagged)} proof(s) pass without the change: {', '.join(flagged)}. Each is a `med` finding: "
+              "rewrite it so it fails at the base, or mark a no-regression check `guard:`.")
+    else:
+        print("No proof passes without the change.")
+
+
 def run(args):
     cwd = os.getcwd()
     gate = load_gate()
@@ -241,6 +368,7 @@ def run(args):
         raise Refused("--timeout must be at least 1 second")
     proofs, sha = read_list(args.list)
     branch, tree = prepare(gate, cwd)
+    base = None if args.base is None else base_commit(cwd, args.base)
     try:
         key = gate.stamp_key(cwd)  # before the run, so a key a proof replaces never signs the stamp
     except Exception as e:
@@ -272,6 +400,8 @@ def run(args):
     note = f", {len(manual)} manual not run" if manual else ""
     print(f"{len(commands)}/{len(commands)} proofs passed{note}. Stamp recorded for tree {tree[:10]}: "
           "`prove.py attest` prints the AC-Proof line until a file or the list changes.")
+    if base:
+        report_base(gate, cwd, base, tree, branch, proofs, args.timeout)
     return 0
 
 
@@ -305,7 +435,7 @@ def lint(args):
     for problem in problems:
         print(problem)
     if problems:
-        print(f"{len(problems)} Proof: line(s) prove.py cannot read; write each as `command` or manual: <step>",
+        print(f"{len(problems)} Proof: line(s) prove.py cannot read; write each as `command`, guard: `command` or manual: <step>",
               file=sys.stderr)
         return 2
     print(f"{len(proofs)} Proof: line(s) OK")
@@ -321,6 +451,8 @@ def main(argv=None):
     p = sub.add_parser("run", help="run the proofs and write the stamp")
     p.add_argument("list")
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="seconds per proof (default 600)")
+    p.add_argument("--base", help="also run each command proof in a clone at this commit and flag the ones that "
+                   "pass there (NFX-213)")
     p.set_defaults(fn=run)
     p = sub.add_parser("attest", help="print the AC-Proof line for a valid stamp")
     p.add_argument("list")
