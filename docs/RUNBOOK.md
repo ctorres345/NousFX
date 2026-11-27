@@ -367,11 +367,17 @@ Each command below uses the version in two forms; set them once in the shell, fo
 
    It must end with `checks exit: 0`.
 
-3. Date the heading in a PR on a ticket branch (`cesar/<KEY>`). Change `## X.Y.Z (unreleased)` to `## X.Y.Z (YYYY-MM-DD)`, with today's date. Use exactly that form. Before the PR, `grep -n "^## " CHANGELOG.md` shows every heading in that form. Then I merge the PR.
-4. Tag that PR's merge commit, not whatever `main` holds now (later PRs may have merged), and push the tag. With `V` and `N` (the PR number, `N=73`) set, in one shell; it stops if the PR has no merge commit or that commit lacks the dated heading:
+3. Date the heading in a PR on a ticket branch (`cesar/<KEY>`). Tickets write their entries in `changelog.d/<KEY>.md`, not in `CHANGELOG.md` (NFX-292). One command folds every fragment into `## Unreleased`, renames that heading to `## X.Y.Z (YYYY-MM-DD)` with today's date, and deletes the fragments:
 
    ```bash
-   SHA=$(gh pr view "$N" --json mergeCommit --jq .mergeCommit.oid) && [ -n "$SHA" ] && [ "$SHA" != null ] && git fetch origin && git show "$SHA:CHANGELOG.md" | grep -Eq "^## $V \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$" && git tag -a "v$V" -m "NousFX $V" "$SHA" && git push origin "v$V"
+   python3 -B scripts/changelog_fragments.py fold --version "$V" --date "$(date +%F)" && python3 -B scripts/changelog_fragments.py check --release
+   ```
+
+   The check fails while a fragment is left. A fragment that reaches the release PR after the fold (from merging `main` into it) cannot be folded again, since the version heading exists: move its bullets (and its `###` section line, if the dated block lacks it) into the dated section by hand and delete the fragment. Before the PR, `grep -n "^## " CHANGELOG.md` shows every heading in the dated form. Then I merge the PR.
+4. Tag that PR's merge commit, not whatever `main` holds now (later PRs may have merged), and push the tag. With `V` and `N` (the PR number, `N=73`) set, in one shell; it stops if the PR has no merge commit, that commit lacks the dated heading, or it still holds a fragment (a PR that merged while the release PR was open, so its code ships in this version). In that last case, hold other merges to `main` until the tag is pushed, move those fragments' bullets (and a `###` section line the dated block lacks) into the dated section by hand in a PR that also deletes them, then run this step with that PR's number:
+
+   ```bash
+   SHA=$(gh pr view "$N" --json mergeCommit --jq .mergeCommit.oid) && [ -n "$SHA" ] && [ "$SHA" != null ] && git fetch origin && git show "$SHA:CHANGELOG.md" | grep -Eq "^## $V \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$" && [ -z "$(git ls-tree --name-only "$SHA" changelog.d/ | grep -vE '/(README\.md|\.gitkeep)$')" ] && git tag -a "v$V" -m "NousFX $V" "$SHA" && git push origin "v$V"
    ```
 
    Backfill only: when one PR dated two versions (NFX-128 dated 1.0.0 and 1.1.0 together), the older tag goes on the commit that finished that version, which I pick. Its CHANGELOG still says unreleased, so it gets no heading check: `git tag -a v1.0.0 -m "NousFX 1.0.0" <commit> && git push origin v1.0.0`.

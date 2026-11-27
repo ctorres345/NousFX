@@ -308,7 +308,7 @@ harness/AGENTS.md + agy.overlay.md + local.md + local.agy.md
 - `--restore` does not undo a mode change on a hook whose text was already right (sync only made it executable).
 - Sync does not change git config. To turn the hook on I check `ls .git/hooks | grep -v sample` once per clone. If other hooks are there (graphify's, for example), I link it: `common=$(git rev-parse --path-format=absolute --git-common-dir); ln -s "$common/../.githooks/pre-push" "$common/hooks/pre-push"`. `git config core.hooksPath .githooks` switches those other hooks off, so I use it only when `.git/hooks` holds nothing else.
 - `project-setup` runs `--dry-run` and then the real run when it sets a repo up, and `--check` in its audit.
-- A re-sync PR body names each CHANGELOG entry since the project's last sync that makes its review stricter, such as a check that became a finding (NFX-233), so the project knows why its next reviews ask for more.
+- A re-sync PR body names each CHANGELOG entry or `changelog.d/` fragment since the project's last sync that makes its review stricter, such as a check that became a finding (NFX-233), so the project knows why its next reviews ask for more.
 
 ## MCP
 
