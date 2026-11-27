@@ -754,13 +754,28 @@ def inventory(path, seen=None):
                 continue
             seen.add((st.st_dev, st.st_ino))
         shown = os.path.normpath(os.path.join(root, rel))
-        lang, lines = language(rel, text), text_lines(text)
-        for c in comments_in(os.path.join(os.path.basename(os.path.abspath(root)), rel), text):
-            kept, kind = classify(c)
-            f = form(c, lang, lines)
+        for c, f, kept, kind in judged(os.path.join(os.path.basename(os.path.abspath(root)), rel), text):
             shed = c.end - c.line + 1 if not kept and kind != "suppression" and f in SHED_FORMS else 0
-            out.append(Item(shown, c.line, f, f"keep:{kept}" if kept else f"flag:{kind}", first_words(c), shed))
+            out.append(Item(shown, c.line, f, verdict(kept, kind), first_words(c), shed))
     return out
+
+
+def judged(path, text):
+    """(comment, form, kept rule, flag kind) for each comment in a file's text. `path` decides the language (with
+    the shebang), whether it is a test file and whether it holds JSX; the file is never read."""
+    lang, lines = language(path, text), text_lines(text)
+    for c in comments_in(path, text):
+        kept, kind = classify(c)
+        yield c, form(c, lang, lines), kept, kind
+
+
+def verdict(kept, kind):
+    return f"keep:{kept}" if kept else f"flag:{kind}"
+
+
+def verdicts(path, text):
+    """[(line, form, verdict)] for each comment in a file's text, as --all lists them (the NFX-276 corpus seam)."""
+    return [(c.line, f, verdict(kept, kind)) for c, f, kept, kind in judged(path, text)]
 
 
 def inventory_summary(found, label=""):

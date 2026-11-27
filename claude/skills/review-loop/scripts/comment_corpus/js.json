@@ -1,0 +1,44 @@
+[
+ {
+  "source": "demonica@909895d:web/sw.js:1",
+  "path": "web/sw.js",
+  "text": "// Offline support for the web app. Every request goes to the network first,\n// so a new deploy shows up on the next load; the last good copy is served\n// when the network is down. Only same-origin GET requests are handled.\n'use strict';\n\nconst CACHE = 'demonica-v1';\n\nself.addEventListener('install', () => self.skipWaiting());\n",
+  "expected": [
+   "1 line flag:comment"
+  ]
+ },
+ {
+  "source": "demonica@909895d:web/sw.js:26",
+  "path": "web/sw.js",
+  "text": "  // Every page is the same app (GitHub Pages serves deep links from\n  // 404.html), so navigations share one cache entry: the app shell.\n  const isPage = request.mode === 'navigate';\n  const key = isPage ? self.registration.scope : request;\n",
+  "expected": [
+   "1 line flag:comment"
+  ]
+ },
+ {
+  "source": "demonica@909895d:web/flutter_bootstrap.js:4",
+  "path": "web/flutter_bootstrap.js",
+  "text": "// Flutter's own service worker no longer caches anything, so Demonica\n// registers sw.js (network first, cached copy when offline) instead. The URL\n// is resolved against <base href> so deep links register the same worker.\nif ('serviceWorker' in navigator) {\n  window.addEventListener('load', () => {\n    navigator.serviceWorker.register(new URL('sw.js', document.baseURI));\n  });\n}\n",
+  "expected": [
+   "1 line flag:comment"
+  ]
+ },
+ {
+  "source": "reduced from yuyay",
+  "path": "x.js",
+  "text": "// Applies the chosen theme before the page paints, to avoid a flash.\n// Only the word \"light\" or \"dark\" is stored on this device; it identifies no one.\ntry {\n  document.documentElement.dataset.theme = localStorage.getItem('theme') || 'light'\n} catch {}\n",
+  "expected": [
+   "1 line flag:comment"
+  ]
+ },
+ {
+  "source": "reduced from yuyay",
+  "path": "x.mjs",
+  "text": "// Content check, step 0 (offline): every reference has a year and a link (ABC-223).\n//\n//   node scripts/x.mjs\nimport { readFile } from 'node:fs/promises'\n\n/** Every reference without a year or a link, as `id: problem` lines. */\nexport function problems(refs) {\n  return refs.filter((r) => !r.year || !r.url).map((r) => `${r.id}: missing year or link`)\n}\n",
+  "expected": [
+   "1 line keep:ticket-why",
+   "2 line flag:comment",
+   "6 docstring keep:public-doc"
+  ]
+ }
+]

@@ -1,0 +1,90 @@
+[
+ {
+  "source": "hemisphere@cc01fb4:app/src/main/kotlin/io/github/ctorres345/hemisphere/BrowserKey.kt:1",
+  "path": "app/src/main/kotlin/io/github/ctorres345/hemisphere/BrowserKey.kt",
+  "text": "package io.github.ctorres345.hemisphere\n\nimport androidx.navigation3.runtime.NavKey\nimport kotlinx.serialization.Serializable\n\n/** Top-level screens on the app back stack (architecture §7). Trash joins later. */\n@Serializable\ndata object BrowserKey : NavKey\n\n/** Asks for storage access (ADR 0002). Shown until access is granted, and again if it is revoked. */\n@Serializable\ndata object AccessKey : NavKey\n\n/** The Settings screen, opened from Browser's top bar until Places (HEM-56) holds the way in. */\n@Serializable\ndata object SettingsKey : NavKey\n",
+  "expected": [
+   "6 docstring keep:public-doc",
+   "10 docstring keep:public-doc",
+   "14 docstring keep:public-doc"
+  ]
+ },
+ {
+  "source": "hemisphere@cc01fb4:app/src/main/kotlin/io/github/ctorres345/hemisphere/MainActivity.kt:51",
+  "path": "app/src/main/kotlin/io/github/ctorres345/hemisphere/MainActivity.kt",
+  "text": "    /** Input from popup windows (menus), which skips this Activity's dispatch methods. */\n    private val popupInput =\n        object : InputReporter {\n            override fun onKey(event: KeyEvent) = inputModes.onKey(event)\n\n            override fun onPointer() = inputModes.onTouch()\n        }\n\n    override fun onSaveInstanceState(outState: Bundle) {\n        super.onSaveInstanceState(outState)\n        outState.putString(INPUT_MODE_KEY, inputModes.mode.value.name)\n    }\n\n    // Activity.dispatchKeyEvent is public platform API; androidx.core's ComponentActivity only marks its\n    // own override restricted. The event goes on to super unchanged.\n    @SuppressLint(\"RestrictedApi\")\n    override fun dispatchKeyEvent(event: KeyEvent): Boolean {\n        inputModes.onKey(event)\n        return super.dispatchKeyEvent(event)\n    }\n",
+  "expected": [
+   "1 docstring flag:docstring",
+   "14 line flag:comment",
+   "16 inline flag:suppression"
+  ]
+ },
+ {
+  "source": "hemisphere@cc01fb4:core/fs/src/main/kotlin/io/github/ctorres345/hemisphere/core/fs/FsErrors.kt:14",
+  "path": "core/fs/src/main/kotlin/io/github/ctorres345/hemisphere/core/fs/FsErrors.kt",
+  "text": "/**\n * Runs [block] and turns the I/O failures it throws into an [FsError]; no exception leaves `core:fs`\n * except `CancellationException`, which is not caught here.\n */\n@Suppress(\"SwallowedException\") // the mapped type is the whole message\ninternal inline fun <T> catching(block: () -> T): FsResult<T> =\n    try {\n        FsResult.Ok(block())\n    } catch (e: InvalidPathException) {\n        FsResult.Err(FsError.InvalidName)\n    } catch (e: DirectoryIteratorException) {\n",
+  "expected": [
+   "1 docstring keep:public-doc",
+   "5 inline keep:suppression-why"
+  ]
+ },
+ {
+  "source": "hemisphere@cc01fb4:app/src/test/kotlin/io/github/ctorres345/hemisphere/LiveThemeTest.kt:100",
+  "path": "app/src/test/kotlin/io/github/ctorres345/hemisphere/LiveThemeTest.kt",
+  "text": "        assertFalse(lightStatusBarIcons())\n        // The root content was recomposed in place, never set again.\n        assertTrue(compositions > 1)\n    }\n\n    /** True when the status bar draws dark icons, for a light app bar. */\n    private fun lightStatusBarIcons(): Boolean {\n        val window = compose.activity.window\n        return WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars\n    }\n",
+  "expected": [
+   "2 line flag:comment",
+   "6 docstring keep:contract"
+  ]
+ },
+ {
+  "source": "hemisphere@cc01fb4:feature/browser/src/main/kotlin/io/github/ctorres345/hemisphere/feature/browser/BrowserTopBar.kt:51",
+  "path": "feature/browser/src/main/kotlin/io/github/ctorres345/hemisphere/feature/browser/BrowserTopBar.kt",
+  "text": "            actions = {\n                LayoutToggle(dual, onClick = { onIntent(BrowserIntent.ToggleLayout) })\n                // Until Places (HEM-56) holds the way to Settings, the top bar does.\n                IconButton(onClick = onOpenSettings, modifier = Modifier.focusRing()) {\n",
+  "expected": [
+   "3 line keep:ticket-why"
+  ]
+ },
+ {
+  "source": "hemisphere@cc01fb4:build-logic/convention/src/main/kotlin/ThemeTokensCodegen.kt:148",
+  "path": "build-logic/convention/src/main/kotlin/ThemeTokensCodegen.kt",
+  "text": "        private fun parse(): Map<*, *> {\n            val parsed =\n                try {\n                    JsonSlurper().parse(file)\n                } catch (\n                    @Suppress(\"TooGenericExceptionCaught\") e: Exception,\n                ) {\n                    throw TokenException(\"${file.path}: missing or not valid JSON (${e.message})\")\n                }\n            return parsed as? Map<*, *> ?: throw TokenException(\"${file.path}: not a JSON object\")\n        }\n",
+  "expected": [
+   "6 inline flag:suppression"
+  ]
+ },
+ {
+  "source": "hemisphere@cc01fb4:core/input/build.gradle.kts:6",
+  "path": "core/input/build.gradle.kts",
+  "text": "    implementation(project(\":core:designsystem\"))\n    implementation(project(\":core:data\"))\n\n    // Builds real KeyEvent and MotionEvent objects for the tracker tests (HEM-74).\n    testImplementation(libs.robolectric)\n}\n",
+  "expected": [
+   "4 line keep:ticket-why"
+  ]
+ },
+ {
+  "source": "hemisphere@cc01fb4:core/fs-testing/src/main/kotlin/io/github/ctorres345/hemisphere/core/fs/testing/InMemoryProvider.kt:171",
+  "path": "core/fs-testing/src/main/kotlin/io/github/ctorres345/hemisphere/core/fs/testing/InMemoryProvider.kt",
+  "text": "    /**\n     * Counts the call, waits out a stall, then returns an injected error, if any. The suppression is\n     * because `Stall.pass()` suspends, which detekt's typed run misses across the internal call.\n     */\n    @Suppress(\"RedundantSuspendModifier\")\n    private suspend fun gate(call: FsCall): FsError? {\n",
+  "expected": [
+   "1 docstring keep:contract",
+   "5 inline flag:suppression"
+  ]
+ },
+ {
+  "source": "hemisphere@cc01fb4:app/src/main/kotlin/io/github/ctorres345/hemisphere/HemisphereAppTheme.kt:56",
+  "path": "app/src/main/kotlin/io/github/ctorres345/hemisphere/HemisphereAppTheme.kt",
+  "text": "/**\n * The status and navigation bar icons follow the app theme, not the device's dark mode, so the clock\n * stays readable when the two differ. The scrims are androidx's `enableEdgeToEdge` defaults.\n */\n@Composable\nprivate fun SystemBarIcons(dark: Boolean) {\n    val activity = LocalActivity.current as? ComponentActivity ?: return\n    // Applied when the composition commits, before the first frame draws, so the icons never flip late.\n    DisposableEffect(activity, dark) {\n        activity.enableEdgeToEdge(\n            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { dark },\n            navigationBarStyle = SystemBarStyle.auto(LIGHT_SCRIM, DARK_SCRIM) { dark },\n        )\n        onDispose {}\n    }\n",
+  "expected": [
+   "1 docstring flag:docstring",
+   "8 line flag:comment"
+  ]
+ },
+ {
+  "source": "hemisphere@cc01fb4:core/domain/src/test/kotlin/io/github/ctorres345/hemisphere/core/domain/files/ObserveFolderSortTest.kt:22",
+  "path": "core/domain/src/test/kotlin/io/github/ctorres345/hemisphere/core/domain/files/ObserveFolderSortTest.kt",
+  "text": "@OptIn(ExperimentalCoroutinesApi::class) // advanceUntilIdle\nclass ObserveFolderSortTest {\n    private val dispatcher = StandardTestDispatcher()\n",
+  "expected": [
+   "1 inline flag:comment"
+  ]
+ }
+]

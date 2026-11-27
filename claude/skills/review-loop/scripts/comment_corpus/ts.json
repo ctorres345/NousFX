@@ -1,0 +1,71 @@
+[
+ {
+  "source": "reduced from yuyay",
+  "path": "src/x.ts",
+  "text": "export async function choose(pick: Picker) {\n  let h\n  try {\n    h = await pick({ suggestedName: 'backup.json' })\n  } catch {\n    return // closed the picker\n  }\n  await keep(h).catch(() => {}) // if it cannot be kept, it still works until the page closes\n}\n",
+  "expected": [
+   "6 inline flag:comment",
+   "8 inline flag:comment"
+  ]
+ },
+ {
+  "source": "reduced from yuyay",
+  "path": "src/x.test.ts",
+  "text": "describe('merge', () => {\n  it('keeps the newest copy', () => {\n    // Two copies saved a second apart: the later one wins.\n    expect(merge(older, newer)).toEqual(newer)\n  })\n})\n",
+  "expected": [
+   "3 line flag:comment"
+  ]
+ },
+ {
+  "source": "reduced from yuyay",
+  "path": "src/x.test.ts",
+  "text": "import { describe, expect, it } from 'vitest'\n// @ts-expect-error: plain JavaScript build script, without types.\nimport { pagesFor } from '../../scripts/build.mjs'\nimport { catalog } from './catalog'\n",
+  "expected": [
+   "2 line keep:suppression-why"
+  ]
+ },
+ {
+  "source": "reduced from yuyay",
+  "path": "src/x.ts",
+  "text": "// Draws the chart as a PNG for the PDF export (ABC-31): a canvas copy keeps the theme colors.\nimport { palette } from './theme'\n\n/** Width of the chart image in CSS pixels; the PNG is drawn at twice this. */\nexport const CHART_WIDTH = 640\n",
+  "expected": [
+   "1 line keep:ticket-why",
+   "4 docstring keep:public-doc"
+  ]
+ },
+ {
+  "source": "reduced from yuyay",
+  "path": "src/x.ts",
+  "text": "export class Engine {\n  /** Saves one item, once. */\n  private save(id: string) {\n    this.sent.add(id) // the box answers in order\n  }\n}\n",
+  "expected": [
+   "2 docstring flag:docstring",
+   "4 inline flag:comment"
+  ]
+ },
+ {
+  "source": "reduced from yuyay",
+  "path": "src/x.tsx",
+  "text": "export function Header({ dark, ready, busy, onToggle }: Props) {\n  return (\n    <header>\n      {/* Language and theme always stay together; the theme button shows only its icon (ABC-145). */}\n      <div className=\"tool\">\n        <button type=\"button\" onClick={onToggle}>{dark ? 'moon' : 'sun'}</button>\n      </div>\n      {/* Hidden while a form is open: the person filling it keeps their answers. */}\n      {ready && !busy && <p role=\"status\">update</p>}\n    </header>\n  )\n}\n",
+  "expected": [
+   "4 inline keep:ticket-why",
+   "8 inline flag:comment"
+  ]
+ },
+ {
+  "source": "reduced from yuyay",
+  "path": "src/x.tsx",
+  "text": "export function Session({ tests }: Props) {\n  /** Saves one finished test, once, and tells the other device it arrived. */\n  const receive = async (msg: Result) => {\n    const test = tests[msg.test]\n    if (!test) return\n  }\n  return <Panel onResult={receive} />\n}\n",
+  "expected": [
+   "2 docstring flag:docstring"
+  ]
+ },
+ {
+  "source": "reduced from yuyay",
+  "path": "src/x.tsx",
+  "text": "// Each screen loads as its own chunk the first time it opens. Takes the module and the\n// name of the exported component, so the screens keep their named exports.\n// eslint-disable-next-line @typescript-eslint/no-explicit-any -- any component shape; the caller's props type is kept.\nexport function lazyPage<M extends Record<K, ComponentType<any>>, K extends keyof M>(load: () => Promise<M>, name: K) {\n  return lazy(() => load().then((m) => ({ default: m[name] })))\n}\n",
+  "expected": [
+   "1 line flag:comment",
+   "3 line keep:suppression-why"
+  ]
+ }
+]
