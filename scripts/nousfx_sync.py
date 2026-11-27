@@ -571,7 +571,7 @@ def project_behind_origin_warning(project):
             return None
         return r.stdout.strip() if r.returncode == 0 else None
 
-    if not git("symbolic-ref", "-q", "--short", "HEAD"):  # detached HEAD or not a git repo
+    if not git("symbolic-ref", "-q", "--short", "HEAD"):
         return None
     origin = "refs/remotes/origin/"
     candidates = []
@@ -591,7 +591,7 @@ def project_behind_origin_warning(project):
         return None
     short = ref[len("refs/remotes/"):]
     commits = f"{behind} commit" + ("" if behind == 1 else "s")
-    return f"warning: {project} is {commits} behind {short} (as of the last fetch); run git pull for current drift."
+    return f"warning: {project} is {commits} behind {short} (as of the last fetch); update from {short} before trusting its drift lines."
 
 
 def main(argv=None):

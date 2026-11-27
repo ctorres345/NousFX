@@ -694,7 +694,7 @@ class ProjectBehindOrigin(Base):
     def test_behind_origin_warns_with_count_on_check_and_dry_run(self):
         project = self.make_project(commits=3, behind=2)
         r_check = self.sync("--project", project, "--check")
-        self.assertEqual(r_check.returncode, 1)  # unsynced project still exits 1
+        self.assertEqual(r_check.returncode, 1, "an unsynced project still exits 1")
         lines = [l for l in r_check.stderr.splitlines() if "behind origin/main" in l]
         self.assertEqual(len(lines), 1, r_check.stderr)
         self.assertIn("2 commits behind origin/main", lines[0])
@@ -703,35 +703,39 @@ class ProjectBehindOrigin(Base):
         self.assertEqual(r_dry.returncode, 0, r_dry.stderr)
         self.assertIn("2 commits behind origin/main", r_dry.stderr)
 
-        # Singular commit wording and clean (exit 0) project check
-        project_one = self.make_project(commits=2, behind=1)
-        self.assertEqual(self.sync("--project", project_one).returncode, 0)
-        r_clean = self.sync("--project", project_one, "--check")
-        self.assertEqual(r_clean.returncode, 0, r_clean.stderr)
-        self.assertIn("1 commit behind origin/main", r_clean.stderr)
-        self.assertNotIn("1 commits", r_clean.stderr)
+    def test_behind_origin_singular_commit_on_synced_project(self):
+        project = self.make_project(commits=2, behind=1)
+        self.assertEqual(self.sync("--project", project).returncode, 0)
+        r = self.sync("--project", project, "--check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("1 commit behind origin/main", r.stderr)
+        self.assertNotIn("1 commits", r.stderr)
 
-    def test_behind_origin_at_origin_prints_no_warning(self):
-        project = self.make_project(commits=2, behind=0)
-        for flag in ("--check", "--dry-run"):
-            r = self.sync("--project", project, flag)
-            self.assertNotIn("behind", r.stderr)
+    def test_behind_origin_at_or_ahead_of_origin_prints_no_warning(self):
+        level = self.make_project(commits=2, behind=0)
+        ahead = self.make_project(commits=3, behind=0)
+        write(os.path.join(ahead, "file.txt"), "local only\n")
+        self.git(ahead, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", "local")
+        for project in (level, ahead):
+            for flag, code in (("--check", 1), ("--dry-run", 0)):
+                r = self.sync("--project", project, flag)
+                self.assertEqual(r.returncode, code, r.stderr)
+                self.assertNotIn("behind", r.stderr)
 
-    def test_behind_origin_no_remote_or_detached_head_prints_nothing_and_keeps_exit_code(self):
-        # Detached HEAD while behind origin/main
-        detached = self.make_project(commits=3, behind=2)
-        self.git(detached, "checkout", "-q", "--detach", "HEAD")
-        r_det = self.sync("--project", detached, "--check")
-        self.assertEqual(r_det.returncode, 1)
-        self.assertNotIn("behind", r_det.stderr)
+    def test_behind_origin_detached_head_prints_nothing_and_keeps_exit_code(self):
+        project = self.make_project(commits=3, behind=2)
+        self.git(project, "checkout", "-q", "--detach", "HEAD")
+        r = self.sync("--project", project, "--check")
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("behind", r.stderr)
 
-        # No origin remote at all
-        no_origin = self.make_project(commits=2, behind=0)
-        self.git(no_origin, "remote", "remove", "origin")
-        self.assertEqual(self.sync("--project", no_origin).returncode, 0)
-        r_no = self.sync("--project", no_origin, "--check")
-        self.assertEqual(r_no.returncode, 0, r_no.stderr)
-        self.assertNotIn("behind", r_no.stderr)
+    def test_behind_origin_no_origin_remote_prints_nothing_and_keeps_exit_code(self):
+        project = self.make_project(commits=3, behind=2)
+        self.git(project, "remote", "remove", "origin")
+        self.assertEqual(self.sync("--project", project).returncode, 0)
+        r = self.sync("--project", project, "--check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("behind", r.stderr)
 
     def test_behind_origin_uses_origin_head_default_branch(self):
         project = self.make_project(branch="trunk", commits=3, behind=2)
