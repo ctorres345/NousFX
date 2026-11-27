@@ -117,6 +117,18 @@ class ReferenceExtras(unittest.TestCase):
     def test_nothing_is_edited_automatically(self):
         self.assertIn("Never edit rules or skills from a retro", REF)
 
+    def test_classes_read_and_feed_the_watch_ledger(self):
+        # NFX-272: a mistake seen once per ticket becomes a class across tickets and projects.
+        classes = REF[REF.index("## Classes"):REF.index("## Fix order")]
+        for phrase in ("python3 -B ~/.claude/skills/review-loop/scripts/session_report.py watch list",
+                       "the installed copy", "Before grouping", "count it against that slug", "watch add",
+                       "--harness", "the fix belongs in NousFX", "an agent habit", "--project", "--new",
+                       "inside NousFX every row is a harness row",
+                       "has no `watch`, say so and go on"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, classes)
+        self.assertLess(classes.index("watch list"), classes.index("Group findings"))
+
 
 if __name__ == "__main__":
     unittest.main()

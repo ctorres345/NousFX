@@ -6,6 +6,10 @@ Usage:
                     [--supersedes ID] [--lesson T] [--held REASON] [--unverified T] [--term "word: meaning"]
                     [--adr TITLE] [--name N [--new]] [--date YYYY-MM-DD]
   session_report.py render [--name N] [--date YYYY-MM-DD] [--prs FILE] [--proofs FILE]
+  session_report.py watch add --slug S --ticket KEY --evidence POINTER --note T [--harness | --project] [--new]
+                    [--date YYYY-MM-DD]
+  session_report.py watch add --merge OLD --into NEW
+  session_report.py watch list [--min N]
 
 `decide` appends one line to <root>/<project>/reports/<date>-<name>/decisions.jsonl. `render` writes report.md
 beside it: what shipped, decisions, one-way doors held for Cesar, what could not be verified, what to learn.
@@ -22,6 +26,13 @@ INCONCLUSIVE). --adr TITLE flags a decision that meets the ADR bar (the delete-c
 review loop's ADR step turns it into docs/adr/NNNN-<slug>.md. A held entry, or a correction of one, gets no --adr.
 A refused `decide` names every bad field and the key at once, with one example line.
 `render` warns on stderr when a SHA or path does not resolve; PRs and URLs are not checked.
+
+`watch` keeps the watch-item ledger (NFX-272), so a retro counts a mistake across tickets and projects. Rows go
+to <root>/<project>/watch.jsonl (--project) or the literal <root>/NousFX/watch.jsonl (--harness: the fix belongs
+in NousFX, a script, skill, hook, rule, the sync or an agent habit); inside NousFX (scripts/nousfx_sync.py exists) every row is a harness row. A new slug needs
+--new and the refusal lists the existing ones; a slug lives in one ledger; a repeat ticket is refused. --merge
+appends a merge row, never a rewrite. `list` prints each slug with its distinct ticket@project count, most first,
+and its first note as its meaning; 2 or more is a `class`, harness slugs counting across all projects.
 
 --prs FILE is a JSON list of {number, url, title, state}; without it `render` asks `gh pr list`.
 --proofs FILE is pasted into the report as is (for example the proof table).
@@ -95,17 +106,54 @@ def dated_folders(parent, name):
     return sorted(d for d in os.listdir(parent) if re.match(pattern, d)) if os.path.isdir(parent) else []
 
 
-def report_dir(args, repo, key=None, guess=None, refuse_unknown=False):
+def report_root():
+    return os.path.realpath(os.path.expanduser(os.environ.get("NOUSFX_REPORT_ROOT") or "~/Releases"))
+
+
+def project_name(repo):
+    """The project's folder name: the parent of the common git dir, right from any worktree."""
+    common = repo[1]
+    return os.path.basename(os.path.dirname(common.rstrip("/"))) if common else os.path.basename(os.getcwd())
+
+
+def refuse_inside_checkout(folder, repo, what="report folder"):
     top, common = repo
-    root = os.path.realpath(os.path.expanduser(os.environ.get("NOUSFX_REPORT_ROOT") or "~/Releases"))
-    project = os.path.basename(os.path.dirname(common.rstrip("/"))) if common else os.path.basename(os.getcwd())
-    parent = os.path.join(root, project or "project", "reports")
-    target = os.path.realpath(parent)  # where files go, which a root that holds the checkout would put inside it
+    target = os.path.realpath(folder)  # where files go, which a root that holds the checkout would put inside it
     for path in (top, common, os.path.dirname(common.rstrip("/")) if common else ""):  # last: the main checkout
         if path:
             path = os.path.realpath(path)
             if target == path or target.startswith(path + os.sep):
-                die("the report folder %s is inside a git checkout. Set NOUSFX_REPORT_ROOT outside it." % target, 2)
+                die("the %s %s is inside a git checkout. Set NOUSFX_REPORT_ROOT outside it." % (what, target), 2)
+
+
+def evidence_problem(evidence):
+    """The refusal line for an --evidence that is prose rather than a pointer, or None."""
+    if evidence and (len(evidence) > 300 or re.search(r"[\s`]", evidence)):
+        return ("--evidence is a pointer, not prose: a commit SHA, #PR, file:line or URL, "
+                "with no spaces or backticks, at most 300 characters.")
+    return None
+
+
+def append_line(path, line):
+    """Append one JSON line with one O_APPEND write, so two sessions appending at once never interleave
+    (Mac and Linux, a line under 4 KB). A torn last line gets a newline first, so ours starts fresh."""
+    data = (line + "\n").encode("utf-8")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+    try:
+        if os.fstat(fd).st_size:
+            with open(path, "rb") as f:  # not os.pread: Windows has none, and `decide` runs there
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":
+                    data = b"\n" + data
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+
+
+def report_dir(args, repo, key=None, guess=None, refuse_unknown=False):
+    parent = os.path.join(report_root(), project_name(repo) or "project", "reports")
+    refuse_inside_checkout(parent, repo)
     name = args.name or key
     if not args.date:  # a name keeps one folder across days: the newest one made for it
         for candidate in (name, guess):  # guess: render's ticket key from the branch, tried only with no name
@@ -144,9 +192,7 @@ def cmd_decide(args):
         problems.append("--adr is empty: give the ADR's title, or leave the flag out.")
     if entry["held"] and entry["adr"]:
         problems.append("--held with --adr: a held door is not decided yet, so it gets no ADR.")
-    if entry["evidence"] and (len(entry["evidence"]) > 300 or re.search(r"[\s`]", entry["evidence"])):
-        problems.append("--evidence is a pointer, not prose: a commit SHA, #PR, file:line or URL, "
-                        "with no spaces or backticks, at most 300 characters.")
+    problems += [p for p in [evidence_problem(entry["evidence"])] if p]
     if any(has_secret(v) for v in list(entry.values()) + [args.name or ""]):
         problems.append("a value looks like a secret. Nothing was written.")
     if problems:
@@ -174,16 +220,8 @@ def cmd_decide(args):
     if entry["held"] and entry["adr"]:
         die("entry %d is held, so its correction keeps the held reason: a held door gets no ADR. "
             "Nothing was written." % args.supersedes, 2)
-    line = json.dumps(entry, ensure_ascii=False)
-    os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, "decisions.jsonl")
-    with open(path, "a+b") as f:
-        f.seek(0, os.SEEK_END)
-        if f.tell():
-            f.seek(-1, os.SEEK_END)
-            if f.read(1) != b"\n":  # a torn last line: start ours on a fresh one
-                f.write(b"\n")
-        f.write((line + "\n").encode("utf-8"))
+    append_line(path, json.dumps(entry, ensure_ascii=False))
     print(path)
     return 0
 
@@ -195,22 +233,29 @@ def read_log(directory):
     if not os.path.isfile(path):
         return [], 0, 0
     entries, lines, bad = [], 0, 0
+    for entry in read_jsonl(path):
+        lines += 1
+        if isinstance(entry, dict) and all(isinstance(entry.get(k), str) for k in ("key",) + REQUIRED) \
+                and all(isinstance(entry.get(k, ""), str) for k in FIELDS) \
+                and all(type(entry.get(k, 1)) is int for k in ("id", "supersedes")) and "id" in entry:
+            entries.append(entry)
+        else:
+            bad += 1
+    return entries, lines, bad
+
+
+def read_jsonl(path):
+    """Each non-blank line of a JSONL file, parsed, or None for a line that is not JSON (a torn write, a hand
+    edit). Nothing for a missing file."""
+    if not os.path.isfile(path):
+        return
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
-            if not line.strip():
-                continue
-            lines += 1
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                entry = None
-            if isinstance(entry, dict) and all(isinstance(entry.get(k), str) for k in ("key",) + REQUIRED) \
-                    and all(isinstance(entry.get(k, ""), str) for k in FIELDS) \
-                    and all(type(entry.get(k, 1)) is int for k in ("id", "supersedes")) and "id" in entry:
-                entries.append(entry)
-            else:
-                bad += 1
-    return entries, lines, bad
+            if line.strip():
+                try:
+                    yield json.loads(line)
+                except ValueError:
+                    yield None
 
 
 def current_entries(entries):
@@ -335,6 +380,241 @@ def cmd_render(args):
     print(path)
     return 0
 
+SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+HARNESS_LEDGER_DIR = "NousFX"
+ROW_FIELDS = ("project", "slug", "ticket", "evidence", "note", "date")
+MERGE_FIELDS = ("project", "merge", "into", "date")
+WATCH_EXAMPLE = ('session_report.py watch add --slug testfail-voided-by-edit --ticket NFX-214 --evidence #37 '
+                 '--note "an edit during the run voided testfail" --harness')
+WATCH_VERSION = 1
+CHOICE = ("pass exactly one of --harness (the fix belongs in NousFX: a script, skill, hook, rule, the sync or an "
+          "agent habit) or --project (the fix belongs in this project's own code).")
+
+
+def is_nousfx(top):
+    """True in a NousFX checkout. Each script ships alone, so this copies comment_check.is_nousfx."""
+    return bool(top) and os.path.isfile(os.path.join(top, "scripts", "nousfx_sync.py"))
+
+
+class Ledger:
+    """One watch.jsonl: rows, merges folded into `into` (OLD -> NEW), and counts of unreadable lines and of rows
+    a newer copy of this script wrote. The first merge of a slug wins, and a merge that would close a loop (two
+    sessions merging A into B and B into A at once) is skipped and counted as unreadable; a repeat of a merge is not."""
+
+    def __init__(self, kind, path):
+        self.kind, self.path, self.rows, self.into, self.bad, self.newer = kind, path, [], {}, 0, 0
+        for item in read_jsonl(path):
+            if isinstance(item, dict) and item.get("v", WATCH_VERSION) != WATCH_VERSION:
+                self.newer += 1
+            elif isinstance(item, dict) and all(isinstance(item.get(k), str) for k in ROW_FIELDS):
+                self.rows.append(item)
+            elif isinstance(item, dict) and all(isinstance(item.get(k), str) for k in MERGE_FIELDS) \
+                    and (self.into.get(item["merge"]) == item["into"]
+                         or item["merge"] not in self.into and self.canonical(item["into"]) != item["merge"]):
+                self.into[item["merge"]] = item["into"]
+            else:
+                self.bad += 1
+
+    def canonical(self, slug):
+        seen = {slug}
+        while slug in self.into and self.into[slug] not in seen:
+            slug = self.into[slug]
+            seen.add(slug)
+        return slug
+
+    def slugs(self):
+        """Every slug name the ledger knows, merged-away ones included (a row under one counts under its NEW)."""
+        return {r["slug"] for r in self.rows} | set(self.into) | set(self.into.values())
+
+    def live_slugs(self):
+        return self.slugs() - set(self.into)
+
+    def definitions(self):
+        """{canonical slug: its first note}: from the first row under the slug's own name, else the first row merged
+        into it, so later notes and merges cannot drift what the slug means."""
+        out = {}
+        for own in (True, False):
+            for r in self.rows:
+                slug = self.canonical(r["slug"])
+                if (r["slug"] == slug) == own:
+                    out.setdefault(slug, r["note"])
+        return out
+
+    def groups(self):
+        """{canonical slug: (sorted ticket@project list, last date)}, distinct by ticket and project."""
+        out = {}
+        for r in self.rows:
+            tickets, last = out.setdefault(self.canonical(r["slug"]), (set(), ""))
+            tickets.add("%s@%s" % (r["ticket"], r["project"]))
+            out[self.canonical(r["slug"])] = (tickets, max(last, r["date"]))
+        return {slug: (sorted(t), last) for slug, (t, last) in out.items()}
+
+
+def load_ledgers(repo):
+    """The ledgers this checkout reads, project first. Inside NousFX, or when the project ledger is the harness
+    file, only the harness ledger: one file is never read twice."""
+    root = report_root()
+    harness = os.path.join(root, HARNESS_LEDGER_DIR, "watch.jsonl")
+    project = os.path.join(root, project_name(repo) or "project", "watch.jsonl")
+    paths = [("harness", harness)]
+    if not is_nousfx(repo[0]) and os.path.realpath(project) != os.path.realpath(harness):
+        paths.insert(0, ("project", project))
+    for kind, path in paths:
+        refuse_inside_checkout(os.path.dirname(path), repo, "%s ledger folder" % kind)
+    return [Ledger(kind, path) for kind, path in paths]
+
+
+def other_project_owner(slug, ledgers):
+    """The project whose ledger (one this checkout does not read) holds `slug` live, or None. A harness slug must
+    not take a name a project already uses, or that project could add it to neither ledger."""
+    read = {os.path.realpath(led.path) for led in ledgers}
+    root = report_root()
+    for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        path = os.path.join(root, name, "watch.jsonl")
+        if name != HARNESS_LEDGER_DIR and os.path.isfile(path) and os.path.realpath(path) not in read \
+                and slug in Ledger("project", path).live_slugs():
+            return name
+    return None
+
+
+def ledger_for(kind, ledgers):
+    """The ledger a `kind` row goes to, or None for no kind. A "project" row goes to the harness ledger when this
+    checkout has no project ledger of its own (see load_ledgers)."""
+    by_kind = {led.kind: led for led in ledgers}
+    return by_kind.get(kind) or (by_kind["harness"] if kind else None)
+
+
+def existing_slugs(ledgers):
+    lines = []
+    for led in ledgers:
+        notes = led.definitions()
+        for slug in sorted(led.slugs()):
+            lines.append("  %s%s: %s" % ("[harness] " if led.kind == "harness" else "", slug,
+                                         notes.get(slug) if slug in led.live_slugs() and slug in notes
+                                         else "merged into %s" % led.canonical(slug)))
+    return lines or ["  (no slugs yet)"]
+
+
+def refuse(problems, *trailer):
+    if problems:
+        die("\n".join(problems + list(trailer)), 2)
+
+
+def cmd_watch_add(args):
+    repo = repo_paths()
+    project = project_name(repo)
+    date = args.date or datetime.date.today().isoformat()
+    problems = [] if DATE_RE.match(date) else ["--date must look like 2026-11-19."]
+    if not NAME_RE.match(project or ""):
+        problems.append("this checkout's folder name cannot name a ledger (letters, digits, dots, hyphens, "
+                        "underscores only).")
+    ledgers = load_ledgers(repo)
+    if args.merge is not None or args.into is not None:
+        return watch_merge(args, ledgers, project, date, problems)
+    values = {f: (getattr(args, f) or "").strip() for f in ("slug", "ticket", "evidence", "note")}
+    slug, ticket = values["slug"], values["ticket"]
+    problems += ["--%s is empty." % f for f, v in values.items() if not v]
+    slug_ok = bool(SLUG_RE.match(slug)) and len(slug) <= 64
+    if slug and not slug_ok:
+        problems.append("--slug is kebab case: lower-case letters and digits joined by hyphens, at most 64.")
+    if ticket and not KEY_RE.match(ticket):
+        problems.append("--ticket is not a ticket key like NFX-214.")
+    problems += [p for p in [evidence_problem(values["evidence"])] if p]
+    if len(values["note"]) > 300 or re.search(r"[\x00-\x1f\x7f]", values["note"]):
+        problems.append("--note is one line of at most 300 characters, with no control characters.")
+    if re.search(r"[\x00-\x1f\x7f]", values["evidence"]):
+        problems.append("--evidence has a control character.")
+    if any(has_secret(v) for v in list(values.values()) + [date]):
+        problems.append("a value looks like a secret. Nothing was written.")
+    kind = None
+    if is_nousfx(repo[0]):
+        kind = "harness"
+        if args.project:
+            kind = None
+            problems.append("--project: inside NousFX every row is a harness row; drop --project.")
+    elif args.harness != args.project:
+        kind = "harness" if args.harness else "project"
+    else:
+        problems.append("--harness or --project: " + CHOICE)
+    target = ledger_for(kind, ledgers)
+    if target and slug_ok:
+        others = [led for led in ledgers if led is not target and slug in led.live_slugs()]
+        owner = (other_project_owner(slug, ledgers)
+                 if target.kind == "harness" and not others and slug not in target.slugs() else None)
+        if others or owner:
+            problems.append("--slug %s is already a %s slug: a slug lives in one ledger. Add the row there, or pick "
+                            "another slug." % (slug, others[0].kind if others else "project slug in " + owner))
+        elif slug not in target.slugs() and not args.new:
+            problems.append("--slug %s is new. Reuse an existing slug when it is the same mistake:\n%s\nPass --new to "
+                            "start %s on purpose." % (slug, "\n".join(existing_slugs(ledgers)), slug))
+        if ticket and any(target.canonical(r["slug"]) == target.canonical(slug) and r["ticket"] == ticket
+                          for r in target.rows):
+            problems.append("--ticket %s is already counted under %s: a repeat. Nothing was written."
+                            % (ticket, target.canonical(slug)))
+    refuse(problems, "A watch row needs a kebab slug, a ticket key, a pointer as evidence and a one-line note.",
+           "Example: " + WATCH_EXAMPLE)
+    row = dict(v=WATCH_VERSION, project=project, slug=slug, ticket=ticket, evidence=values["evidence"], note=values["note"], date=date)
+    append_line(target.path, json.dumps(row, ensure_ascii=False))
+    print(target.path)
+    return 0
+
+
+def merge_problem(old, new, ledgers):
+    """(problem or None, the ledger holding both slugs)."""
+    home = {s: next((led for led in ledgers if s in led.slugs()), None) for s in (old, new)}
+    missing = [s for s in (old, new) if home[s] is None]
+    if missing:
+        return "no ledger has %s.\n%s" % (" or ".join(missing), "\n".join(existing_slugs(ledgers))), None
+    if home[old] is not home[new]:
+        return ("%s is a %s slug and %s a %s slug: a merge across the two ledgers is refused."
+                % (old, home[old].kind, new, home[new].kind)), None
+    led = home[old]
+    if old in led.into:
+        return "%s is already merged into %s." % (old, led.into[old]), None
+    if led.canonical(new) == old:
+        return "%s already folds into %s: that merge would loop." % (new, old), None
+    return None, led
+
+
+def watch_merge(args, ledgers, project, date, problems):
+    old, new = (args.merge or "").strip(), (args.into or "").strip()
+    problems += ["%s needs an existing kebab slug." % flag for flag, v in (("--merge", old), ("--into", new))
+                 if not SLUG_RE.match(v)]
+    if any(getattr(args, f) for f in ("slug", "ticket", "evidence", "note", "harness", "project", "new")):
+        problems.append("--merge OLD --into NEW takes nothing else: the ledger is the one holding both slugs.")
+    if old and old == new:
+        problems.append("--merge and --into name the same slug.")
+    refuse(problems)
+    problem, led = merge_problem(old, new, ledgers)
+    refuse([problem] if problem else [])
+    append_line(led.path, json.dumps(dict(v=WATCH_VERSION, project=project, merge=old, into=new, date=date), ensure_ascii=False))
+    print(led.path)
+    return 0
+
+
+def cmd_watch_list(args):
+    ledgers = load_ledgers(repo_paths())
+    if not any(os.path.isfile(led.path) for led in ledgers):
+        print("no ledger yet (%s)" % ", ".join(led.path for led in ledgers))
+        return 0
+    shown = []
+    for led in ledgers:
+        if led.bad:
+            print("Warning: %d unreadable lines skipped in %s" % (led.bad, led.path), file=sys.stderr)
+        if led.newer:
+            print("Warning: %d rows in %s need a newer session_report.py; counts leave them out"
+                  % (led.newer, led.path), file=sys.stderr)
+        notes = led.definitions()
+        shown += [(len(t), led.kind, slug, t, last, notes[slug]) for slug, (t, last) in led.groups().items()
+                  if len(t) >= args.min]
+    for n, kind, slug, tickets, last, note in sorted(shown, key=lambda x: (-x[0],) + x[1:3]):
+        print("%s%s | %d ticket%s%s | %s | last %s | %s" % ("[harness] " if kind == "harness" else "", slug, n,
+                                                           "" if n == 1 else "s", ", class" if n >= 2 else "",
+                                                           " ".join(tickets), last, note))
+    if not shown:
+        print("no slug has %d or more tickets" % args.min)
+    return 0
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -351,14 +631,30 @@ def main():
                    help="start a report under --name when no folder has that name (a wave report, for example)")
     for field in FIELDS:
         d.add_argument("--" + field)
+    d.set_defaults(func=cmd_decide)
     r = sub.add_parser("render")
+    r.set_defaults(func=cmd_render)
     r.add_argument("--prs")
     r.add_argument("--proofs")
     for p in (d, r):
         p.add_argument("--name")
         p.add_argument("--date")
+    w = sub.add_parser("watch", description="The watch-item ledger: a retro counts a mistake across tickets.")
+    wsub = w.add_subparsers(dest="action", required=True)
+    wa = wsub.add_parser("add", formatter_class=argparse.RawDescriptionHelpFormatter, description=(
+        "Append one watch row, or a merge row with --merge OLD --into NEW.\n\n"
+        "Outside NousFX, " + CHOICE + "\nA new slug needs --new; a refusal lists the existing slugs.\n\n"
+        "Example:\n  " + WATCH_EXAMPLE))
+    for field in ("slug", "ticket", "evidence", "note", "date", "merge", "into"):
+        wa.add_argument("--" + field)
+    for flag in ("harness", "project", "new"):
+        wa.add_argument("--" + flag, action="store_true")
+    wa.set_defaults(func=cmd_watch_add)
+    wl = wsub.add_parser("list", description="Slugs by distinct tickets; 2 or more is a class.")
+    wl.add_argument("--min", type=int, default=1)
+    wl.set_defaults(func=cmd_watch_list)
     args = ap.parse_args()
-    return cmd_decide(args) if args.command == "decide" else cmd_render(args)
+    return args.func(args)
 
 
 if __name__ == "__main__":
