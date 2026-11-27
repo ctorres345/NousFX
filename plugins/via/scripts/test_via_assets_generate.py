@@ -384,10 +384,11 @@ class GenerateTest(unittest.TestCase):
         self.assertIn("path", self.ok("--kind", "image", "--prompt", "x", "--missing"))
         self.assertEqual(len(self.calls()), 1)
 
-    def spec(self, rows):
+    def spec(self, rows, head=""):
         path = os.path.join(self.project, "design", "assets.toml")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
+            f.write(head)
             for name, extra in rows:
                 f.write('[[asset]]\nname = "%s"\nkind = "image"\nsource = "design/assets/%s.png"\n'
                         'platforms = ["web"]\nsize = "64x64"\nusage = "Frame"\n%s\n' % (name, name, extra))
@@ -479,6 +480,94 @@ class GenerateTest(unittest.TestCase):
         self.assertLess(rows, plan)
         self.assertLess(plan, gen)
         self.assertIn("in `plan`'s order", assets)
+
+    LOCAL = '[makers]\nlocal = "tool/pixel_gen.py on the PC; docs/RUNBOOK.md, Local art generation"\n\n'
+
+    def plan_run(self):
+        env = th.env(self.home, PATH=self.bin + os.pathsep + "/usr/bin:/bin")
+        return subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "plan", "--project", self.project, "--key",
+                               "APP-7"], capture_output=True, text=True, env=env, timeout=60)
+
+    def test_plan_reports_each_rows_maker_and_the_local_steps(self):
+        self.spec([("home_hero_main", 'maker = "local"'), ("home_frame_main", 'maker = "gemini"'),
+                   ("home_bg_main", "")], head=self.LOCAL)
+        r = self.plan_run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rep = json.loads(r.stdout)
+        self.assertEqual([(o["name"], o["maker"]) for o in rep["order"]],
+                         [("home_hero_main", "local"), ("home_frame_main", "gemini"), ("home_bg_main", None)])
+        self.assertEqual(rep["makers"], {"local": "tool/pixel_gen.py on the PC; docs/RUNBOOK.md, Local art generation"})
+        self.assertEqual(self.calls(), [], "plan sends nothing")
+        self.spec([("home_bg_main", "")])
+        self.assertEqual(json.loads(self.plan_run().stdout)["makers"], {"local": None})
+
+    def test_a_bad_maker_setting_is_refused_with_its_line(self):
+        svg_row = ('[[asset]]\nname = "home_icon_main"\nkind = "svg"\nsource = "design/assets/home_icon_main.svg"\n'
+                   'platforms = ["web"]\nsize = "vector"\nusage = "x"\nmaker = "gemini"\n\n')
+        cases = ((self.LOCAL, 'maker = "Local"', "maker must be local or gemini"),
+                 (self.LOCAL, "maker = 1", "maker must be local or gemini"),
+                 ("", 'maker = "local"', "needs [makers] local"),
+                 (self.LOCAL + svg_row, "", "maker is for image rows"),
+                 ('[makers]\nlocal = ""\n\n', "", "[makers] local must be non-empty text"),
+                 ('[makers]\nremote = "x"\n\n', "", "[makers] takes only local"))
+        for head, extra, words in cases:
+            with self.subTest(words=words, extra=extra):
+                self.spec([("home_hero_main", extra)], head=head)
+                r = self.plan_run()
+                self.assertEqual(r.returncode, 1, r.stdout)
+                self.assertIn("Stopped:", r.stderr)
+                self.assertIn(words, r.stderr)
+                if not head.startswith("[makers]\nlocal = \"\"") and "remote" not in head:
+                    self.assertIn("line ", r.stderr, "a row's error names its line")
+        self.assertEqual(self.calls(), [])
+
+    def test_a_row_suggested_local_goes_to_agy_only_with_gemini(self):
+        self.spec([("home_plane_main", 'maker = "local"')], head=self.LOCAL)
+        err = self.stopped("--kind", "image", "--prompt", "x")
+        self.assertIn("suggests local", err)
+        self.assertIn("tool/pixel_gen.py on the PC", err, "the refusal names the local steps")
+        self.assertIn("--gemini", err)
+        self.assertEqual(self.calls(), [], "nothing was sent to agy")
+        self.assertIn("path", self.ok("--kind", "image", "--prompt", "x", "--gemini"))
+        self.spec([("home_plane_main", 'maker = "gemini"')], head=self.LOCAL)
+        self.assertIn("path", self.ok("--kind", "image", "--prompt", "x"))
+
+    def test_an_image_quota_stop_never_starts_gemini_api(self):
+        mark = os.path.join(self.root, "gemini-api-ran")
+        stub = os.path.join(self.bin, "gemini-api")
+        with open(stub, "w") as f:
+            f.write("#!/bin/sh\ntouch %s\n" % mark)
+        os.chmod(stub, 0o755)
+        self.mode("quota-reply")
+        self.assertIn("out of quota", self.stopped("--kind", "image", "--prompt", "x", code=21))
+        self.assertFalse(os.path.exists(mark), "a quota stop is exit 21 and nothing else; images are never billed")
+        for script in ("via_assets.py", "via_agy_call.py", "via_assets_review.py", "via_outbound.py"):
+            with open(os.path.join(HERE, script), encoding="utf-8") as f:
+                self.assertNotIn("gemini-api", f.read(), "%s has no billed image route" % script)
+
+    def test_the_local_text_is_shown_never_run(self):
+        mark = os.path.join(self.root, "local-ran")
+        head = '[makers]\nlocal = "touch %s; $(touch %s)"\n\n' % (mark, mark)
+        self.spec([("home_plane_main", 'maker = "local"')], head=head)
+        self.assertEqual(self.plan_run().returncode, 0)
+        self.assertIn("touch %s" % mark, self.stopped("--kind", "image", "--prompt", "x"))
+        self.assertFalse(os.path.exists(mark), "Via shows [makers] local and never runs it")
+
+    def test_the_mode_asks_local_or_gemini_before_the_first_image_and_never_bills(self):
+        with open(os.path.join(HERE, "..", "skills", "via", "modes", "assets.md"), encoding="utf-8") as f:
+            assets = f.read()
+        ask, gen = assets.index("## 2b. Choose the source"), assets.index("via_assets.py\" generate")
+        self.assertLess(assets.index("via_assets.py\" plan"), ask)
+        self.assertLess(ask, gen)
+        self.assertIn("local models on Cesar's PC or Gemini", assets)
+        self.assertIn("Never pick the source yourself", assets)
+        self.assertIn("never the billed Gemini API", assets)
+        self.assertNotIn("gemini-api image", assets)
+        self.assertIn("rows suggested `local` wait", assets, "the unattended rule")
+        self.assertIn('--origin "local ', assets, "local pictures come in through import")
+        choose = assets[ask:assets.index("## 3. Generate")]
+        self.assertIn("exit 21", choose)
+        self.assertIn("step 3c", choose, "on agy's quota stop the Gemini rows go to the web route")
 
     def prompt_of(self, call):
         return call["argv"][call["argv"].index("-p") + 1] if "-p" in call["argv"] else " ".join(call["argv"])
@@ -607,6 +696,24 @@ class PromptsTest(unittest.TestCase):
         self.assertNotIn("Traceback", r.stderr)
         self.assertEqual(r.stdout, "")
         return r.stderr
+
+    def test_rows_suggested_local_leave_the_web_prompts_unless_gemini_was_chosen(self):
+        star = 'usage = "Photo frame with stars"\n'
+        rows = self.ROWS.replace(star, star + 'maker = "local"\n')
+        # after palette: in TOML a top-level key placed after [makers] would join that table
+        rows = rows.replace("\n\n", '\n\n[makers]\nlocal = "tool/pixel_gen.py on the PC"\n\n', 1)
+        self.write("design/assets.toml", rows)
+        out = self.prompts()
+        self.assertEqual([p["name"] for p in out["prompts"]], ["home_frame_paw"])
+        self.assertEqual(out["local"], ["home_frame_star"], "the waiting local rows are named")
+        err = self.refused("--name", "home_frame_star")
+        self.assertIn("suggests local", err)
+        self.assertIn("--gemini", err)
+        both = self.prompts("--gemini")
+        self.assertEqual([p["name"] for p in both["prompts"]], ["home_frame_paw", "home_frame_star"])
+        self.assertEqual(both["local"], [])
+        self.assertEqual([p["name"] for p in self.prompts("--name", "home_frame_star", "--gemini")["prompts"]],
+                         ["home_frame_star"])
 
     def test_a_long_style_is_cut_after_its_last_whole_sentence(self):
         first = "Soft pastel watercolor, rounded shapes, 4 px outlines, playful and calm. " * 3  # 219 characters

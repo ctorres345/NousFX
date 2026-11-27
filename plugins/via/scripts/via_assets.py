@@ -5,9 +5,10 @@ Usage: via_assets.py audit    [--project DIR]
        via_assets.py convert  [--project DIR] [--dry-run] [--only NAME ...]
        via_assets.py generate --kind image|svg --name NAME --key KEY (--prompt TEXT | --prompt-file FILE)
                               [--project DIR] [--timeout SECONDS] [--ref IMAGE ...] [--missing] [--any-order]
+                              [--gemini]
        via_assets.py probe-image [--project DIR] [--timeout SECONDS (120)]
        via_assets.py plan     --key KEY [--project DIR]
-       via_assets.py prompts  --key KEY [--project DIR] [--name NAME ...] [--note TEXT] [--title TEXT]
+       via_assets.py prompts  --key KEY [--project DIR] [--name NAME ...] [--note TEXT] [--title TEXT] [--gemini]
 
 The spec is design/assets.toml in the project:
 
@@ -18,6 +19,9 @@ The spec is design/assets.toml in the project:
     android = "app/src/main/res"
     flutter = "assets/images"
     web = "public/images"
+
+    [makers]                               # optional: how this project makes images on Cesar's PC, as text Via
+    local = "tool/pixel_gen.py; docs/RUNBOOK.md, Local art generation"   # shows and never runs
 
     [[asset]]
     name = "home_logo_main"                # <feature>_<what>_<variant>, snake_case
@@ -30,6 +34,8 @@ The spec is design/assets.toml in the project:
                                            # background and approve keys it out into real alpha
     set = "frames"                         # optional: rows in one set share one layout text in their prompts
     layout = "8% margins, 6 px lines"      # optional, needs set; give it once per set (or the same on each row)
+    maker = "gemini"                       # optional, image rows: the suggested source, local or gemini
+                                           # (local needs [makers] local); Cesar still chooses before a batch
 
 Targets. image: Android drawable-mdpi..xxxhdpi PNG (1, 1.5, 2, 3, 4x); Flutter <name>.png, 2.0x/, 3.0x/; web
 <name>.webp and <name>@2x.webp. svg: Android drawable/<name>.xml (VectorDrawable); Flutter and web <name>.svg (a copy).
@@ -53,6 +59,7 @@ found only from the path named in agy's reply, inside that conversation's folder
 is the one <svg> document in the reply text, saved as text with its audit findings. An SVG that breaks a safety
 rule (parse, DOCTYPE, script, embedded content) stops with exit 1 and nothing is written. It needs no assets.toml and no
 Pillow; when assets.toml has a row for --name, the row's set layout and transparent key color go into the prompt.
+A row whose maker is local is refused (exit 1, nothing sent) unless --gemini says Cesar chose Gemini for it.
 --missing prints {"skipped": NAME, "reason"} and sends nothing when the name already has a pending or approved
 candidate in design/asset-review/<KEY>/state.json. An image is refused (exit 1, nothing sent) while an svg row of
 assets.toml with no source file yet has no candidate for KEY in any state, so a batch makes its SVGs first (see
@@ -68,14 +75,18 @@ does not know, or a failed call such as a timeout), 21 for quota, 22 when agy is
 
 `plan` lists the open assets.toml rows (no source file yet; rows an earlier ticket approved are left out) in the
 order a batch generates them: SVG rows first, then image rows, each kind in file order. SVGs use agy's text models and images its much smaller image quota, so a quota stop on an image never
-blocks an SVG. Prints {"order": [{"name", "kind", "candidate"}], "images": N} (N open image rows with no pending or approved candidate); candidate is true when the row
-already has a pending or approved candidate for KEY (generate --missing would skip it). Sends nothing.
+blocks an SVG. Prints {"order": [{"name", "kind", "maker", "candidate"}], "images": N, "makers": {"local": TEXT or
+null}} (N open image rows with no pending or approved candidate); candidate is true when the row
+already has a pending or approved candidate for KEY (generate --missing would skip it); maker is the row's suggested
+source or null. Sends nothing.
 
 `prompts` is for an image source outside agy that Claude drives, such as Gemini on the web (modes/assets.md step 3c). It
 sends nothing. It prints {"chat": "<KEY> <title>", "context": the style message (design/brief.md, the palette, each
 set's layout, the web design tokens), "prompts": [{"name", "kind", "size", "file", "base", "prompt", "agy_prompt"}]}:
 the open image rows with no pending or approved candidate for KEY (a later run picks up where the last one stopped),
-in file order, or the --name rows. SVG rows stay with agy. "prompt" is the art prompt generate would send for the row;
+in file order, or the --name rows. SVG rows stay with agy. Rows whose maker is local are left out and named in
+"local", and a --name for one is refused, unless --gemini says Cesar chose Gemini for them. "prompt" is the art
+prompt generate would send for the row;
 "agy_prompt" is exactly what agy gets after agy_call's safety lines. It stops (exit 1) on a name not in assets.toml,
 an SVG row, an unreadable brief.md, or a value shaped like a key or token in its input or output, and never prints
 that value.
@@ -112,6 +123,7 @@ DEFAULT_PATHS = {"android": os.path.join("app", "src", "main", "res"), "flutter"
                  "web": os.path.join("public", "images")}
 PLATFORMS = tuple(DEFAULT_PATHS)
 KINDS = ("svg", "image")
+MAKERS = ("local", "gemini")
 ANDROID_DENSITIES = (("mdpi", 1.0), ("hdpi", 1.5), ("xhdpi", 2.0), ("xxhdpi", 3.0), ("xxxhdpi", 4.0))
 FLUTTER_SCALES = (("", 1.0), ("2.0x", 2.0), ("3.0x", 3.0))
 WEB_SCALES = (("", 1.0), ("@2x", 2.0))
@@ -217,6 +229,14 @@ def load_spec(project):
         if os.path.isabs(value) or not inside(os.path.join(project, value), project):
             raise SpecError("%s: [paths] %s must be a folder inside the project." % (SPEC, key))
         paths[key] = os.path.normpath(value)
+    makers = data.get("makers", {})
+    if not isinstance(makers, dict):
+        raise SpecError("%s: [makers] must be a table." % SPEC)
+    if set(makers) - {"local"}:
+        raise SpecError("%s: [makers] takes only local (how this project makes images on Cesar's PC)." % SPEC)
+    if "local" in makers and not (isinstance(makers["local"], str) and makers["local"].strip()
+                                  and len(makers["local"]) <= MAX_LAYOUT):
+        raise SpecError("%s: [makers] local must be non-empty text of at most %d characters." % (SPEC, MAX_LAYOUT))
     assets = data.get("asset", [])
     if not isinstance(assets, list):
         raise SpecError("%s: assets are written as [[asset]] tables." % SPEC)
@@ -246,6 +266,13 @@ def load_spec(project):
                 bad(i, 'transparent must be a key color such as "#00FF00"')
             if a["kind"] != "image" or os.path.splitext(a["source"])[1].lower() != ".png":
                 bad(i, "transparent is for an image row with a .png source")
+        if "maker" in a:
+            if a["maker"] not in MAKERS:
+                bad(i, "maker must be local or gemini")
+            if a["kind"] != "image":
+                bad(i, "maker is for image rows; SVGs always come from agy")
+            if a["maker"] == "local" and "local" not in makers:
+                bad(i, 'maker = "local" needs [makers] local, the steps for making it on the PC')
         for key in ("set", "layout"):
             if key in a and not (isinstance(a[key], str) and a[key].strip() and len(a[key]) <= MAX_LAYOUT):
                 bad(i, "%s must be non-empty text of at most %d characters" % (key, MAX_LAYOUT))
@@ -259,7 +286,8 @@ def load_spec(project):
     for a in assets:  # every row in a set gets the set's layout
         if "set" in a and a["set"] in layouts:
             a["layout"] = layouts[a["set"]]
-    return {"palette": palette, "ignore": ignore, "paths": paths, "assets": assets}
+    return {"palette": palette, "ignore": ignore, "paths": paths, "makers": {"local": makers.get("local")},
+            "assets": assets}
 
 
 def size_of(asset):
@@ -1141,9 +1169,10 @@ def plan(project, key):
     rows = sorted(open_rows(project), key=lambda a: a["kind"] != "svg")  # stable: file order kept
     import via_assets_review  # imports this module, so not at the top
     state = via_assets_review.load_state(project, key)["assets"]
-    return {"order": [{"name": a["name"], "kind": a["kind"],
+    return {"order": [{"name": a["name"], "kind": a["kind"], "maker": a.get("maker"),
                        "candidate": candidate(state, a["name"])} for a in rows],
-            "images": sum(a["kind"] == "image" and not candidate(state, a["name"]) for a in rows)}
+            "images": sum(a["kind"] == "image" and not candidate(state, a["name"]) for a in rows),
+            "makers": load_spec(project)["makers"]}
 
 
 def spec_row(project, name):
@@ -1232,7 +1261,7 @@ def no_secret(text, where):
                         % where)
 
 
-def outside_prompts(project, key, names=(), note="", title=""):
+def outside_prompts(project, key, names=(), note="", title="", gemini=False):
     """The context message (the project's style, for a Gemini Gem or a chat's first message) and one prompt per row,
     each the art prompt generate would send for that row. Sends nothing anywhere."""
     if not KEY_RE.match(key):
@@ -1269,6 +1298,10 @@ def outside_prompts(project, key, names=(), note="", title=""):
     if svgs:
         raise SpecError("%s: SVG rows come from agy (step 3); an outside source makes image rows only"
                         % ", ".join(svgs))
+    local = [n for n in names if rows[n].get("maker") == "local"]
+    if local and not gemini:
+        raise SpecError("%s suggests local for %s: make it on the PC (%s). Pass --gemini only when Cesar chose Gemini "
+                        "for it. Nothing was printed" % (SPEC, ", ".join(local), spec["makers"]["local"]))
     if names:
         chosen = [rows[n] for n in names]
     else:  # the open image rows with no pending or approved candidate yet, like generate --missing
@@ -1277,6 +1310,8 @@ def outside_prompts(project, key, names=(), note="", title=""):
         open_names = {a["name"] for a in open_rows(project)}
         chosen = [a for a in spec["assets"]
                   if a["kind"] == "image" and a["name"] in open_names and not candidate(state, a["name"])]
+        local = [a["name"] for a in chosen if a.get("maker") == "local" and not gemini]
+        chosen = [a for a in chosen if a["name"] not in local]
     style = style_line(brief)
     palette = spec.get("palette") or []
     layouts = {}
@@ -1304,7 +1339,8 @@ def outside_prompts(project, key, names=(), note="", title=""):
         prompts.append({"name": a["name"], "kind": a["kind"], "size": a["size"],
                         "file": os.path.basename(a["source"]), "base": base,
                         "prompt": art_prompt(a["kind"], base, a), "agy_prompt": agy_prompt(a["kind"], base, a)})
-    out = {"chat": "%s %s" % (key, title.strip() or "assets"), "context": "\n\n".join(context), "prompts": prompts}
+    out = {"chat": "%s %s" % (key, title.strip() or "assets"), "context": "\n\n".join(context), "prompts": prompts,
+           "local": [] if names else local}
     if warnings:
         out["warnings"] = warnings
     for text in strings(out):  # each printed value, as parsed TOML escapes can hide a key from the raw scan
@@ -1342,7 +1378,7 @@ def token_lines(project):
     return lines[:MAX_TOKENS]
 
 
-def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, any_order=False):
+def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, any_order=False, gemini=False):
     if not NAME_RE.match(name):
         raise SpecError("--name %r is not <feature>_<what>_<variant> in snake_case" % name)
     if not KEY_RE.match(key):
@@ -1354,6 +1390,10 @@ def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, 
     if kind == "image" and not any_order:
         svgs_first(project, key)
     row = spec_row(project, name)
+    if row and row.get("maker") == "local" and not gemini:
+        raise SpecError("%s suggests local for %s: make it on the PC (%s), then bring it in with via_assets_review.py "
+                        "import --origin \"local <tool>\". Pass --gemini only when Cesar chose Gemini for it. "
+                        "Nothing was sent" % (SPEC, name, load_spec(project)["makers"]["local"]))
     agy_allowed(project)
     files = read_refs(refs)
     started = via_agy_call.now()
@@ -1430,6 +1470,8 @@ def main():
     g.add_argument("--timeout", type=int, default=300)
     g.add_argument("--ref", action="append", default=[], help="a style reference image (up to %d)" % MAX_REFS)
     g.add_argument("--any-order", action="store_true", help="make an image even while an svg row has no candidate")
+    g.add_argument("--gemini", action="store_true", help="make a row whose maker is local through agy (Cesar "
+                   "chose Gemini for it)")
     g.add_argument("--missing", action="store_true", help="skip the name when it already has a pending or "
                    "approved candidate in the review gallery")
     pl = sub.add_parser("plan")
@@ -1443,12 +1485,14 @@ def main():
     po.add_argument("--key", required=True)
     po.add_argument("--name", action="append", default=[], help="a row of assets.toml (default: every open row)")
     po.add_argument("--note", default="", help="added to every prompt, such as a rejection note")
+    po.add_argument("--gemini", action="store_true", help="include rows whose maker is local (Cesar chose Gemini "
+                    "for them)")
     po.add_argument("--title", default="", help="a few words after the key in the chat name")
     args = ap.parse_args()
     project = os.path.realpath(args.project)
     try:
         if args.cmd == "prompts":
-            emit(outside_prompts(project, args.key, args.name, args.note, args.title))
+            emit(outside_prompts(project, args.key, args.name, args.note, args.title, args.gemini))
             return
         if args.cmd == "plan":
             emit(plan(project, args.key))
@@ -1466,7 +1510,7 @@ def main():
                 except OSError as e:
                     raise SpecError("cannot read the prompt file (%s)" % e.strerror)
             emit(generate(project, args.kind, args.name, args.key, prompt, args.timeout, args.ref, args.missing,
-                          args.any_order))
+                          args.any_order, args.gemini))
             return
         spec = load_spec(project)
         if args.cmd == "audit":
