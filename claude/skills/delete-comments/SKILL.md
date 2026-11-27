@@ -58,6 +58,10 @@ It compares with `git merge-base <base> HEAD` and prints that commit, so merges 
 
 Run step 1 again for the "after" count. Save the table with the before and after counts outside the repo, at `~/Releases/<project>/reports/<date>-<KEY>/comments.md`, and paste it in the PR body.
 
+## Classifier misses
+
+A verdict the review disputes (a banner scored `flag:comment`, a contract scored `flag:docstring`) is a classifier miss. Add an entry for it to NousFX's `claude/skills/review-loop/scripts/comment_corpus/<language>.json` in the same PR, as `known: NFX-<n>` with today's list in `got` (file the ticket first), or as a plain entry when the fix has already landed. The entry format is in `test_comment_corpus.py`, next to that folder. From Animus or Yuyay, add only a reduced excerpt (renamed identifiers, no product strings) with `source: reduced from <repo>`.
+
 ## Batch rule
 
 At most ~800 deleted lines per PR (`verify` prints the count and warns above it). A larger cleanup splits by folder into several PRs, one ticket each.

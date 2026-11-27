@@ -1,0 +1,93 @@
+[
+ {
+  "source": "nousfx@6412736:claude/hooks/git_refs.py:1",
+  "path": "claude/hooks/git_refs.py",
+  "text": "\"\"\"git_refs: which remote-tracking branch the gate and tier.py trust (NFX-108). One rule, two callers.\n\nreview-gate.py imports this file from its own folder; tier.py loads it by path (it is flat next to tier.py in CI and\nin the cloud copy, and under ../../../hooks in the repo). Standard library only, and it imports nothing from either\ncaller. Both callers pass their own `git(args, cwd) -> str` that raises RuntimeError on failure.\n\nLocal state only, nothing is fetched. `origin/HEAD` is trusted as `git remote set-head origin -a` set it: a shell user\ncan move it, so CI (which names the PR base explicitly) is the control.\n\"\"\"\n\nORIGIN = \"refs/remotes/origin/\"\n\n\ndef _resolves(git, cwd, ref, passthrough):\n    \"\"\"True when `ref` names a commit. An error in `passthrough` (a timeout) is raised, not read as 'missing'.\"\"\"\n    try:\n        git([\"rev-parse\", \"--verify\", \"--quiet\", ref + \"^{commit}\"], cwd)\n        return True\n    except passthrough:\n        raise\n    except RuntimeError:\n        return False\n\n",
+  "expected": [
+   "1 docstring keep:public-doc",
+   "15 docstring keep:contract"
+  ]
+ },
+ {
+  "source": "nousfx@6412736:claude/hooks/review-gate.py:98",
+  "path": "claude/hooks/review-gate.py",
+  "text": "CHECK_FILE = \".nousfx/project.toml\"\nCHECK_TIMEOUT = 1800\nCHECK_LOG = \"claude-review-check.log\"\nSTAMP_FILE = \"claude-review-check-pass\"  # in the git dir, written only by `run-check --stamp` (NFX-97)\nPROOF_STAMP_FILE = \"claude-proof-pass\"  # in the git dir, written only by prove.py (NFX-105); the gate never reads it\nTESTFAIL_STAMP_FILE = \"claude-testfail-pass\"  # in the git dir, written only by testfail.py (NFX-190); the gate never reads it\nSTAMP_KEY = \"claude-review-stamp-key\"\nGIT_ENV_VARS = (\"GIT_DIR\", \"GIT_WORK_TREE\", \"GIT_INDEX_FILE\", \"GIT_COMMON_DIR\")\n",
+  "expected": [
+   "4 inline keep:ticket-why",
+   "5 inline keep:ticket-why",
+   "6 inline keep:ticket-why"
+  ]
+ },
+ {
+  "source": "nousfx@6412736:claude/hooks/nousfx-drift.py:33",
+  "path": "claude/hooks/nousfx-drift.py",
+  "text": "BUDGET = 2.0  # seconds for the whole hook\nGIT_WAIT = 0.6  # most the \"how far behind\" question may take\nFETCH_EVERY = 600  # seconds between background fetches\n",
+  "expected": [
+   "1 inline flag:comment",
+   "2 inline flag:comment",
+   "3 inline flag:comment"
+  ]
+ },
+ {
+  "source": "nousfx@6412736:claude/hooks/test_git_refs.py:1",
+  "path": "claude/hooks/test_git_refs.py",
+  "text": "\"\"\"Tests for git_refs.py: the one default-branch rule the gate and tier.py share (NFX-108).\"\"\"\nimport os\nimport sys\nimport unittest\n\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\nimport git_refs  # noqa: E402\n\n\nclass Timeout(RuntimeError):\n    pass\n",
+  "expected": [
+   "1 docstring keep:public-doc",
+   "7 inline keep:path-import"
+  ]
+ },
+ {
+  "source": "nousfx@6412736:claude/skills/review-loop/scripts/tier.py:404",
+  "path": "claude/skills/review-loop/scripts/tier.py",
+  "text": "# origin/HEAD (only when it points at another refs/remotes/origin/ ref), else origin/main, else origin/master.\n# An assignment, not a def: the one definition is git_refs.default_ref (NFX-108). `git` is looked up at call time, so a test can patch it.\ndefault_ref = lambda top: load_git_refs().default_ref(git, top, (GitUnavailable,))  # noqa: E731\n",
+  "expected": [
+   "1 line flag:comment",
+   "2 line keep:ticket-why",
+   "3 inline flag:suppression"
+  ]
+ },
+ {
+  "source": "nousfx@6412736:scripts/review_replay.py:288",
+  "path": "scripts/review_replay.py",
+  "text": "def _ticket_from(prompt):\n    \"\"\"What the reviewer was told, minus the round line and the output-format paragraph.\"\"\"\n    keep = [x for x in prompt.splitlines() if not x.startswith(\"Round \") and not x.startswith(\"Output format\")]\n    return re.sub(r\"\\n{3,}\", \"\\n\\n\", \"\\n\".join(keep)).strip()\n",
+  "expected": [
+   "2 docstring flag:docstring"
+  ]
+ },
+ {
+  "source": "nousfx@6412736:scripts/test_ticket_check.py:34",
+  "path": "scripts/test_ticket_check.py",
+  "text": "class TicketCheck(unittest.TestCase):\n    def test_step_2_lints_the_proof_lines(self):\n        \"\"\"NFX-208: refused Proof: lines are gaps before coding, not a hand rewrite at Record time.\"\"\"\n        src = text()\n        step2 = src[src.index(\"## Step 2\"):src.index(\"## Step 3\")]\n        self.assertIn(\"prove.py lint\", step2)\n        self.assertIn(\"refused line\", step2)\n",
+  "expected": [
+   "3 docstring flag:test-docstring"
+  ]
+ },
+ {
+  "source": "nousfx@6412736:plugins/via/scripts/via_home.py:49",
+  "path": "plugins/via/scripts/via_home.py",
+  "text": "def _inside_git_worktree(directory):\n    \"\"\"True when directory (or its nearest existing parent) is in a git work tree. Fails closed on doubt.\"\"\"\n    while not os.path.isdir(directory):\n        parent = os.path.dirname(directory)\n        if parent == directory:\n            break\n        directory = parent\n    env = {k: v for k, v in os.environ.items() if not k.startswith(\"GIT_\")}\n    env[\"LC_ALL\"] = \"C\"  # the \"not a git repository\" message is matched below\n    try:\n        r = subprocess.run([\"git\", \"-C\", directory, \"rev-parse\", \"--is-inside-work-tree\"],\n                           capture_output=True, text=True, timeout=10, env=env)\n    except (OSError, subprocess.SubprocessError):\n        raise Refused(\"cannot run git to check that %s is outside a work tree\" % directory)\n    answer = r.stdout.strip()\n    if r.returncode == 0 and answer in (\"true\", \"false\"):\n        return answer == \"true\"\n    if r.returncode == 128 and \"not a git repository\" in r.stderr:\n        return False\n    # Anything else (git missing, dubious ownership, a corrupt repo, odd output) is doubt: refuse.\n    raise Refused(\"git could not say whether %s is inside a work tree\" % directory)\n",
+  "expected": [
+   "2 docstring keep:contract",
+   "9 inline flag:comment",
+   "20 line flag:comment"
+  ]
+ },
+ {
+  "source": "nousfx@6412736:claude/skills/budget-mode/scripts/agy_code.py:59",
+  "path": "claude/skills/budget-mode/scripts/agy_code.py",
+  "text": "def _coding_settings():\n    \"\"\"via_agy_call.SETTINGS with file writes and edits allowed: headless agy otherwise runs shell commands and\n    reads files outside the workspace, whatever RULES says. Any deny rule added there reaches coding runs too.\"\"\"\n    settings = json.loads(vac.SETTINGS)\n    deny = settings[\"permissions\"][\"deny\"]\n    settings[\"permissions\"][\"deny\"] = [d for d in deny if d not in (\"write_file(*)\", \"edit_file(*)\")]\n    return json.dumps(settings)\n",
+  "expected": [
+   "2 docstring flag:docstring"
+  ]
+ },
+ {
+  "source": "nousfx@6412736:claude/skills/gemini-review/scripts/gemini_common.py:272",
+  "path": "claude/skills/gemini-review/scripts/gemini_common.py",
+  "text": "def load_is_doc(path=TIER_PY):\n    \"\"\"review-loop's doc rule (tier.py's is_doc) minus tier.py's built-in risk paths (requirements.txt,\n    CMakeLists.txt, .github/), which a deep review must see; or None, with a stderr note, when tier.py cannot be\n    loaded (NFX-293).\"\"\"\n    try:\n        spec = importlib.util.spec_from_file_location(\"tier_for_gemini_review\", path)\n        module = importlib.util.module_from_spec(spec)\n        spec.loader.exec_module(module)\n        is_doc, risk_path_hit = module.is_doc, module.risk_path_hit\n    except Exception as e:  # noqa: BLE001 - any load failure means no doc rule, so every outside file still stops the run\n        sys.stderr.write(\"Note: could not load tier.py (%s: %s), so docs outside gemini_code_paths stop the run \"\n                         \"too.\\n\" % (path, type(e).__name__))\n        return None\n    return lambda name: is_doc(name) and not risk_path_hit(name, ())\n",
+  "expected": [
+   "2 docstring keep:public-doc",
+   "10 inline keep:suppression-why"
+  ]
+ }
+]

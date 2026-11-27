@@ -83,6 +83,12 @@ class DeleteCommentsSkill(unittest.TestCase):
         for needle in ("# NFX-100", "Stale", "git log"):
             self.assertIn(needle, tag)
 
+    def test_a_classifier_miss_adds_a_corpus_entry_in_the_same_pr(self):
+        """NFX-276: each cleanup's miss is pinned in comment_check's corpus, not left to the next reviewer."""
+        rule = section(text(), "Classifier misses")
+        for needle in ("claude/skills/review-loop/scripts/comment_corpus/", "same PR", "known", "reduced from"):
+            self.assertIn(needle, rule)
+
     def test_the_report_path_and_batch_rule(self):
         src = text()
         self.assertIn("~/Releases/<project>/reports/<date>-<KEY>/comments.md", src)

@@ -1,0 +1,31 @@
+[
+ {
+  "source": "nousfx@6412736:install.sh:1",
+  "path": "install.sh",
+  "text": "#!/usr/bin/env bash\n# Runs the NousFX sync: a dry run first, then the real run once you confirm.\n# All arguments go to scripts/nousfx_sync.py, for example: ./install.sh --tools claude,agy\n# This script copies nothing itself; docs/sync.md says what the sync writes.\nset -euo pipefail\n\nSYNC=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)/scripts/nousfx_sync.py\"\nPY=python3\ncommand -v python3 >/dev/null 2>&1 && python3 -c 'import sys' 2>/dev/null || PY=python\n",
+  "expected": [
+   "1 shell keep:shebang",
+   "2 shell flag:comment"
+  ]
+ },
+ {
+  "source": "nousfx@6412736:claude/githooks/commit-msg:1",
+  "path": "claude/githooks/commit-msg",
+  "text": "#!/bin/sh\n# Advisory commit-msg hook (NFX-86): warns when the commit subject does not name the branch's Jira key.\n# A commit `NFX-10: x` on `cesar/NFX-83` usually means another session switched the shared checkout.\n#\n# The rule is written again here in sh so the hook needs no Python or gate script; test_review_gate_commit_key.py\n# keeps it in step with Python's (the same as `review-gate.py check-commits`, which CI runs): the branch is <prefix>/<KEY>, and the subject\n# starts with `KEY:` or `KEY, KEY:` holding that key. Skipped: a branch with no key, a detached HEAD, a merge,\n# rebase, cherry-pick or revert in progress, and subjects git writes itself (Merge, Revert, fixup!, squash!).\n#\n# It only warns and always exits 0; `git commit --no-verify` skips it. CI is the real check.\n#\n# Install: cp claude/githooks/commit-msg .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg\n",
+  "expected": [
+   "1 shell keep:shebang",
+   "2 shell keep:ticket-why",
+   "3 shell keep:ticket-why",
+   "4 shell flag:comment"
+  ]
+ },
+ {
+  "source": "demonica@909895d:tool/check.sh:1",
+  "path": "tool/check.sh",
+  "text": "#!/usr/bin/env bash\n# Runs every check that must pass before every push. There is no CI on\n# the free GitHub tier, so this script is the gate. Usage: tool/check.sh\nset -euo pipefail\ncd \"$(dirname \"$0\")/..\"\n\nstep() { printf '\\n== %s\\n' \"$1\"; }\n",
+  "expected": [
+   "1 shell keep:shebang",
+   "2 shell flag:comment"
+  ]
+ }
+]

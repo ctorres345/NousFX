@@ -1,0 +1,80 @@
+[
+ {
+  "source": "pawlypaint@83dbdc5:lib/state/achievements.dart:168",
+  "path": "lib/state/achievements.dart",
+  "text": "// ---- Built-in badges --------------------------------------------------------\n\nfinal _retiredBadges = <Achievement>[\n  Achievement('streak7', 'Week of sparkle', 'Keep a 7-day daily streak', (f) => f.bestStreak >= 7,\n      series: 'Days played', retired: true),\n",
+  "expected": [
+   "1 line flag:banner"
+  ]
+ },
+ {
+  "source": "demonica@6f98839:lib/design_system/components.dart:433",
+  "path": "lib/design_system/components.dart",
+  "text": "  /// The typed level, or null when the field is empty or below 1.\n  int? _parseLevel(String text) {\n    final n = int.tryParse(text);\n    return n != null && n >= 1 ? n : null;\n  }\n",
+  "expected": [
+   "1 docstring keep:contract"
+  ],
+  "known": "NFX-269",
+  "got": [
+   "1 docstring flag:docstring"
+  ]
+ },
+ {
+  "source": "demonica@909895d:lib/app/app.dart:98",
+  "path": "lib/app/app.dart",
+  "text": "/// Bottom navigation on phones, a rail on wide screens.\nclass AppShell extends ConsumerWidget {\n  const AppShell({super.key, required this.location, required this.child});\n  final String location;\n  final Widget child;\n\n  static const _tabs = [\n    (path: '/smt4/demons', icon: Icons.auto_awesome_mosaic_outlined, label: 'DEMONS'),\n    (path: '/smt4/skills', icon: Icons.bolt_outlined, label: 'SKILLS'),\n    (path: '/plan', icon: Icons.route_outlined, label: 'PLAN'),\n    (path: '/saved', icon: Icons.bookmarks_outlined, label: 'SAVED'),\n    (path: '/settings', icon: Icons.tune, label: 'SETTINGS'),\n  ];\n\n  int get _index {\n    if (location.startsWith('/smt4/skills')) return 1;\n    if (location.startsWith('/plan')) return 2;\n    if (location.startsWith('/saved')) return 3;\n    if (location.startsWith('/settings')) return 4;\n    return 0;\n  }\n\n  @override\n  Widget build(BuildContext context, WidgetRef ref) {\n    final wide = MediaQuery.sizeOf(context).width >= wideBreakpoint;\n    final dc = context.dc;\n    // Saved entries not ticked off yet, shown as a badge on the tab.\n    final open = ref.watch(savedProvider.select((l) => l.where((e) => !e.done).length));\n",
+  "expected": [
+   "1 docstring keep:public-doc",
+   "27 line flag:comment"
+  ]
+ },
+ {
+  "source": "demonica@909895d:lib/app/providers.dart:127",
+  "path": "lib/app/providers.dart",
+  "text": "    state = AppSettings(\n      themeMode: ThemeMode.values.byName(j['themeMode'] as String? ?? 'dark'),\n      palette: Palette.values.byName(j['palette'] as String? ?? Palette.strangeJourney.name),\n      onboarded:\n          j['onboarded'] as bool? ?? true, // settings saved before the welcome screen existed\n      tutorialSeen: j['tutorialSeen'] as bool? ?? false,\n",
+  "expected": [
+   "5 inline flag:comment"
+  ]
+ },
+ {
+  "source": "demonica@909895d:lib/app/providers.dart:301",
+  "path": "lib/app/providers.dart",
+  "text": "  switch (f.sort) {\n    case DemonSort.level:\n      break; // demonsByLevel is already in level order.\n    case DemonSort.name:\n",
+  "expected": [
+   "3 inline flag:comment"
+  ]
+ },
+ {
+  "source": "pawlypaint@0af2c36:lib/state/progress_store.dart:244",
+  "path": "lib/state/progress_store.dart",
+  "text": "  /// True when the save came from a newer build (or its version can't be read).\n  /// It is shown as far as we understand it and never written over.\n  bool _readOnly = false;\n  bool get isReadOnly => _readOnly;\n",
+  "expected": [
+   "1 docstring keep:contract"
+  ]
+ },
+ {
+  "source": "pawlypaint@0af2c36:lib/state/progress_store.dart:445",
+  "path": "lib/state/progress_store.dart",
+  "text": "      final version = j['version'];\n      if (readable && (version != null && (version is! int || version > _version))) {\n        readOnly = true;\n        // Nothing in the UI says so yet (PAP-41), so leave a trace.\n        debugPrint('Progress is from a newer build (version $version): shown, but not saved.');\n      }\n      // PAP-78: an older save starts over once, so every star is earned on the new art.\n      final resetDue = readable && !readOnly && (version == null || (version is int && version < _version));\n",
+  "expected": [
+   "4 line keep:ticket-why",
+   "7 line keep:ticket-why"
+  ]
+ },
+ {
+  "source": "pawlypaint@0af2c36:lib/ui/home_screen.dart:1106",
+  "path": "lib/ui/home_screen.dart",
+  "text": "/// The next 3-star reward and how close it is; opens Unlocks (PAP-38).\nclass _UnlockStrip extends StatelessWidget {\n  const _UnlockStrip({required this.unlocks});\n\n  final UnlockState unlocks;\n",
+  "expected": [
+   "1 docstring keep:ticket-why"
+  ]
+ },
+ {
+  "source": "demonica@909895d:lib/design_system/components.dart:438",
+  "path": "lib/design_system/components.dart",
+  "text": "  /// Sets the level from the buttons or the slider, and reports it.\n  void _set(int v, {bool report = true, bool syncField = true}) {\n",
+  "expected": [
+   "1 docstring flag:docstring"
+  ]
+ }
+]

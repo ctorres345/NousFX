@@ -652,6 +652,21 @@ class Inventory(RepoCase):
             'pkg/tool.py:11 line keep:license # SPDX-License-Identifier: MIT',
         ])
 
+    def test_verdicts_gives_line_form_and_verdict_for_text_alone(self):
+        """NFX-276: the corpus test's seam, no files and no git."""
+        text = src('"""Public module doc."""', "def _bump(x):", '    """Bump x."""',
+                   "    return x + 1  # plus one")
+        self.assertEqual(comment_check.verdicts("pkg/tool.py", text), [
+            (1, "docstring", "keep:public-doc"),
+            (3, "docstring", "flag:docstring"),
+            (4, "inline", "flag:comment"),
+        ])
+
+    def test_verdicts_reads_the_path_for_test_files(self):
+        text = src("def test_bump():", '    """Bump x."""', "    pass")
+        self.assertEqual(comment_check.verdicts("tests/bump.py", text), [(2, "docstring", "flag:test-docstring")])
+        self.assertEqual(comment_check.verdicts("bump.py", text), [(2, "docstring", "keep:public-doc")])
+
     def test_the_summary_counts_forms_kept_items_and_shed_lines(self):
         _, summary = self.fixture().inventory()
         self.assertEqual(summary, "comment_check --all: 7 items (docstring 2, inline 1, line 2, shell 2), kept 3, "
