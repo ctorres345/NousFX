@@ -4,6 +4,7 @@
 Each test runs the script as a subprocess in a throwaway git repo, with a throwaway home and a stub gemini-api
 (and a stub gh). The Windows class runs the same cases with --platform windows and a stub named gemini-api.exe.
 """
+import io
 import json
 import os
 import stat
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
@@ -36,6 +38,11 @@ case "$1" in
     [ -f "$HOME/stub.fail" ] && exit 5
     echo '{"text": "NO FINDINGS", "usage": {}}' ;;
 esac
+"""
+AGY = """#!/bin/sh
+printf '%s\\n' "$@" > "$HOME/agy-args.log"
+cat diff.txt > "$HOME/agy-sent.log"
+echo '{"conversation_id": "abcdef12-3456", "status": "SUCCESS", "response": "NO FINDINGS", "usage": {}}'
 """
 GH = """#!/bin/sh
 echo "{\\"nameWithOwner\\": \\"acme/app\\", \\"visibility\\": \\"$(cat "$HOME/stub.vis" 2>/dev/null || echo PUBLIC)\\"}"
@@ -335,6 +342,76 @@ class ReviewCases:
         self.assertIn("outside gemini_code_paths", r.stderr)
         self.assertIn("other/Out.kt", r.stderr)
         self.assertIsNone(self.logged("args.log"))
+
+    # NFX-293: docs outside gemini_code_paths are left out of an --agy-model diff and named, not a reason to stop.
+    def stub_agy(self):
+        write_exe(os.path.join(self.home, ".local", "bin", "agy"), AGY)
+
+    def add_files(self, *names):
+        for name in names:
+            if os.path.dirname(name):
+                os.makedirs(os.path.join(self.repo, os.path.dirname(name)), exist_ok=True)
+            self.edit(name, "new line in %s\n" % name)
+
+    def run_neon(self, paths):
+        self.stub_agy()
+        self.config({"acme/app": {"destinations": ["agy"], "gemini_code_paths": paths}})
+        return self.run_script("--allow-list", "--agy-model", "gemini-4-neon-high", "HEAD")
+
+    def test_agy_model_docs_outside_the_paths_are_not_sent_and_are_named(self):
+        self.add_files("src/In.kt", "CHANGELOG.md")
+        r = self.run_neon(["src/"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        sent = self.logged("agy-sent.log")
+        self.assertIn("src/In.kt", sent)
+        self.assertNotIn("CHANGELOG.md", sent)
+        self.assertIn("not sent (docs outside gemini_code_paths): CHANGELOG.md", r.stderr)
+        reply = json.loads(r.stdout)
+        self.assertEqual((reply["route"], reply["not_sent"]), ("agy", ["CHANGELOG.md"]))
+
+    def test_agy_model_docs_outside_with_nothing_inside_stops_with_exit_5(self):
+        self.add_files("CHANGELOG.md", "docs/sync.md")
+        r = self.run_neon(["src/"])
+        self.assertEqual(r.returncode, 5, r.stderr)
+        self.assertIn("no changes inside", r.stderr)
+        self.assertIsNone(self.logged("agy-args.log"))
+
+    def assert_neon_stops_naming(self, stopped, *files):
+        self.add_files("src/In.kt", "CHANGELOG.md", *files)
+        r = self.run_neon(["src/"])
+        self.assertEqual(r.returncode, 4, r.stderr)
+        for name in stopped:
+            self.assertIn(name, r.stderr)
+        self.assertNotIn("CHANGELOG.md", r.stderr)
+        self.assertIsNone(self.logged("agy-args.log"))
+
+    def test_agy_model_code_outside_the_paths_still_exits_4_and_names_only_the_code(self):
+        self.assert_neon_stops_naming(["other/Out.kt"], "other/Out.kt")
+
+    def test_agy_model_code_outside_a_script_under_docs_counts_as_code(self):
+        self.assert_neon_stops_naming(["docs/build.sh"], "docs/build.sh")
+
+    def test_agy_model_code_outside_a_risk_path_doc_counts_as_code(self):
+        self.assert_neon_stops_naming(["requirements.txt", "CMakeLists.txt", ".github/notes.md"],
+                                      "requirements.txt", "CMakeLists.txt", ".github/notes.md")
+
+    def test_agy_model_replay_191_file_list_is_reviewed(self):
+        # NFX-271 (#191) changed these; NousFX allow-lists claude/ and scripts/ for agy.
+        self.add_files("claude/skills/review-loop/scripts/tier.py", "scripts/nousfx_sync.py", "docs/sync.md",
+                       "CHANGELOG.md")
+        r = self.run_neon(["claude/", "scripts/"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["not_sent"], ["CHANGELOG.md", "docs/sync.md"])
+        sent = self.logged("agy-sent.log")
+        self.assertIn("scripts/nousfx_sync.py", sent)
+        self.assertNotIn("docs/sync.md", sent)
+
+    def test_code_outside_check_with_tier_py_missing_counts_every_file_as_code(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertIsNone(gemini_common.load_is_doc(os.path.join(self.tmp, "missing", "tier.py")))
+        self.assertIn("could not load tier.py", err.getvalue())
+        self.assertEqual(gemini_common.split_docs(["CHANGELOG.md", "a.kt"], None), (["CHANGELOG.md", "a.kt"], []))
+        self.assertTrue(gemini_common.load_is_doc()("CHANGELOG.md"))
 
 
 class ReviewPosix(ReviewCases, unittest.TestCase):

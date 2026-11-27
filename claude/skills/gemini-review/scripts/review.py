@@ -9,7 +9,9 @@ agy when the entry lists agy, else (or when agy is at its limit, missing or sign
 gemini-api key; see gemini_common.py. It cannot be combined with --private-ok.
 --agy-model NAME (only with --allow-list) runs that agy model (budget mode uses gemini-4-neon-high) with no billed
 fallback: the project must list agy and its gemini_code_paths must hold every changed file (else exit 4), and a
-limit or signed-out agy stops with exit 9.
+limit or signed-out agy stops with exit 9. Docs outside the paths (review-loop's tier.py is_doc) are the exception
+(NFX-293): they are not sent, only named in a stderr note and the JSON's "not_sent" list. If tier.py cannot be
+loaded, they stop the run like any other file.
 Without --allow-list the diff goes only to the billed gemini-api key.
 """
 import os
@@ -58,6 +60,7 @@ def main(argv):
 
     gc.check_range(rng)
     gc.go_to_root()  # first: the CLI is looked up and probed only once we know which repo we are in
+    not_sent = []
     if allow_list:
         route = gc.plan_route()
         if agy_model is not None:
@@ -65,7 +68,7 @@ def main(argv):
                 gc.stop(4, "Stopped: this project is not allow-listed for agy in ~/.config/nousfx/via.json. "
                            "Nothing was sent.")
             route["gemini"] = False
-            outside = gc.outside_paths(route["paths"], rng)
+            outside, not_sent = gc.split_docs(gc.outside_paths(route["paths"], rng), gc.load_is_doc())
             if outside:
                 gc.stop(4, "Stopped: the diff changes %d file(s) outside gemini_code_paths (%s), which agy may not "
                            "see; use reviewer-high. Nothing was sent." % (len(outside), ", ".join(outside[:5])))
@@ -84,7 +87,11 @@ def main(argv):
         gc.stop(6, "Stopped: the diff is %d bytes, over the %d limit. Nothing was sent." % (len(diff), gc.MAX_BYTES))
     gc.stop_on_secret(diff)
 
-    gc.ask(route, platform, SYSTEM, QUESTION, {"diff.txt": diff}, model=agy_model or gc.AGY_MODEL)
+    extra = {}
+    if not_sent:
+        sys.stderr.write("Note: not sent (docs outside gemini_code_paths): %s\n" % ", ".join(not_sent))
+        extra["not_sent"] = not_sent
+    gc.ask(route, platform, SYSTEM, QUESTION, {"diff.txt": diff}, model=agy_model or gc.AGY_MODEL, extra=extra)
 
 
 if __name__ == "__main__":
