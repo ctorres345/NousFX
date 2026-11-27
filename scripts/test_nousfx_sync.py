@@ -662,5 +662,82 @@ class RulesBudget(Base):
         self.assertEqual(self.run_sync("--check").returncode, 0)
 
 
+class ProjectBehindOrigin(Base):
+    """NFX-286: --project --check and --dry-run warn when the checkout is behind origin/<default>."""
+
+    def setUp(self):
+        super().setUp()
+        write(os.path.join(self.repo, "claude", "githooks", "pre-push"),
+              read(os.path.join(ROOT, "claude", "githooks", "pre-push")))
+        self.git_env = {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+                        "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+    def git(self, cwd, *args):
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True, env=self.git_env)
+
+    def make_project(self, branch="main", commits=3, behind=0):
+        origin = os.path.join(self.tmp, f"origin-{branch}-{commits}-{behind}.git")
+        project = os.path.join(self.tmp, f"project-{branch}-{commits}-{behind}")
+        self.git(self.tmp, "init", "-q", "--bare", "-b", branch, origin)
+        self.git(self.tmp, "init", "-q", "-b", branch, project)
+        self.git(project, "remote", "add", "origin", origin)
+        for i in range(commits):
+            write(os.path.join(project, "file.txt"), f"commit {i}\n")
+            self.git(project, "add", "file.txt")
+            self.git(project, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", f"c{i}")
+        self.git(project, "push", "-q", "-u", "origin", branch)
+        self.git(project, "symbolic-ref", "refs/remotes/origin/HEAD", f"refs/remotes/origin/{branch}")
+        if behind:
+            self.git(project, "reset", "-q", "--hard", f"HEAD~{behind}")
+        return project
+
+    def test_behind_origin_warns_with_count_on_check_and_dry_run(self):
+        project = self.make_project(commits=3, behind=2)
+        r_check = self.sync("--project", project, "--check")
+        self.assertEqual(r_check.returncode, 1)  # unsynced project still exits 1
+        lines = [l for l in r_check.stderr.splitlines() if "behind origin/main" in l]
+        self.assertEqual(len(lines), 1, r_check.stderr)
+        self.assertIn("2 commits behind origin/main", lines[0])
+
+        r_dry = self.sync("--project", project, "--dry-run")
+        self.assertEqual(r_dry.returncode, 0, r_dry.stderr)
+        self.assertIn("2 commits behind origin/main", r_dry.stderr)
+
+        # Singular commit wording and clean (exit 0) project check
+        project_one = self.make_project(commits=2, behind=1)
+        self.assertEqual(self.sync("--project", project_one).returncode, 0)
+        r_clean = self.sync("--project", project_one, "--check")
+        self.assertEqual(r_clean.returncode, 0, r_clean.stderr)
+        self.assertIn("1 commit behind origin/main", r_clean.stderr)
+        self.assertNotIn("1 commits", r_clean.stderr)
+
+    def test_behind_origin_at_origin_prints_no_warning(self):
+        project = self.make_project(commits=2, behind=0)
+        for flag in ("--check", "--dry-run"):
+            r = self.sync("--project", project, flag)
+            self.assertNotIn("behind", r.stderr)
+
+    def test_behind_origin_no_remote_or_detached_head_prints_nothing_and_keeps_exit_code(self):
+        # Detached HEAD while behind origin/main
+        detached = self.make_project(commits=3, behind=2)
+        self.git(detached, "checkout", "-q", "--detach", "HEAD")
+        r_det = self.sync("--project", detached, "--check")
+        self.assertEqual(r_det.returncode, 1)
+        self.assertNotIn("behind", r_det.stderr)
+
+        # No origin remote at all
+        no_origin = self.make_project(commits=2, behind=0)
+        self.git(no_origin, "remote", "remove", "origin")
+        self.assertEqual(self.sync("--project", no_origin).returncode, 0)
+        r_no = self.sync("--project", no_origin, "--check")
+        self.assertEqual(r_no.returncode, 0, r_no.stderr)
+        self.assertNotIn("behind", r_no.stderr)
+
+    def test_behind_origin_uses_origin_head_default_branch(self):
+        project = self.make_project(branch="trunk", commits=3, behind=2)
+        r = self.sync("--project", project, "--check")
+        self.assertIn("2 commits behind origin/trunk", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
