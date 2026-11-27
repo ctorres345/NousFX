@@ -80,7 +80,12 @@ def find_agy(skip=()):
     """~/.local/bin/agy (agy.exe on Windows; home from the user record), else agy on PATH, else None. Relative
     PATH entries and any folder inside the current folder or a `skip` folder (the project) are skipped, so a
     program committed to a repo is never started."""
-    local = os.path.join(via_home.home_dir(), ".local", "bin", "agy.exe" if os.name == "nt" else "agy")
+    return find_program("agy", skip)
+
+
+def find_program(name, skip=()):
+    """find_agy's lookup for any program name, such as gemini-api."""
+    local = os.path.join(via_home.home_dir(), ".local", "bin", name + ".exe" if os.name == "nt" else name)
     if os.path.isfile(local) and os.access(local, os.X_OK):
         return local
     roots = [os.path.normcase(os.path.realpath(d)) for d in (os.getcwd(), *skip) if d]
@@ -88,7 +93,7 @@ def find_agy(skip=()):
         real = os.path.normcase(os.path.realpath(folder)) if folder and os.path.isabs(folder) else None
         if real is None or any(real == r or real.startswith(r.rstrip(os.sep) + os.sep) for r in roots):
             continue
-        found = shutil.which("agy", path=folder)
+        found = shutil.which(name, path=folder)
         if found and os.path.isabs(found):
             return found
     return None

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """via-assets-review: the review gallery behind `/via assets <KEY>`.
 
-Usage: via_assets_review.py add     --key KEY --name NAME --file RAW [--conversation-id ID] [--prompt-file FILE]
-                                    [--project DIR]
+Usage: via_assets_review.py add     --key KEY --name NAME --file RAW [--conversation-id ID | --origin TEXT]
+                                    [--prompt-file FILE] [--project DIR]
        via_assets_review.py import  --key KEY --name NAME --file FILE --origin TEXT [--project DIR]
        via_assets_review.py approve --key KEY --name NAME [--project DIR]
        via_assets_review.py reject  --key KEY --name NAME --note TEXT [--project DIR]
@@ -19,7 +19,8 @@ cut-out approve would write, and the tiles show that (or the card says why the k
 
 States: pending (a candidate waits for review), approved, rejected (with a note). `add` takes a file that
 `via_assets.py generate` wrote (only from that ticket's raw-output folder) for a name in design/assets.toml, and
-makes it the pending candidate. `import` does the same for an image made outside Via (the Gemini app, by hand)
+makes it the pending candidate; --origin records what made it when the billed Gemini API did (generate's "route" and
+"model", NFX-172) in the state, the gallery card and the log. `import` does the same for an image made outside Via (the Gemini app, by hand)
 from any folder, with the same checks plus a real image header, and records --origin in the state, the gallery
 card and the log. Adding or importing to a rejected or pending name is the regenerate step: the attempt count
 goes up and only that asset changes. `approve` copies the candidate to the asset's `source` and runs `convert`
@@ -192,7 +193,10 @@ def cmd_add(project, args):
     conv = args.conversation_id or ""
     if conv and not re.fullmatch(r"[A-Za-z0-9-]{1,64}", conv):
         die("--conversation-id is not an agy conversation id. Nothing was changed.")
-    return admit(project, args, src, conv=conv, prompt=prompt)
+    if conv and args.origin:
+        die("pass --conversation-id (agy made it) or --origin (the billed API made it), not both. Nothing was changed.")
+    origin = checked_text(args.origin, "The origin", MAX_ORIGIN) if args.origin else None
+    return admit(project, args, src, conv=conv, prompt=prompt, origin=origin, made=True)
 
 
 def cmd_import(project, args):
@@ -219,7 +223,7 @@ def keyed_preview(base, name, asset):
     return None, "No cut-out preview (%s). Fix it with /via setup; this is no reason to reject." % error[:MAX_KEY_NOTE]
 
 
-def admit(project, args, src, conv="", prompt=None, origin=None):
+def admit(project, args, src, conv="", prompt=None, origin=None, made=False):
     """Check one file against its assets.toml row and make it the asset's pending candidate."""
     spec = load(project)
     asset = entry(spec["rows"], args.name)
@@ -267,7 +271,8 @@ def admit(project, args, src, conv="", prompt=None, origin=None):
                                   "svg_findings": findings, "preview": preview, "key_note": key_note,
                                   "preview_key": asset.get("transparent"),
                                   "history": history}
-    how = ", agy conversation %s" % conv if conv else ", imported from %s" % origin if origin else ""
+    how = (", agy conversation %s" % conv if conv else ", %s %s" % ("made by" if made else "imported from", origin)
+           if origin else "")
     log(project, args.key, "`%s` attempt %d (%s)%s: pending.%s" % (
         args.name, attempt, asset["kind"], how, " Prompt: %s" % prompt if prompt else ""))
     save(project, args.key, state, spec["rows"])
@@ -677,6 +682,7 @@ def main():
     a.add_argument("--name", required=True)
     a.add_argument("--file", required=True)
     a.add_argument("--conversation-id")
+    a.add_argument("--origin", help="what made it when agy did not, such as \"gemini-api <model>\" from generate")
     a.add_argument("--prompt-file")
     for cmd in ("approve", "reject"):
         p = sub.add_parser(cmd, parents=[common])

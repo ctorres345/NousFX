@@ -66,9 +66,22 @@ find or remove, also after a failed call, stays there) and written nowhere else.
 {"image": "ok" | "quota" | "unavailable" | "unknown", "reset", "detail"}; exit 0 for ok and unknown (an answer it
 does not know, or a failed call such as a timeout), 21 for quota, 22 when agy is not installed or not signed in.
 
+Billed image fallback (NFX-172, off by default). When the project's allow-list entry sets
+assets.image_fallback to "api" (see via_outbound.py) and also lists gemini, an image that hits agy's quota is made
+once through `gemini-api image -m <assets.image_model, default gemini-3.1-flash-image>` instead: the art prompt goes
+over stdin from an empty folder, style references go as -i inputs, and gemini-api reads its key from the OS keyring
+only (as Argon's billed route, NFX-164; the key variables are hidden from it, and the key is never read or printed).
+stderr says the image is billed before the call. It prints {"path", "kind", "conversation_id": null, "findings": [],
+"route": "gemini-api", "model", "fallback"}; an agy image prints "route": "agy", "model": null. Pass the route to
+via_assets_review.py add --origin "gemini-api <model>". SVGs never fall back. With the fallback off, or gemini not
+allowed, the quota stop is exit 21 as before and gemini-api is never started. Never retried: exit 23 when gemini-api
+is missing, its key is not in the keyring or it refuses the key (gemini-api exit 3), exit 1 on any other failure.
+
 `plan` lists the open assets.toml rows (no source file yet; rows an earlier ticket approved are left out) in the
 order a batch generates them: SVG rows first, then image rows, each kind in file order. SVGs use agy's text models and images its much smaller image quota, so a quota stop on an image never
-blocks an SVG. Prints {"order": [{"name", "kind", "candidate"}], "images": N} (N open image rows with no pending or approved candidate); candidate is true when the row
+blocks an SVG. Prints {"order": [{"name", "kind", "candidate"}], "images": N, "image_fallback": {"mode": "off"|"api", "model",
+"billed_max"}} (N open image rows with no pending or approved candidate; billed_max is how many of them the billed
+fallback could make, 0 when it is off or gemini is not allowed); candidate is true when the row
 already has a pending or approved candidate for KEY (generate --missing would skip it). Sends nothing.
 
 `prompts` is for an image source outside agy that Claude drives, such as Gemini on the web (modes/assets.md step 3c). It
@@ -87,6 +100,7 @@ import io
 import json
 import os
 import re
+import secrets
 import struct
 import subprocess
 import sys
@@ -1077,12 +1091,21 @@ def reset_clause(text):
     return reset, "It resets: %s." % reset if reset else "agy gave no reset time; try again later."
 
 
+class QuotaHit(Exception):
+    """agy said it is out of quota; the text is what it said."""
+
+
 def quota_stop(text, prompt=None):
-    """Stop with exit QUOTA when text shows a quota error, naming the reset time when agy gave one."""
+    """Raise QuotaHit when text shows a quota error. generate turns it into the billed fallback or the stop."""
     if is_quota(text, prompt):
-        die("agy is out of quota (RESOURCE_EXHAUSTED or 429). %s Stop the batch here; the assets without a "
-            "candidate can be made later with generate --missing. Nothing was written" % reset_clause(text)[1],
-            QUOTA)
+        raise QuotaHit(text)
+
+
+def quota_die(text, note=""):
+    """Stop with exit QUOTA, naming the reset time when agy gave one."""
+    die("agy is out of quota (RESOURCE_EXHAUSTED or 429). %s Stop the batch here; the assets without a "
+        "candidate can be made later with generate --missing.%s Nothing was written" % (reset_clause(text)[1], note),
+        QUOTA)
 
 
 def agy_allowed(project):
@@ -1141,9 +1164,23 @@ def plan(project, key):
     rows = sorted(open_rows(project), key=lambda a: a["kind"] != "svg")  # stable: file order kept
     import via_assets_review  # imports this module, so not at the top
     state = via_assets_review.load_state(project, key)["assets"]
+    images = sum(a["kind"] == "image" and not candidate(state, a["name"]) for a in rows)
     return {"order": [{"name": a["name"], "kind": a["kind"],
                        "candidate": candidate(state, a["name"])} for a in rows],
-            "images": sum(a["kind"] == "image" and not candidate(state, a["name"]) for a in rows)}
+            "images": images, "image_fallback": fallback_plan(project, images)}
+
+
+def fallback_plan(project, images):
+    """{"mode", "model", "billed_max"}: "api" only when the fallback is on and gemini is allowed, so the batch can
+    say before its first call how many images could go to the billed Gemini API. Sends nothing."""
+    try:
+        mode, model = via_outbound.image_fallback(project)
+        allowed = via_outbound.decide(project, "gemini")[0] == via_outbound.ALLOWED
+    except via_outbound.Bad as e:
+        raise SpecError(str(e))
+    if mode != "api" or not allowed:
+        return {"mode": "off", "model": None, "billed_max": 0}
+    return {"mode": "api", "model": model, "billed_max": images}
 
 
 def spec_row(project, name):
@@ -1356,6 +1393,22 @@ def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, 
     row = spec_row(project, name)
     agy_allowed(project)
     files = read_refs(refs)
+    try:
+        return agy_generate(project, kind, name, key, prompt, timeout, row, files)
+    except QuotaHit as hit:
+        if kind != "image":
+            quota_die(str(hit))
+        try:
+            mode, model = via_outbound.image_fallback(project)
+        except via_outbound.Bad as e:
+            die("%s. Nothing was sent" % e)
+        if mode != "api":
+            quota_die(str(hit))
+        return api_image(project, name, key, art_prompt(kind, prompt, row), timeout, files, model, str(hit))
+
+
+def agy_generate(project, kind, name, key, prompt, timeout, row, files):
+    """One asset through agy; see generate at the top of this file. Raises QuotaHit on agy's quota error."""
     started = via_agy_call.now()
     try:
         asked = agy_prompt(kind, prompt, row)
@@ -1397,7 +1450,101 @@ def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, 
         if unsafe:  # checked in memory: model output that could run or pull in content never lands as an .svg
             die("agy's SVG breaks the safety rules (%s). Nothing was written" % ", ".join(unsafe))
     write_atomic(path, data)
-    return {"path": path, "kind": kind, "conversation_id": reply["conversation_id"], "findings": findings}
+    return {"path": path, "kind": kind, "conversation_id": reply["conversation_id"], "findings": findings,
+            "route": "agy", "model": None}
+
+
+# --- the billed Gemini API as the image fallback (NFX-172) ---
+
+FALLBACK_UNAVAILABLE = 23  # the fallback is on, but gemini-api is missing or its key is not in the keyring
+
+
+def gemini_allowed(project, said):
+    """Stop with the quota code, sending nothing, unless the allow-list lets this project use the gemini key."""
+    try:
+        code, result = via_outbound.decide(project, "gemini")
+    except via_outbound.Bad as e:
+        die("%s. Nothing was sent" % e)
+    if code != via_outbound.ALLOWED:
+        quota_die(said, " The billed image fallback is on but was not used: %s." % result["reason"])
+
+
+def gemini_cli(project):
+    """gemini-api, found like agy (never from inside the project), once its key comes from the OS keyring only, as
+    Argon's billed route requires (NFX-164). Only where the key comes from is read, never the key."""
+    cli = via_agy_call.find_program("gemini-api", skip=(project,))
+    if not cli:
+        die("the billed image fallback is on, but gemini-api is not installed. Install it (see /via setup) or set "
+            "image_fallback to \"off\". Nothing was sent", FALLBACK_UNAVAILABLE)
+    creds = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="via-gemini-") as empty:
+            out = subprocess.run([cli, "whoami", "--output-format", "json"], cwd=empty, stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, errors="replace", env=via_agy_call.agy_env(),
+                                 timeout=30).stdout
+        creds = json.loads(out).get("credentials")
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        pass
+    if isinstance(creds, dict) and all(isinstance(e, dict) for e in creds.values()):
+        sources = [e.get("source") for e in creds.values() if e.get("source") not in (None, "unset")]
+        if sources and all(s == "keyring" for s in sources):
+            return cli
+    die("the billed image fallback is on, but the Gemini key is not in the OS keyring. Run `gemini-api auth login`, "
+        "or set image_fallback to \"off\". Nothing was sent", FALLBACK_UNAVAILABLE)
+
+
+def api_image(project, name, key, prompt, timeout, files, model, said):
+    """One image through `gemini-api image` after agy ran out of quota. The prompt goes over stdin, from an empty
+    folder, with the key variables hidden, so gemini-api reads its key from the keyring. Never retried."""
+    gemini_allowed(project, said)
+    cli = gemini_cli(project)
+    sys.stderr.write("agy is out of image quota: making 1 image for %s through the billed Gemini API (%s).\n"
+                     % (name, model))
+    with tempfile.TemporaryDirectory(prefix="via-gemini-") as work:
+        out = os.path.join(work, "out")
+        os.mkdir(out)
+        cmd = [cli, "image", "-m", model, "--out", out, "--stdin", "--no-interactive"]
+        for ref, data in sorted(files.items()):
+            with open(os.path.join(work, ref), "wb") as f:
+                f.write(data)
+            cmd += ["-i", ref]
+        if files:
+            prompt += " Match the style of the reference images."
+        try:
+            r = subprocess.run(cmd, cwd=work, input=prompt, capture_output=True, text=True, errors="replace",
+                               env=via_agy_call.agy_env(), timeout=timeout)
+        except subprocess.TimeoutExpired:
+            die("the billed Gemini API did not answer in %d seconds. Not retried. Nothing was written" % timeout)
+        except OSError as e:
+            die("gemini-api could not run (%s). Nothing was written" % type(e).__name__)
+        told = " ".join(r.stderr.split())[:300]
+        import via_run  # the shared secret pattern; imported late like via_assets_review
+        if via_run.has_secret(told):
+            told = "(its message held a value shaped like a key, so it is not shown)"
+        if r.returncode == 3:
+            die("the billed Gemini API refused the key (gemini-api exit 3: %s). Run `gemini-api auth login`. Not "
+                "retried. Nothing was written" % told, FALLBACK_UNAVAILABLE)
+        if r.returncode != 0:
+            die("the billed Gemini API failed (gemini-api exit %d: %s). Not retried. Nothing was written"
+                % (r.returncode, told))
+        made = [os.path.join(out, f) for f in sorted(os.listdir(out))]
+        got = None
+        if len(made) == 1 and not os.path.islink(made[0]):
+            try:
+                data = via_agy_call.read_file(made[0])
+            except (OSError, via_agy_call.AgyError):
+                data = b""
+            ext = via_agy_call.image_type(data)
+            got = (data, ext) if ext and len(data) <= via_agy_call.MAX_IMAGE else None
+    if not got:
+        die("the billed Gemini API returned no PNG, JPEG or WebP image. Not retried. Nothing was written")
+    data, ext = got
+    path = os.path.join(raw_dir(project, key), "%s-%s-api%s%s" % (name, time.strftime("%Y%m%d-%H%M%S"),
+                                                                 secrets.token_hex(3), ext))
+    write_atomic(path, data)
+    return {"path": path, "kind": "image", "conversation_id": None, "findings": [], "route": "gemini-api",
+            "model": model, "fallback": "agy is out of quota (%s), so the billed Gemini API made this image."
+            % reset_clause(said)[1].rstrip(".")}
 
 
 def main():

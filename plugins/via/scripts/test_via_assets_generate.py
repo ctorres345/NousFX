@@ -138,6 +138,41 @@ elif mode == "slow":
     time.sleep(60)
 '''
 
+# A stub `gemini-api` (the billed Gemini API CLI, 0.4.5). It records each call (arguments, folder, environment
+# names, stdin) and answers per its gmode file. `whoami` reports where the key comes from; `image` writes a PNG
+# into the --out folder, as the real CLI does with a folder.
+GEMINI_STUB = r'''#!%(python)s
+import json, os, struct, sys
+here = os.path.dirname(os.path.realpath(__file__))
+with open(os.path.join(here, "gmode")) as f:
+    mode = f.read().strip()
+stdin = sys.stdin.read() if "--stdin" in sys.argv else ""
+with open(os.path.join(here, "gcalls.jsonl"), "a") as f:
+    f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "env": sorted(os.environ), "stdin": stdin}) + "\n")
+args = sys.argv[1:]
+if args[:1] == ["whoami"]:
+    source = "env" if mode == "env-key" else "unset" if mode == "no-key" else "keyring"
+    print(json.dumps({"credentials": {"api-key": {"source": source, "value": "AIza...masked"},
+                                      "access-token": {"source": "unset"}}}))
+    sys.exit(0)
+if args[:1] != ["image"]:
+    sys.exit(2)
+if mode == "auth":
+    print("Error: API key not valid (401)", file=sys.stderr)
+    sys.exit(3)
+if mode == "fail":
+    print("Error: 429 RESOURCE_EXHAUSTED on the billed key", file=sys.stderr)
+    sys.exit(1)
+out = args[args.index("--out") + 1]
+data = b"<html>nope</html>" if mode == "not-image" else (
+    b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", 64, 64) + b"\x08\x06\x00\x00\x00")
+if mode != "no-file":
+    path = os.path.join(out, "gemini-image-1.png") if os.path.isdir(out) else out
+    with open(path, "wb") as f:
+        f.write(data)
+    print(path)
+'''
+
 
 class GenerateTest(unittest.TestCase):
     def setUp(self):
@@ -157,25 +192,41 @@ class GenerateTest(unittest.TestCase):
             f.write(STUB % {"python": sys.executable, "conv": CONV, "svg": SVG.replace('"', '\\"'),
                              "bad_svg": BAD_SVG.replace('"', '\\"')})
         os.chmod(stub, 0o755)
+        gemini = os.path.join(self.bin, "gemini-api")
+        with open(gemini, "w") as f:
+            f.write(GEMINI_STUB % {"python": sys.executable})
+        os.chmod(gemini, 0o755)
         self.allow(["agy"])
         self.mode("image")
+        self.gmode("ok")
 
-    def allow(self, destinations):
+    def allow(self, destinations, assets=None):
         path = os.path.join(self.home, ".config", "nousfx", "via.json")
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        entry = {"destinations": destinations}
+        if assets is not None:
+            entry["assets"] = assets
         with open(path, "w") as f:
-            json.dump({"version": 1, "outbound_allowlist": {KEY: {"destinations": destinations}}}, f)
+            json.dump({"version": 1, "outbound_allowlist": {KEY: entry}}, f)
 
     def mode(self, mode):
         with open(os.path.join(self.bin, "mode"), "w") as f:
             f.write(mode)
 
-    def calls(self):
-        path = os.path.join(self.bin, "calls.jsonl")
+    def gmode(self, mode):
+        with open(os.path.join(self.bin, "gmode"), "w") as f:
+            f.write(mode)
+
+    def calls(self, name="calls.jsonl"):
+        path = os.path.join(self.bin, name)
         if not os.path.exists(path):
             return []
         with open(path) as f:
             return [json.loads(line) for line in f]
+
+    def image_calls(self):
+        """The billed `gemini-api image` calls (whoami probes read only where the key comes from)."""
+        return [c for c in self.calls("gcalls.jsonl") if c["argv"][:1] == ["image"]]
 
     def raw_dir(self):
         return os.path.join(self.home, ".local", "share", "nousfx", "via", "app", "APP-7")
@@ -324,6 +375,136 @@ class GenerateTest(unittest.TestCase):
         self.mode("limit")  # agy's own stderr never echoes the prompt: still the quota code
         self.assertIn("out of quota", self.stopped("--kind", "image", "--prompt", "art for the HTTP 429 page", code=21))
 
+    # --- the billed Gemini API as the image fallback (NFX-172) ---
+
+    API = {"image_fallback": "api", "image_model": "gemini-3.1-flash-lite-image"}
+
+    def test_with_api_an_image_quota_falls_back_to_gemini_api_with_the_configured_model(self):
+        self.allow(["agy", "gemini"], self.API)
+        self.mode("quota-reply")
+        r = self.run_cli("--kind", "image", "--prompt", "a blue paper plane")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rep = json.loads(r.stdout)
+        self.assertEqual((rep["route"], rep["model"]), ("gemini-api", "gemini-3.1-flash-lite-image"))
+        self.assertIsNone(rep["conversation_id"])
+        self.assertIn("out of quota", rep["fallback"])
+        self.assertIn("1 image", r.stderr)  # the cost is said before the call
+        self.assertIn("billed", r.stderr)
+        self.assertEqual(os.path.dirname(rep["path"]), self.raw_dir())
+        self.assertTrue(os.path.basename(rep["path"]).startswith("home_plane_main-"))
+        self.assertTrue(rep["path"].endswith(".png"))
+        with open(rep["path"], "rb") as f:
+            self.assertTrue(f.read().startswith(b"\x89PNG"))
+        (call,) = self.image_calls()
+        self.assertEqual(call["argv"][call["argv"].index("-m") + 1], "gemini-3.1-flash-lite-image")
+        self.assertIn("--stdin", call["argv"])
+        self.assertIn("a blue paper plane", call["stdin"])  # the prompt goes over stdin, never in argv
+        self.assertNotIn("a blue paper plane", " ".join(call["argv"]))
+        self.assertNotIn("generate_image", call["stdin"])  # agy's save-and-reply wrapper is not sent
+        self.assertFalse(call["cwd"].startswith(self.project))
+        self.assertFalse(os.path.exists(call["cwd"]), "the temp folder is removed")
+
+    def test_with_off_or_unset_a_quota_stops_as_today_and_nothing_goes_to_the_api(self):
+        for assets in (None, {}, {"image_fallback": "off"}, {"image_model": "gemini-3.1-flash-image"}):
+            with self.subTest(assets):
+                self.allow(["agy", "gemini"], assets)
+                self.mode("quota-reply")
+                err = self.stopped("--kind", "image", "--prompt", "x", code=21)
+                self.assertIn("out of quota", err)
+                self.assertNotIn("billed", err)
+        self.assertEqual(self.calls("gcalls.jsonl"), [])  # gemini-api was never started, not even whoami
+
+    def test_a_project_that_does_not_allow_gemini_never_reaches_the_api(self):
+        self.allow(["agy"], self.API)
+        self.mode("quota-stderr")
+        err = self.stopped("--kind", "image", "--prompt", "x", code=21)
+        self.assertIn("out of quota", err)
+        self.assertIn("does not allow gemini", err)
+        self.assertEqual(self.calls("gcalls.jsonl"), [])
+
+    def test_an_svg_quota_or_a_prompt_that_names_429_never_falls_back(self):
+        self.allow(["agy", "gemini"], self.API)
+        self.mode("quota-svg")
+        self.stopped("--kind", "svg", "--prompt", "x", code=21)
+        self.mode("quota-reply")  # the reply can echo the prompt: not agy's quota, so no billed call
+        self.assertIn("no image file", self.stopped("--kind", "image", "--prompt", "art for the HTTP 429 error page"))
+        self.mode("image")  # agy answered: no billed call
+        self.assertEqual(self.ok("--kind", "image", "--prompt", "x")["route"], "agy")
+        self.assertEqual(self.calls("gcalls.jsonl"), [])
+
+    def test_a_bad_fallback_setting_fails_closed(self):
+        for assets in ({"image_fallback": "yes"}, {"image_model": "gpt-image; rm -rf /"}, {"other": 1}, []):
+            with self.subTest(assets):
+                self.allow(["agy", "gemini"], assets)
+                self.mode("quota-reply")
+                self.stopped("--kind", "image", "--prompt", "x", code=1)
+        self.assertEqual(self.calls("gcalls.jsonl"), [])
+
+    def test_each_fallback_failure_stops_once_with_the_fix_and_writes_nothing(self):
+        self.allow(["agy", "gemini"], self.API)
+        self.mode("quota-reply")
+        cases = (("auth", 23, "gemini-api auth login"), ("fail", 1, "exit 1"), ("no-file", 1, "no PNG, JPEG"),
+                 ("not-image", 1, "no PNG, JPEG"), ("env-key", 23, "not in the OS keyring"),
+                 ("no-key", 23, "not in the OS keyring"))
+        for gmode, code, words in cases:
+            with self.subTest(gmode):
+                before = len(self.image_calls())
+                self.gmode(gmode)
+                err = self.stopped("--kind", "image", "--prompt", "x", code=code)
+                self.assertIn(words, err)
+                self.assertLessEqual(len(self.image_calls()) - before, 1, "never retried")
+        self.gmode("fail")
+        self.assertIn("Not retried", self.stopped("--kind", "image", "--prompt", "x", code=1))
+        os.unlink(os.path.join(self.bin, "gemini-api"))
+        self.assertIn("gemini-api is not installed", self.stopped("--kind", "image", "--prompt", "x", code=23))
+
+    def test_the_key_never_reaches_gemini_api_through_the_environment_or_the_output(self):
+        self.allow(["agy", "gemini"], self.API)
+        self.mode("quota-reply")
+        env = th.env(self.home, PATH=self.bin + os.pathsep + "/usr/bin:/bin", GEMINI_API_KEY="AIza" + "x" * 35,
+                     GOOGLE_API_KEY="k")
+        r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "generate", "--project", self.project,
+                            "--key", "APP-7", "--name", "home_plane_main", "--kind", "image", "--prompt", "x"],
+                           capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for call in self.calls("gcalls.jsonl"):  # whoami too: the keyring is the only source it can report
+            self.assertNotIn("GEMINI_API_KEY", call["env"])
+            self.assertNotIn("GOOGLE_API_KEY", call["env"])
+        self.assertNotIn("AIza", r.stdout + r.stderr)
+
+    def test_a_fallback_image_is_recorded_as_a_candidate_with_its_origin(self):
+        self.spec([("home_plane_main", "")])
+        self.allow(["agy", "gemini"], self.API)
+        self.mode("quota-reply")
+        rep = self.ok("--kind", "image", "--prompt", "x")
+        env = th.env(self.home, PATH=self.bin + os.pathsep + "/usr/bin:/bin")
+        r = subprocess.run([th.python(self.home), "-I", "-B", os.path.join(HERE, "via_assets_review.py"), "add",
+                            "--project", self.project, "--key", "APP-7", "--name", "home_plane_main",
+                            "--file", rep["path"], "--origin", "gemini-api %s" % rep["model"]],
+                           capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        review = os.path.join(self.project, "design", "asset-review", "APP-7")
+        with open(os.path.join(review, "state.json")) as f:
+            entry = json.load(f)["assets"]["home_plane_main"]
+        self.assertEqual((entry["state"], entry["origin"], entry["conversation_id"]),
+                         ("pending", "gemini-api gemini-3.1-flash-lite-image", None))
+        with open(os.path.join(review, "gallery.html"), encoding="utf-8") as f:
+            self.assertIn("From: gemini-api gemini-3.1-flash-lite-image", f.read())
+        with open(os.path.join(self.project, "design", "asset-log", "APP-7.md"), encoding="utf-8") as f:
+            self.assertIn("`home_plane_main` attempt 1 (image), made by gemini-api gemini-3.1-flash-lite-image: "
+                          "pending.", f.read())
+
+    def test_style_references_go_to_the_api_as_inputs(self):
+        self.allow(["agy", "gemini"], self.API)
+        self.mode("quota-reply")
+        ref = os.path.join(self.root, "style.png")
+        with open(ref, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\nref")
+        self.ok("--kind", "image", "--prompt", "x", "--ref", ref)
+        (call,) = self.image_calls()
+        self.assertEqual(call["argv"][call["argv"].index("-i") + 1], "ref0.png")
+        self.assertIn("reference images", call["stdin"])
+
     def probe(self, code=0, path=None):
         env = th.env(self.home, PATH=path if path is not None else self.bin + os.pathsep + "/usr/bin:/bin")
         r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "probe-image", "--project", self.project],
@@ -463,6 +644,23 @@ class GenerateTest(unittest.TestCase):
                             "APP-7"], capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(json.loads(r.stdout)["images"], 0, r.stderr)
 
+    def plan(self):
+        env = th.env(self.home, PATH=self.bin + os.pathsep + "/usr/bin:/bin")
+        r = subprocess.run([th.python(self.home), "-I", "-B", SCRIPT, "plan", "--project", self.project, "--key",
+                            "APP-7"], capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_plan_says_whether_the_billed_fallback_is_on_and_how_many_images_it_could_bill(self):
+        self.spec([("home_hero_main", ""), ("home_frame_main", "")])
+        self.assertEqual(self.plan()["image_fallback"], {"mode": "off", "model": None, "billed_max": 0})
+        self.allow(["agy"], self.API)  # on, but gemini is not allowed: nothing can be billed
+        self.assertEqual(self.plan()["image_fallback"]["mode"], "off")
+        self.allow(["agy", "gemini"], self.API)
+        fb = self.plan()["image_fallback"]
+        self.assertEqual(fb, {"mode": "api", "model": "gemini-3.1-flash-lite-image", "billed_max": 2})
+        self.assertEqual(self.calls("gcalls.jsonl"), [])  # plan sends nothing
+
     def test_the_modes_put_svgs_first_and_plan_after_the_rows_are_written(self):
         modes = os.path.join(HERE, "..", "skills", "via", "modes")
         with open(os.path.join(modes, "assets.md"), encoding="utf-8") as f:
@@ -584,7 +782,8 @@ class PromptsTest(unittest.TestCase):
         self.write("design/assets.toml", self.ROWS)
         self.write("design/brief.md", self.BRIEF)
 
-    allow, mode, calls, raw_dir = GenerateTest.allow, GenerateTest.mode, GenerateTest.calls, GenerateTest.raw_dir
+    allow, mode, gmode, calls, raw_dir = (GenerateTest.allow, GenerateTest.mode, GenerateTest.gmode, GenerateTest.calls,
+                                          GenerateTest.raw_dir)
 
     def write(self, rel_path, text):
         with open(os.path.join(self.project, rel_path), "w") as f:
@@ -748,7 +947,8 @@ class PromptsTest(unittest.TestCase):
 
 class TextCallTest(unittest.TestCase):
     """via_agy_call.py text, the entry point Argon uses (NFX-164). Same stub agy, not the generate tests again."""
-    setUp, allow, mode, calls = GenerateTest.setUp, GenerateTest.allow, GenerateTest.mode, GenerateTest.calls
+    setUp, allow, mode, gmode, calls = (GenerateTest.setUp, GenerateTest.allow, GenerateTest.mode, GenerateTest.gmode,
+                                        GenerateTest.calls)
 
     def text(self, *args, path=None):
         prompt = os.path.join(self.root, "prompt.txt")

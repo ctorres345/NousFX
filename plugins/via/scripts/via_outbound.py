@@ -5,7 +5,8 @@ Usage:
   via_outbound.py check --dest DEST [--project DIR] [--config FILE]
   via_outbound.py paths --dest gemini|agy [--project DIR] [--config FILE]
 
-DEST is one of gemini, agy, jira, figma, artifacts, obsidian. gemini is the billed Gemini API key; agy is
+DEST is one of gemini, agy, jira, figma, artifacts, obsidian. gemini is the billed Gemini API key (Argon reviews, and
+generated images when agy is out of image quota and the entry turns the fallback on); agy is
 the Antigravity CLI on the Google AI Pro subscription (prompts and style images for generated assets, and Argon
 reviews of screenshots and diffs).
 The project key is host/owner/repo (lowercase), taken from the `origin` remote of the git repo at --project
@@ -15,7 +16,9 @@ no host (a local path or file:// URL) gives no key. The config is --config, else
 a real file inside ~/.config/nousfx, and that folder must not be in a git work tree: a config kept in a project
 is refused, so a repo cannot allow-list itself. While the new file is absent, the old ~/.claude/via.json is read
 (one release). Its `outbound_allowlist` maps a key
-to {"destinations": [...], "gemini_code_paths": [...]}. A project that is not listed, has no remote, or has
+to {"destinations": [...], "gemini_code_paths": [...], "assets": {...}}. `assets` is optional:
+{"image_fallback": "off" | "api" (default "off"), "image_model": (default gemini-3.1-flash-image)}, the per-project
+switch for Via's billed image fallback (NFX-172); "api" also needs gemini in destinations. A project that is not listed, has no remote, or has
 no config is local-only. There is no exemption for public repos.
 
 `check` prints JSON {"allowed": bool, "project": key-or-null, "dest": DEST, "reason": ..., "gemini_integration":
@@ -48,6 +51,9 @@ LOCAL_ONLY = {
     "obsidian": "write no note",
 }
 ALLOWED, LOCAL, BAD = 0, 20, 1
+IMAGE_FALLBACKS = ("off", "api")
+DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image"  # the model agy draws with, so fallback images match the batch
+IMAGE_MODEL_RE = re.compile(r"gemini-[a-z0-9.-]{1,60}")
 
 
 class Bad(Exception):
@@ -128,10 +134,20 @@ def load_allowlist(path):
         paths = entry.get("gemini_code_paths", [])
         if not isinstance(paths, list) or not all(isinstance(p, str) and p for p in paths):
             raise Bad("outbound_allowlist entry \"%s\": gemini_code_paths must be a list of paths" % key)
+        assets = entry.get("assets", {})
+        if not isinstance(assets, dict) or set(assets) - {"image_fallback", "image_model"}:
+            raise Bad("outbound_allowlist entry \"%s\": assets takes only image_fallback and image_model" % key)
+        if assets.get("image_fallback", "off") not in IMAGE_FALLBACKS:
+            raise Bad("outbound_allowlist entry \"%s\": assets.image_fallback must be \"off\" or \"api\"" % key)
+        model = assets.get("image_model", DEFAULT_IMAGE_MODEL)
+        if not isinstance(model, str) or not IMAGE_MODEL_RE.fullmatch(model):
+            raise Bad("outbound_allowlist entry \"%s\": assets.image_model must be a Gemini image model name such as %s"
+                      % (key, DEFAULT_IMAGE_MODEL))
         norm = normalize_key(key)
         if norm in clean:
             raise Bad("outbound_allowlist lists \"%s\" twice (an old owner/repo key counts as github.com/owner/repo)" % norm)
-        clean[norm] = {"destinations": entry["destinations"], "gemini_code_paths": paths}
+        clean[norm] = {"destinations": entry["destinations"], "gemini_code_paths": paths,
+                       "assets": {"image_fallback": assets.get("image_fallback", "off"), "image_model": model}}
     integrations = cfg.get("integrations")
     return clean, (integrations.get("gemini") if isinstance(integrations, dict) else None)
 
@@ -157,6 +173,15 @@ def decide(project, dest, config=None):
     result["reason"] = "%s allows %s" % (key, dest)
     result["gemini_code_paths"] = entry["gemini_code_paths"]
     return ALLOWED, result
+
+
+def image_fallback(project, config=None):
+    """(mode, model) of the project's billed image fallback (NFX-172): ("api", model) only when its allow-list entry
+    sets assets.image_fallback to "api", else ("off", model). Whether gemini is allowed is decide()'s question."""
+    allow, _ = load_allowlist(config_path(config))
+    key = project_key(project)
+    assets = allow[key]["assets"] if key in allow else {"image_fallback": "off", "image_model": DEFAULT_IMAGE_MODEL}
+    return assets["image_fallback"], assets["image_model"]
 
 
 def main(argv=None):
