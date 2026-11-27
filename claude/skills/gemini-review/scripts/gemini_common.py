@@ -14,6 +14,7 @@ Credential Manager). check_key() refuses to run unless gemini-api reports the ke
 child_env() hides the key variables from every child process.
 """
 import functools
+import importlib.util
 import json
 import os
 import re
@@ -33,6 +34,7 @@ AGY_MODEL_ARG_RE = re.compile(r"gemini-[a-z0-9.-]{1,60}")
 AGY_TIMEOUT = 600
 VIA_TIMEOUT = 30  # seconds for a via_outbound.py answer; it reads one small file and runs one git call
 VIA_SCRIPTS = os.path.join(HERE, "..", "..", "..", "..", "plugins", "via", "scripts")
+TIER_PY = os.path.join(HERE, "..", "..", "review-loop", "scripts", "tier.py")
 MAX_BYTES = 200000  # the most diff text one call may send
 STRIP_ENV = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 CLI_TIMEOUT = 600
@@ -267,6 +269,29 @@ def outside_paths(paths, rng=None):
     return sorted({os.fsdecode(n) for n in (listed.stdout + b"\0" + untracked.stdout).split(b"\0") if n})
 
 
+def load_is_doc(path=TIER_PY):
+    """review-loop's doc rule (tier.py's is_doc) minus tier.py's built-in risk paths (requirements.txt,
+    CMakeLists.txt, .github/), which a deep review must see; or None, with a stderr note, when tier.py cannot be
+    loaded (NFX-293)."""
+    try:
+        spec = importlib.util.spec_from_file_location("tier_for_gemini_review", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        is_doc, risk_path_hit = module.is_doc, module.risk_path_hit
+    except Exception as e:  # noqa: BLE001 - any load failure means no doc rule, so every outside file still stops the run
+        sys.stderr.write("Note: could not load tier.py (%s: %s), so docs outside gemini_code_paths stop the run "
+                         "too.\n" % (path, type(e).__name__))
+        return None
+    return lambda name: is_doc(name) and not risk_path_hit(name, ())
+
+
+def split_docs(names, is_doc):
+    """(not docs, docs). With no doc rule, every file counts as not a doc."""
+    if is_doc is None:
+        return list(names), []
+    return [n for n in names if not is_doc(n)], [n for n in names if is_doc(n)]
+
+
 def new_files(paths, budget):
     """Untracked text files inside the allowed paths, as diff-like text. Regular files only: a symlink could point outside them."""
     if budget < 0:  # the tracked diff alone is over the limit: stop before any untracked file is read
@@ -364,14 +389,16 @@ def run_agy(system, question, files, model=AGY_MODEL):
     return {"text": text, "usage": usage if isinstance(usage, dict) else {}}, None
 
 
-def ask(route, platform, system, question, files, model=AGY_MODEL):
+def ask(route, platform, system, question, files, model=AGY_MODEL, extra=None):
     """Sends the files to Argon on the route plan_route() chose, and prints the JSON reply: {"text", "usage",
-    "route": "agy" or "gemini-api"}, plus "fallback" (why) when agy could not answer and the billed key did."""
+    "route": "agy" or "gemini-api"}, plus "fallback" (why) when agy could not answer and the billed key did, plus
+    the caller's `extra` fields."""
     why = None
+    extra = extra or {}
     if route["agy"]:
         reply, why = run_agy(system, question, files, model=model)
         if reply is not None:
-            return _print(dict(reply, route="agy"))
+            return _print(dict(reply, route="agy", **extra))
         if not route["gemini"]:
             stop(9, "%s The project does not allow the billed Gemini API (gemini), so Argon did not run." % why)
         sys.stderr.write("Note: agy could not answer (%s). Trying the billed Gemini API key.\n" % why)
@@ -383,6 +410,7 @@ def ask(route, platform, system, question, files, model=AGY_MODEL):
         inputs += ["-i", name]
     reply = run_analyze(cli, ["-m", MODEL, *inputs, "--system", system, "--output-format", "json", question], files)
     reply["route"] = "gemini-api"
+    reply.update(extra)
     if why:
         reply["fallback"] = "agy could not answer, so the billed Gemini API key was used. %s" % why
         sys.stderr.write("Note: %s\n" % reply["fallback"])
