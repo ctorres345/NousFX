@@ -138,9 +138,7 @@ elif mode == "slow":
     time.sleep(60)
 '''
 
-# A stub `gemini-api` (the billed Gemini API CLI, 0.4.5). It records each call (arguments, folder, environment
-# names, stdin) and answers per its gmode file. `whoami` reports where the key comes from; `image` writes a PNG
-# into the --out folder, as the real CLI does with a folder.
+# gemini-api 0.4.5 writes its image into --out when --out is a folder.
 GEMINI_STUB = r'''#!%(python)s
 import json, os, struct, sys
 here = os.path.dirname(os.path.realpath(__file__))
@@ -152,8 +150,8 @@ with open(os.path.join(here, "gcalls.jsonl"), "a") as f:
 args = sys.argv[1:]
 if args[:1] == ["whoami"]:
     source = "env" if mode == "env-key" else "unset" if mode == "no-key" else "keyring"
-    print(json.dumps({"credentials": {"api-key": {"source": source, "value": "AIza...masked"},
-                                      "access-token": {"source": "unset"}}}))
+    key = "env" if mode == "odd-key" else {"source": source, "value": "AIza...masked"}
+    print(json.dumps({"credentials": {"api-key": key, "access-token": {"source": "unset"}}}))
     sys.exit(0)
 if args[:1] != ["image"]:
     sys.exit(2)
@@ -162,6 +160,9 @@ if mode == "auth":
     sys.exit(3)
 if mode == "fail":
     print("Error: 429 RESOURCE_EXHAUSTED on the billed key", file=sys.stderr)
+    sys.exit(1)
+if mode == "leak":
+    print("Error: " + "y" * 283 + " AIza" + "Q" * 35, file=sys.stderr)
     sys.exit(1)
 out = args[args.index("--out") + 1]
 data = b"<html>nope</html>" if mode == "not-image" else (
@@ -388,7 +389,7 @@ class GenerateTest(unittest.TestCase):
         self.assertEqual((rep["route"], rep["model"]), ("gemini-api", "gemini-3.1-flash-lite-image"))
         self.assertIsNone(rep["conversation_id"])
         self.assertIn("out of quota", rep["fallback"])
-        self.assertIn("1 image", r.stderr)  # the cost is said before the call
+        self.assertIn("1 image", r.stderr, "the cost is said before the call")
         self.assertIn("billed", r.stderr)
         self.assertEqual(os.path.dirname(rep["path"]), self.raw_dir())
         self.assertTrue(os.path.basename(rep["path"]).startswith("home_plane_main-"))
@@ -398,9 +399,9 @@ class GenerateTest(unittest.TestCase):
         (call,) = self.image_calls()
         self.assertEqual(call["argv"][call["argv"].index("-m") + 1], "gemini-3.1-flash-lite-image")
         self.assertIn("--stdin", call["argv"])
-        self.assertIn("a blue paper plane", call["stdin"])  # the prompt goes over stdin, never in argv
+        self.assertIn("a blue paper plane", call["stdin"], "the prompt goes over stdin, never in argv")
         self.assertNotIn("a blue paper plane", " ".join(call["argv"]))
-        self.assertNotIn("generate_image", call["stdin"])  # agy's save-and-reply wrapper is not sent
+        self.assertNotIn("generate_image", call["stdin"], "agy's save-and-reply wrapper is not sent")
         self.assertFalse(call["cwd"].startswith(self.project))
         self.assertFalse(os.path.exists(call["cwd"]), "the temp folder is removed")
 
@@ -412,7 +413,7 @@ class GenerateTest(unittest.TestCase):
                 err = self.stopped("--kind", "image", "--prompt", "x", code=21)
                 self.assertIn("out of quota", err)
                 self.assertNotIn("billed", err)
-        self.assertEqual(self.calls("gcalls.jsonl"), [])  # gemini-api was never started, not even whoami
+        self.assertEqual(self.calls("gcalls.jsonl"), [], "gemini-api was never started, not even whoami")
 
     def test_a_project_that_does_not_allow_gemini_never_reaches_the_api(self):
         self.allow(["agy"], self.API)
@@ -426,10 +427,11 @@ class GenerateTest(unittest.TestCase):
         self.allow(["agy", "gemini"], self.API)
         self.mode("quota-svg")
         self.stopped("--kind", "svg", "--prompt", "x", code=21)
-        self.mode("quota-reply")  # the reply can echo the prompt: not agy's quota, so no billed call
-        self.assertIn("no image file", self.stopped("--kind", "image", "--prompt", "art for the HTTP 429 error page"))
-        self.mode("image")  # agy answered: no billed call
-        self.assertEqual(self.ok("--kind", "image", "--prompt", "x")["route"], "agy")
+        self.mode("quota-reply")
+        self.assertIn("no image file", self.stopped("--kind", "image", "--prompt", "art for the HTTP 429 error page"),
+                      "the reply can echo the prompt: not agy's quota, so no billed call")
+        self.mode("image")
+        self.assertEqual(self.ok("--kind", "image", "--prompt", "x")["route"], "agy", "agy answered: no billed call")
         self.assertEqual(self.calls("gcalls.jsonl"), [])
 
     def test_a_bad_fallback_setting_fails_closed(self):
@@ -443,18 +445,21 @@ class GenerateTest(unittest.TestCase):
     def test_each_fallback_failure_stops_once_with_the_fix_and_writes_nothing(self):
         self.allow(["agy", "gemini"], self.API)
         self.mode("quota-reply")
-        cases = (("auth", 23, "gemini-api auth login"), ("fail", 1, "exit 1"), ("no-file", 1, "no PNG, JPEG"),
-                 ("not-image", 1, "no PNG, JPEG"), ("env-key", 23, "not in the OS keyring"),
-                 ("no-key", 23, "not in the OS keyring"))
-        for gmode, code, words in cases:
+        billed = (("auth", "gemini-api auth login"), ("fail", "exit 1: Error: 429"), ("no-file", "no PNG, JPEG"),
+                  ("not-image", "no PNG, JPEG"), ("leak", "not shown"))
+        refused = (("env-key", "not in the OS keyring"), ("no-key", "not in the OS keyring"),
+                   ("odd-key", "not in the OS keyring"))
+        for gmode, words in billed + refused:
             with self.subTest(gmode):
                 before = len(self.image_calls())
                 self.gmode(gmode)
-                err = self.stopped("--kind", "image", "--prompt", "x", code=code)
+                err = self.stopped("--kind", "image", "--prompt", "x", code=23)
                 self.assertIn(words, err)
-                self.assertLessEqual(len(self.image_calls()) - before, 1, "never retried")
-        self.gmode("fail")
-        self.assertIn("Not retried", self.stopped("--kind", "image", "--prompt", "x", code=1))
+                self.assertIn("Stop the batch", err)
+                self.assertNotIn("AIza", err, "a key in gemini-api's message is never shown, even cut short")
+                self.assertEqual(len(self.image_calls()) - before, int((gmode, words) in billed))
+                if (gmode, words) in billed:
+                    self.assertIn("Not retried", err, "a billed call was made: it says it was not retried")
         os.unlink(os.path.join(self.bin, "gemini-api"))
         self.assertIn("gemini-api is not installed", self.stopped("--kind", "image", "--prompt", "x", code=23))
 
@@ -467,9 +472,9 @@ class GenerateTest(unittest.TestCase):
                             "--key", "APP-7", "--name", "home_plane_main", "--kind", "image", "--prompt", "x"],
                            capture_output=True, text=True, env=env, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr)
-        for call in self.calls("gcalls.jsonl"):  # whoami too: the keyring is the only source it can report
-            self.assertNotIn("GEMINI_API_KEY", call["env"])
-            self.assertNotIn("GOOGLE_API_KEY", call["env"])
+        for call in self.calls("gcalls.jsonl"):
+            self.assertNotIn("GEMINI_API_KEY", call["env"], "no call gets the key variables, whoami included")
+            self.assertNotIn("GOOGLE_API_KEY", call["env"], "no call gets the key variables, whoami included")
         self.assertNotIn("AIza", r.stdout + r.stderr)
 
     def test_a_fallback_image_is_recorded_as_a_candidate_with_its_origin(self):
@@ -654,12 +659,12 @@ class GenerateTest(unittest.TestCase):
     def test_plan_says_whether_the_billed_fallback_is_on_and_how_many_images_it_could_bill(self):
         self.spec([("home_hero_main", ""), ("home_frame_main", "")])
         self.assertEqual(self.plan()["image_fallback"], {"mode": "off", "model": None, "billed_max": 0})
-        self.allow(["agy"], self.API)  # on, but gemini is not allowed: nothing can be billed
-        self.assertEqual(self.plan()["image_fallback"]["mode"], "off")
+        self.allow(["agy"], self.API)
+        self.assertEqual(self.plan()["image_fallback"]["mode"], "off", "on, but gemini is not allowed: nothing billed")
         self.allow(["agy", "gemini"], self.API)
         fb = self.plan()["image_fallback"]
         self.assertEqual(fb, {"mode": "api", "model": "gemini-3.1-flash-lite-image", "billed_max": 2})
-        self.assertEqual(self.calls("gcalls.jsonl"), [])  # plan sends nothing
+        self.assertEqual(self.calls("gcalls.jsonl"), [], "plan sends nothing")
 
     def test_the_modes_put_svgs_first_and_plan_after_the_rows_are_written(self):
         modes = os.path.join(HERE, "..", "skills", "via", "modes")

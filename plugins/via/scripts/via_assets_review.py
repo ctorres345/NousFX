@@ -196,7 +196,7 @@ def cmd_add(project, args):
     if conv and args.origin:
         die("pass --conversation-id (agy made it) or --origin (the billed API made it), not both. Nothing was changed.")
     origin = checked_text(args.origin, "The origin", MAX_ORIGIN) if args.origin else None
-    return admit(project, args, src, conv=conv, prompt=prompt, origin=origin, made=True)
+    return admit(project, args, src, conv=conv, prompt=prompt, origin=origin, origin_verb="made by")
 
 
 def cmd_import(project, args):
@@ -223,7 +223,7 @@ def keyed_preview(base, name, asset):
     return None, "No cut-out preview (%s). Fix it with /via setup; this is no reason to reject." % error[:MAX_KEY_NOTE]
 
 
-def admit(project, args, src, conv="", prompt=None, origin=None, made=False):
+def admit(project, args, src, conv="", prompt=None, origin=None, origin_verb="imported from"):
     """Check one file against its assets.toml row and make it the asset's pending candidate."""
     spec = load(project)
     asset = entry(spec["rows"], args.name)
@@ -271,8 +271,11 @@ def admit(project, args, src, conv="", prompt=None, origin=None, made=False):
                                   "svg_findings": findings, "preview": preview, "key_note": key_note,
                                   "preview_key": asset.get("transparent"),
                                   "history": history}
-    how = (", agy conversation %s" % conv if conv else ", %s %s" % ("made by" if made else "imported from", origin)
-           if origin else "")
+    how = ""
+    if conv:
+        how = ", agy conversation %s" % conv
+    elif origin:
+        how = ", %s %s" % (origin_verb, origin)
     log(project, args.key, "`%s` attempt %d (%s)%s: pending.%s" % (
         args.name, attempt, asset["kind"], how, " Prompt: %s" % prompt if prompt else ""))
     save(project, args.key, state, spec["rows"])

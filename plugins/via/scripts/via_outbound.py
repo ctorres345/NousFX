@@ -18,7 +18,8 @@ is refused, so a repo cannot allow-list itself. While the new file is absent, th
 (one release). Its `outbound_allowlist` maps a key
 to {"destinations": [...], "gemini_code_paths": [...], "assets": {...}}. `assets` is optional:
 {"image_fallback": "off" | "api" (default "off"), "image_model": (default gemini-3.1-flash-image)}, the per-project
-switch for Via's billed image fallback (NFX-172); "api" also needs gemini in destinations. A project that is not listed, has no remote, or has
+switch for Via's billed image fallback (NFX-172), in decide()'s "assets"; "api" also needs gemini in destinations. A
+project that is not listed, has no remote, or has
 no config is local-only. There is no exemption for public repos.
 
 `check` prints JSON {"allowed": bool, "project": key-or-null, "dest": DEST, "reason": ..., "gemini_integration":
@@ -52,7 +53,7 @@ LOCAL_ONLY = {
 }
 ALLOWED, LOCAL, BAD = 0, 20, 1
 IMAGE_FALLBACKS = ("off", "api")
-DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image"  # the model agy draws with, so fallback images match the batch
+DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image"  # NFX-172: the model agy draws with, so fallback images match
 IMAGE_MODEL_RE = re.compile(r"gemini-[a-z0-9.-]{1,60}")
 
 
@@ -158,7 +159,9 @@ def decide(project, dest, config=None):
         raise Bad("unknown destination \"%s\". Use one of: %s" % (dest, ", ".join(DESTINATIONS)))
     allow, gemini = load_allowlist(config_path(config))
     key = project_key(project)
-    result = {"allowed": False, "project": key, "dest": dest, "gemini_integration": gemini}
+    result = {"allowed": False, "project": key, "dest": dest, "gemini_integration": gemini,
+              "assets": allow[key]["assets"] if key in allow else {"image_fallback": "off",
+                                                                     "image_model": DEFAULT_IMAGE_MODEL}}
     if key is None:
         result["reason"] = "no git remote, so the project is not on the allow-list; %s" % LOCAL_ONLY[dest]
         return LOCAL, result
@@ -173,15 +176,6 @@ def decide(project, dest, config=None):
     result["reason"] = "%s allows %s" % (key, dest)
     result["gemini_code_paths"] = entry["gemini_code_paths"]
     return ALLOWED, result
-
-
-def image_fallback(project, config=None):
-    """(mode, model) of the project's billed image fallback (NFX-172): ("api", model) only when its allow-list entry
-    sets assets.image_fallback to "api", else ("off", model). Whether gemini is allowed is decide()'s question."""
-    allow, _ = load_allowlist(config_path(config))
-    key = project_key(project)
-    assets = allow[key]["assets"] if key in allow else {"image_fallback": "off", "image_model": DEFAULT_IMAGE_MODEL}
-    return assets["image_fallback"], assets["image_model"]
 
 
 def main(argv=None):
@@ -199,7 +193,7 @@ def main(argv=None):
         print("Stopped: %s. Nothing was sent." % e, file=sys.stderr)
         return BAD
     if args.command == "check":
-        print(json.dumps({k: v for k, v in result.items() if k != "gemini_code_paths"}))
+        print(json.dumps({k: v for k, v in result.items() if k not in ("gemini_code_paths", "assets")}))
     elif code == ALLOWED:
         sys.stdout.write("".join(p + "\0" for p in result["gemini_code_paths"]))
     return code

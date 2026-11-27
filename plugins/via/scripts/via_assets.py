@@ -74,8 +74,9 @@ only (as Argon's billed route, NFX-164; the key variables are hidden from it, an
 stderr says the image is billed before the call. It prints {"path", "kind", "conversation_id": null, "findings": [],
 "route": "gemini-api", "model", "fallback"}; an agy image prints "route": "agy", "model": null. Pass the route to
 via_assets_review.py add --origin "gemini-api <model>". SVGs never fall back. With the fallback off, or gemini not
-allowed, the quota stop is exit 21 as before and gemini-api is never started. Never retried: exit 23 when gemini-api
-is missing, its key is not in the keyring or it refuses the key (gemini-api exit 3), exit 1 on any other failure.
+allowed, the quota stop is exit 21 as before and gemini-api is never started. Any fallback failure is exit 23 and
+stops the batch, since the next image would be billed again: gemini-api missing, its key not in the keyring (whoami
+must report every credential as keyring), or the billed call failing, timing out or returning no image. Never retried.
 
 `plan` lists the open assets.toml rows (no source file yet; rows an earlier ticket approved are left out) in the
 order a batch generates them: SVG rows first, then image rows, each kind in file order. SVGs use agy's text models and images its much smaller image quota, so a quota stop on an image never
@@ -116,6 +117,7 @@ sys.path.insert(0, HERE)  # -I leaves the script folder off sys.path
 import via_agy_call  # noqa: E402
 import via_home  # noqa: E402
 import via_outbound  # noqa: E402
+import via_run  # noqa: E402
 SPEC = os.path.join("design", "assets.toml")
 SCREEN, SOURCE = "assets", "via-assets"
 NAME_RE = re.compile(r"^[a-z0-9]+(_[a-z0-9]+){2,}$")
@@ -1173,14 +1175,21 @@ def plan(project, key):
 def fallback_plan(project, images):
     """{"mode", "model", "billed_max"}: "api" only when the fallback is on and gemini is allowed, so the batch can
     say before its first call how many images could go to the billed Gemini API. Sends nothing."""
-    try:
-        mode, model = via_outbound.image_fallback(project)
-        allowed = via_outbound.decide(project, "gemini")[0] == via_outbound.ALLOWED
-    except via_outbound.Bad as e:
-        raise SpecError(str(e))
-    if mode != "api" or not allowed:
+    mode, model, why_not = image_fallback(project)
+    if mode != "api" or why_not:
         return {"mode": "off", "model": None, "billed_max": 0}
     return {"mode": "api", "model": model, "billed_max": images}
+
+
+def image_fallback(project):
+    """(mode, model, why not) of the project's billed image fallback from its allow-list entry; why not is the reason
+    gemini is not allowed, or None. One read of the allow-list."""
+    try:
+        code, result = via_outbound.decide(project, "gemini")
+    except via_outbound.Bad as e:
+        raise SpecError("%s. Nothing was sent" % e)
+    assets = result["assets"]
+    return assets["image_fallback"], assets["image_model"], None if code == via_outbound.ALLOWED else result["reason"]
 
 
 def spec_row(project, name):
@@ -1263,7 +1272,6 @@ def style_line(brief):
 
 def no_secret(text, where):
     """Stop, printing nothing, when text holds a value shaped like a key or token. The value itself is never shown."""
-    import via_run  # the shared secret pattern; imported late like via_assets_review
     if via_run.has_secret(text):
         raise SpecError("%s holds a value shaped like a key or token. Remove it and run again. Nothing was printed"
                         % where)
@@ -1396,14 +1404,11 @@ def generate(project, kind, name, key, prompt, timeout, refs=(), missing=False, 
     try:
         return agy_generate(project, kind, name, key, prompt, timeout, row, files)
     except QuotaHit as hit:
-        if kind != "image":
-            quota_die(str(hit))
-        try:
-            mode, model = via_outbound.image_fallback(project)
-        except via_outbound.Bad as e:
-            die("%s. Nothing was sent" % e)
+        mode, model, why_not = image_fallback(project) if kind == "image" else ("off", None, None)
         if mode != "api":
             quota_die(str(hit))
+        if why_not:
+            quota_die(str(hit), " The billed image fallback is on but was not used: %s." % why_not)
         return api_image(project, name, key, art_prompt(kind, prompt, row), timeout, files, model, str(hit))
 
 
@@ -1456,51 +1461,52 @@ def agy_generate(project, kind, name, key, prompt, timeout, row, files):
 
 # --- the billed Gemini API as the image fallback (NFX-172) ---
 
-FALLBACK_UNAVAILABLE = 23  # the fallback is on, but gemini-api is missing or its key is not in the keyring
+BILLED_STOP = 23
+STOP_BATCH = " Stop the batch: the next image would be billed again. Not retried. Nothing was written"
 
 
-def gemini_allowed(project, said):
-    """Stop with the quota code, sending nothing, unless the allow-list lets this project use the gemini key."""
+def keyring_only(cli, work):
+    """True when gemini-api reports every credential it would use as coming from the OS keyring, as Argon's billed
+    route requires (NFX-164). Only the sources are read, never the key."""
     try:
-        code, result = via_outbound.decide(project, "gemini")
-    except via_outbound.Bad as e:
-        die("%s. Nothing was sent" % e)
-    if code != via_outbound.ALLOWED:
-        quota_die(said, " The billed image fallback is on but was not used: %s." % result["reason"])
+        out = subprocess.run([cli, "whoami", "--output-format", "json"], cwd=work, stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, errors="replace", env=via_agy_call.agy_env(),
+                             timeout=30).stdout
+        creds = json.loads(out)["credentials"]
+        if not creds or not all(isinstance(e, dict) for e in creds.values()):
+            return False
+        sources = {e.get("source") for e in creds.values()} - {None, "unset"}
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError, KeyError, TypeError):
+        return False
+    return sources == {"keyring"}
 
 
-def gemini_cli(project):
-    """gemini-api, found like agy (never from inside the project), once its key comes from the OS keyring only, as
-    Argon's billed route requires (NFX-164). Only where the key comes from is read, never the key."""
-    cli = via_agy_call.find_program("gemini-api", skip=(project,))
-    if not cli:
-        die("the billed image fallback is on, but gemini-api is not installed. Install it (see /via setup) or set "
-            "image_fallback to \"off\". Nothing was sent", FALLBACK_UNAVAILABLE)
-    creds = None
+def one_image(folder):
+    """(bytes, extension) of the single PNG, JPEG or WebP file gemini-api wrote into folder, or None."""
+    made = [os.path.join(folder, f) for f in os.listdir(folder)]
+    if len(made) != 1 or os.path.islink(made[0]):
+        return None
     try:
-        with tempfile.TemporaryDirectory(prefix="via-gemini-") as empty:
-            out = subprocess.run([cli, "whoami", "--output-format", "json"], cwd=empty, stdin=subprocess.DEVNULL,
-                                 capture_output=True, text=True, errors="replace", env=via_agy_call.agy_env(),
-                                 timeout=30).stdout
-        creds = json.loads(out).get("credentials")
-    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
-        pass
-    if isinstance(creds, dict) and all(isinstance(e, dict) for e in creds.values()):
-        sources = [e.get("source") for e in creds.values() if e.get("source") not in (None, "unset")]
-        if sources and all(s == "keyring" for s in sources):
-            return cli
-    die("the billed image fallback is on, but the Gemini key is not in the OS keyring. Run `gemini-api auth login`, "
-        "or set image_fallback to \"off\". Nothing was sent", FALLBACK_UNAVAILABLE)
+        data = via_agy_call.read_file(made[0])
+    except (OSError, via_agy_call.AgyError):
+        return None
+    ext = via_agy_call.image_type(data)
+    return (data, ext) if ext and len(data) <= via_agy_call.MAX_IMAGE else None
 
 
 def api_image(project, name, key, prompt, timeout, files, model, said):
     """One image through `gemini-api image` after agy ran out of quota. The prompt goes over stdin, from an empty
     folder, with the key variables hidden, so gemini-api reads its key from the keyring. Never retried."""
-    gemini_allowed(project, said)
-    cli = gemini_cli(project)
-    sys.stderr.write("agy is out of image quota: making 1 image for %s through the billed Gemini API (%s).\n"
-                     % (name, model))
+    cli = via_agy_call.find_program("gemini-api", skip=(project,))
+    if not cli:
+        die("the billed image fallback is on, but gemini-api is not installed. Install it (see /via setup) or set "
+            "image_fallback to \"off\". Stop the batch. Nothing was sent", BILLED_STOP)
     with tempfile.TemporaryDirectory(prefix="via-gemini-") as work:
+        if not keyring_only(cli, work):
+            die("the billed image fallback is on, but the Gemini key is not in the OS keyring. Run `gemini-api auth "
+                "login`, or set image_fallback to \"off\". Stop the batch. Nothing was sent", BILLED_STOP)
+        sys.stderr.write("agy is out of image quota: making 1 image for %s through the billed Gemini API (%s).\n"
+                         % (name, model))
         out = os.path.join(work, "out")
         os.mkdir(out)
         cmd = [cli, "image", "-m", model, "--out", out, "--stdin", "--no-interactive"]
@@ -1514,30 +1520,22 @@ def api_image(project, name, key, prompt, timeout, files, model, said):
             r = subprocess.run(cmd, cwd=work, input=prompt, capture_output=True, text=True, errors="replace",
                                env=via_agy_call.agy_env(), timeout=timeout)
         except subprocess.TimeoutExpired:
-            die("the billed Gemini API did not answer in %d seconds. Not retried. Nothing was written" % timeout)
+            die("the billed Gemini API did not answer in %d seconds (it may still bill).%s" % (timeout, STOP_BATCH),
+                BILLED_STOP)
         except OSError as e:
-            die("gemini-api could not run (%s). Nothing was written" % type(e).__name__)
-        told = " ".join(r.stderr.split())[:300]
-        import via_run  # the shared secret pattern; imported late like via_assets_review
-        if via_run.has_secret(told):
-            told = "(its message held a value shaped like a key, so it is not shown)"
+            die("gemini-api could not run (%s).%s" % (type(e).__name__, STOP_BATCH), BILLED_STOP)
+        told = " ".join(r.stderr.split())
+        told = ("(its message held a value shaped like a key, so it is not shown)" if via_run.has_secret(told)
+                else told[:300])
         if r.returncode == 3:
-            die("the billed Gemini API refused the key (gemini-api exit 3: %s). Run `gemini-api auth login`. Not "
-                "retried. Nothing was written" % told, FALLBACK_UNAVAILABLE)
+            die("the billed Gemini API refused the key (gemini-api exit 3: %s). Run `gemini-api auth login`.%s"
+                % (told, STOP_BATCH), BILLED_STOP)
         if r.returncode != 0:
-            die("the billed Gemini API failed (gemini-api exit %d: %s). Not retried. Nothing was written"
-                % (r.returncode, told))
-        made = [os.path.join(out, f) for f in sorted(os.listdir(out))]
-        got = None
-        if len(made) == 1 and not os.path.islink(made[0]):
-            try:
-                data = via_agy_call.read_file(made[0])
-            except (OSError, via_agy_call.AgyError):
-                data = b""
-            ext = via_agy_call.image_type(data)
-            got = (data, ext) if ext and len(data) <= via_agy_call.MAX_IMAGE else None
+            die("the billed Gemini API failed (gemini-api exit %d: %s).%s" % (r.returncode, told, STOP_BATCH),
+                BILLED_STOP)
+        got = one_image(out)
     if not got:
-        die("the billed Gemini API returned no PNG, JPEG or WebP image. Not retried. Nothing was written")
+        die("the billed Gemini API returned no PNG, JPEG or WebP image.%s" % STOP_BATCH, BILLED_STOP)
     data, ext = got
     path = os.path.join(raw_dir(project, key), "%s-%s-api%s%s" % (name, time.strftime("%Y%m%d-%H%M%S"),
                                                                  secrets.token_hex(3), ext))
