@@ -18,7 +18,8 @@ import re
 import subprocess
 import time
 
-Word = collections.namedtuple("Word", "text dynamic")  # dynamic: holds a $ or backtick expansion
+# dynamic: holds a $ or backtick expansion. quoted: some part was in quotes, so `"$P"` is not `$P`.
+Word = collections.namedtuple("Word", "text dynamic quoted", defaults=(False,))
 
 KEYWORDS = {"if", "then", "elif", "else", "do", "while", "until", "!", "{", "coproc"}
 WRAPPERS = {"env", "command", "builtin", "exec", "time", "nohup", "timeout", "gtimeout", "nice", "ionice",
@@ -162,7 +163,7 @@ def parse(s, ps=False):
             if drop_next:  # a redirect target, not an argument
                 drop_next = False
             else:
-                words.append(Word("".join(buf), dynamic))
+                words.append(Word("".join(buf), dynamic, quoted))
         buf, quoted, dynamic = [], False, False
 
     def end_command():

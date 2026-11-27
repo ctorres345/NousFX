@@ -91,6 +91,25 @@ class ZshVarCommandRule(unittest.TestCase):
         ):
             self.assertIsNone(self.warn(cmd), cmd)
 
+    def test_array_elements_are_not_commands(self):
+        self.assertIsNone(self.warn("P=($X -B s.py); $P --why x"))
+        self.assertIsNone(self.warn("P=(a $(cmd) b); $P --why x"))
+
+    def test_command_inside_substitution_warns(self):
+        self.assertIn("`$P`", self.warn('P="python3 s.py"; out=$($P --why x)'))
+
+    def test_append_keeps_unknown_var_unsafe(self):
+        self.assertIsNotNone(self.warn("P+=x; $P --flag"))
+        self.assertIsNone(self.warn("P=a; P+=b; $P --flag"))
+        self.assertIsNotNone(self.warn('P=a; P+=" b"; $P --flag'))
+
+    def test_arithmetic_does_not_hide_a_later_command(self):
+        self.assertIn("`$P`", self.warn("n=$(( $N + 1 )); $P --flag"))
+
+    def test_unbalanced_or_bad_input_is_silent(self):
+        self.assertIsNone(self.warn("echo $(( 1 + ; $P --flag"))
+        self.assertIsNone(self.warn('echo "unclosed; $P --flag'))
+
     def test_reassignment_uses_latest_value(self):
         self.assertIsNotNone(self.warn('P=/bin/echo; P="python3 -B s.py"; $P --flag'))
         self.assertIsNone(self.warn('P="python3 -B s.py"; P=/usr/bin/python3; $P s.py'))
@@ -108,6 +127,9 @@ class ZshVarCommandRule(unittest.TestCase):
             "# $P --flag",
             "cat <<'EOF'\n$P --flag\nEOF",
             "$ROOT/bin/tool --flag",
+            "\\$P --flag",
+            "echo $(($X + 1)); n=$((N - 1))",
+            "for i in 1 2; do echo $((i * 2)); done",
         ):
             self.assertIsNone(self.warn(cmd), cmd)
 

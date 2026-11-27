@@ -877,260 +877,82 @@ def commit_warning(command, cwd, ps=False):
     return hook_warning_json(text) if text else None
 
 
-ZSH_VAR_WORD = re.compile(r"^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$")
-ZSH_ASSIGN_WORD = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?=)(.*)$", re.S)
-ZSH_LEADING_KEYWORDS = {"if", "then", "elif", "else", "do", "while", "until", "!", "{",
-                        "time", "noglob", "nocorrect", "exec", "command", "builtin"}
+ZSH_VAR_WORD = re.compile(r"\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})")
+ZSH_ASSIGN = re.compile(r"([A-Za-z_]\w*)(\+?=)(.*)", re.S)
+ZSH_LEADING_WORDS = {"if", "then", "elif", "else", "do", "while", "until", "!", "{",
+                     "time", "noglob", "nocorrect", "exec", "command", "builtin"}
 ZSH_ASSIGN_BUILTINS = {"export", "local", "typeset", "readonly", "declare"}
-ZSH_HEREDOC_DELIM = re.compile(r"""'([^']*)'|"([^"]*)"|(\\?)([^\s;&|()<>]+)""")
 
 
-def _zsh_close_paren(s, i):
-    """Index of matching ')' starting after '(', skipping quotes and escapes."""
-    depth, n = 1, len(s)
-    while i < n:
-        c = s[i]
-        if c == "\\":
-            i += 2
-            continue
-        if c == "'":
-            j = s.find("'", i + 1)
-            if j < 0:
-                return n
-            i = j + 1
-            continue
-        if c == '"':
-            i += 1
-            while i < n and s[i] != '"':
-                i += 2 if s[i] == "\\" else 1
-            i += 1
-            continue
-        if c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-    return n
-
-
-def _zsh_segments(command):
-    """Split a zsh command into segments of (raw, text, quoted) tokens, skipping quotes, comments and heredocs."""
-    segments, seg, raw_buf, text_buf = [], [], [], []
-    quoted = False
-    drop_next = False
-    heredocs = []
-    i, n = 0, len(command)
-
-    def end_word():
-        nonlocal raw_buf, text_buf, quoted, drop_next
-        if raw_buf or quoted:
-            if drop_next:
-                drop_next = False
-            else:
-                seg.append(("".join(raw_buf), "".join(text_buf), quoted))
-            raw_buf, text_buf, quoted = [], [], False
-
-    def end_segment():
-        nonlocal seg, drop_next
-        end_word()
-        drop_next = False
-        if seg:
-            segments.append(seg)
-            seg = []
-
-    while i < n:
-        c = command[i]
-        nxt = command[i + 1:i + 2]
-        if c == "\\":
-            if nxt == "\n":
-                i += 2
-                continue
-            if nxt:
-                raw_buf.append(command[i:i + 2])
-                text_buf.append(nxt)
-                quoted = True
-                i += 2
-                continue
-            i += 1
-        elif c == "'":
-            j = command.find("'", i + 1)
-            if j < 0:
-                return segments
-            raw_buf.append(command[i:j + 1])
-            text_buf.append(command[i + 1:j])
-            quoted = True
-            i = j + 1
-        elif c == "$" and nxt == "'":
-            j = i + 2
-            piece = []
-            while j < n and command[j] != "'":
-                if command[j] == "\\" and j + 1 < n:
-                    piece.append(command[j + 1])
-                    j += 2
-                else:
-                    piece.append(command[j])
-                    j += 1
-            if j >= n:
-                return segments
-            raw_buf.append(command[i:j + 1])
-            text_buf.append("".join(piece))
-            quoted = True
-            i = j + 1
-        elif c == '"':
-            j = i + 1
-            piece = []
-            while j < n and command[j] != '"':
-                if command[j] == "\\" and j + 1 < n:
-                    if command[j + 1] in '$`"\\\n':
-                        if command[j + 1] != "\n":
-                            piece.append(command[j + 1])
-                    else:
-                        piece.append(command[j:j + 2])
-                    j += 2
-                elif command[j] == "$" and command[j + 1:j + 2] == "(":
-                    k = _zsh_close_paren(command, j + 2)
-                    piece.append(command[j:k + 1])
-                    j = k + 1
-                else:
-                    piece.append(command[j])
-                    j += 1
-            if j >= n:
-                return segments
-            raw_buf.append(command[i:j + 1])
-            text_buf.append("".join(piece))
-            quoted = True
-            i = j + 1
-        elif c == "$" and nxt == "(":
-            k = _zsh_close_paren(command, i + 2)
-            chunk = command[i:k + 1]
-            raw_buf.append(chunk)
-            text_buf.append(chunk)
-            i = k + 1
-        elif c == "`":
-            j = i + 1
-            while j < n and command[j] != "`":
-                j += 2 if command[j] == "\\" else 1
-            chunk = command[i:j + 1]
-            raw_buf.append(chunk)
-            text_buf.append(chunk)
-            i = j + 1
-        elif c == "#" and not raw_buf and not quoted:
-            j = command.find("\n", i)
-            i = n if j < 0 else j
-        elif c == "<" and nxt == "<" and command[i + 2:i + 3] != "<":
-            end_word()
-            i += 2
-            strip = command[i:i + 1] == "-"
-            i += strip
-            while command[i:i + 1] in (" ", "\t"):
-                i += 1
-            m = ZSH_HEREDOC_DELIM.match(command, i)
-            if m:
-                delim = next(g for g in (m.group(1), m.group(2), m.group(4)) if g is not None)
-                heredocs.append((delim, strip))
-                i = m.end()
-        elif c in "<>" or (c == "&" and nxt == ">"):
-            if "".join(raw_buf).isdigit() and not quoted:
-                raw_buf, text_buf = [], []
-            end_word()
-            i += 1
-            while command[i:i + 1] and command[i:i + 1] in "<>&|":
-                i += 1
-            drop_next = True
-        elif c == "(" and not quoted and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=", "".join(raw_buf)):
-            k = _zsh_close_paren(command, i + 1)
-            chunk = command[i:k + 1]
-            raw_buf.append(chunk)
-            text_buf.append(chunk)
-            i = k + 1
-        elif c in ";&|()\n":
-            end_segment()
-            if c in "&|" and nxt in (c, "&"):
-                i += 2
-            else:
-                i += 1
-            if c == "\n" and heredocs:
-                for delim, strip in heredocs:
-                    while i < n:
-                        eol = command.find("\n", i)
-                        line = command[i:] if eol < 0 else command[i:eol]
-                        i = n if eol < 0 else eol + 1
-                        if (line.lstrip("\t") if strip else line) == delim:
-                            break
-                heredocs = []
-        elif c.isspace():
-            end_word()
-            i += 1
-        else:
-            raw_buf.append(c)
-            text_buf.append(c)
-            i += 1
-    end_segment()
-    return segments
-
-
-def _zsh_record_assign(raw, text, safe_vars):
-    """Record a NAME=value (or array NAME=(...)) assignment: single-word / array values are safe in zsh."""
-    m = ZSH_ASSIGN_WORD.match(raw)
+def zsh_assign(word, safe):
+    """Record a NAME=value word: a value with no whitespace is safe to run as `$NAME args`. False if not one."""
+    m = ZSH_ASSIGN.fullmatch(word.text)
     if not m:
         return False
-    name, op, rhs_raw = m.group(1), m.group(2), m.group(3)
-    if rhs_raw.startswith("("):
-        safe_vars.add(name)
-        return True
-    rhs_text = text.split("=", 1)[1] if "=" in text else ""
-    if op == "+=" and name not in safe_vars:
-        return True
-    if any(ch.isspace() for ch in rhs_text):
-        safe_vars.discard(name)
+    name, op, value = m.groups()
+    if any(ch.isspace() for ch in value) or (op == "+=" and name not in safe):
+        safe.discard(name)
     else:
-        safe_vars.add(name)
+        safe.add(name)
     return True
 
 
+def without_arithmetic(command):
+    """command with each `$((...))` replaced by 0, since parse() reads it as a subshell of commands.
+    ValueError if one is unbalanced."""
+    out, i = [], 0
+    while (j := command.find("$((", i)) >= 0:
+        out.append(command[i:j] + "0")
+        i = pr_create_parser.close_paren(command, j + 2) + 1
+    return "".join(out) + command[i:]
+
+
+def skip_array_elements(events, k):
+    """Index after the `( ... )` group at events[k], which holds the elements of `NAME=(a b)`, not commands."""
+    depth, k = 1, k + 1
+    while k < len(events) and depth:
+        depth += {"(": 1, ")": -1}.get(events[k], 0) if isinstance(events[k], str) else 0
+        k += 1
+    return k
+
+
 def zsh_var_command_warning(command, shell=None):
-    """Advisory warning when a zsh command segment starts with an unquoted `$NAME` or `${NAME}` plus args (NFX-247).
-    Skipped when the shell is not zsh or `NAME` was assigned a single-word (no spaces) or array value in this command."""
+    """Advisory text when a zsh command starts with an unquoted `$NAME` or `${NAME}` plus arguments (NFX-247),
+    or None, also on any failure. zsh does not word-split it, so `P="python3 x.py"; $P --flag` exits 127.
+    Skipped when NAME was assigned a value with no spaces, or an array, earlier in the same command."""
     try:
         sh = os.environ.get("SHELL", "") if shell is None else shell
-        if not isinstance(sh, str) or os.path.basename(sh.strip()).lower() != "zsh":
+        if pr_create_parser is None or "$" not in command or os.path.basename(sh.strip()).lower() != "zsh":
             return None
-        if not isinstance(command, str) or "$" not in command:
-            return None
-        safe_vars, flagged = set(), []
-        for seg in _zsh_segments(command):
-            idx = 0
-            while idx < len(seg):
-                raw, text, is_quoted = seg[idx]
-                if not is_quoted and raw in ZSH_LEADING_KEYWORDS:
-                    idx += 1
-                elif _zsh_record_assign(raw, text, safe_vars):
-                    idx += 1
-                else:
-                    break
-            if idx >= len(seg):
+        events = pr_create_parser.parse(without_arithmetic(command))
+        safe, flagged, k = set(), [], 0
+        while k < len(events):
+            words, k = events[k], k + 1
+            if not isinstance(words, list):
                 continue
-            cmd_raw, _, cmd_quoted = seg[idx]
-            if not cmd_quoted and cmd_raw in ZSH_ASSIGN_BUILTINS:
-                for raw, text, _ in seg[idx + 1:]:
-                    _zsh_record_assign(raw, text, safe_vars)
+            i = 0
+            while i < len(words) and ((words[i].text in ZSH_LEADING_WORDS and not words[i].quoted)
+                                      or zsh_assign(words[i], safe)):
+                i += 1
+            rest = words[i:]
+            if not rest:
+                last = ZSH_ASSIGN.fullmatch(words[-1].text)
+                if last and not last.group(3) and events[k:k + 1] == ["("]:
+                    safe.add(last.group(1))
+                    k = skip_array_elements(events, k)
                 continue
-            if cmd_quoted or idx + 1 >= len(seg):
+            if not rest[0].quoted and rest[0].text in ZSH_ASSIGN_BUILTINS:
+                for w in rest[1:]:
+                    zsh_assign(w, safe)
                 continue
-            m = ZSH_VAR_WORD.match(cmd_raw)
-            if not m:
-                continue
-            name = m.group(1) or m.group(2)
-            if name not in safe_vars and name not in flagged:
-                flagged.append(name)
-        if not flagged:
-            return None
-        return "\n".join(
-            f"zsh does not word-split `${n}`; use a shell function, an array (`${{={n}}}`), or write the command out"
-            for n in flagged
-        )
+            first = rest[0]
+            m = len(rest) > 1 and first.dynamic and not first.quoted and ZSH_VAR_WORD.fullmatch(first.text)
+            if m:
+                name = m.group(1) or m.group(2)
+                if name not in safe and name not in flagged:
+                    flagged.append(name)
+        return "\n".join(f"zsh does not word-split `${n}`; use a shell function, an array (`${{={n}}}`), "
+                         "or write the command out" for n in flagged) or None
     except Exception:
         return None
 
