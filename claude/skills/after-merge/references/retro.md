@@ -12,7 +12,7 @@ Before grouping, read the watch ledger: `python3 -B ~/.claude/skills/review-loop
 
 Group findings into mistake classes. A class counts once it has happened twice, in two different PRs or tickets; a `habit:` line counts the same way. A class seen once stays in the retro file as a watch item.
 
-Add each watch item the retro keeps, and each finding that matched a slug: `session_report.py watch add --slug <kebab> --ticket <KEY> --evidence <pointer> --note "<one line>"`. Pass `--harness` when it is about a NousFX script, skill, hook or the sync, else `--project` (inside NousFX every row is a harness row). Reuse a listed slug for the same mistake; `--new` starts one on purpose.
+Add each watch item the retro keeps, and each finding that matched a slug: `python3 -B ~/.claude/skills/review-loop/scripts/session_report.py watch add --slug <kebab> --ticket <KEY> --evidence <pointer> --note "<one line>"`. Pass `--harness` when the fix belongs in NousFX (a script, skill, hook, rule, the sync or an agent habit, so a habit seen once per project still becomes a class), else `--project`; inside NousFX every row is a harness row. Reuse a listed slug for the same mistake; `--new` starts one on purpose.
 
 A byte cap a ticket raised under a name that `CAP_NAMES` in review-loop's `scripts/tier.py` does not list is a finding (NFX-200); its fix is adding the name there.
 

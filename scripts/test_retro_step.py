@@ -122,7 +122,8 @@ class ReferenceExtras(unittest.TestCase):
         classes = REF[REF.index("## Classes"):REF.index("## Fix order")]
         for phrase in ("python3 -B ~/.claude/skills/review-loop/scripts/session_report.py watch list",
                        "the installed copy", "Before grouping", "count it against that slug", "watch add",
-                       "--harness", "a NousFX script, skill, hook or the sync", "--project", "--new",
+                       "--harness", "the fix belongs in NousFX", "an agent habit", "--project", "--new",
+                       "inside NousFX every row is a harness row",
                        "has no `watch`, say so and go on"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, classes)

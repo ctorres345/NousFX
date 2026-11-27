@@ -20,6 +20,13 @@ VIA_RUN = os.path.join(ROOT, "plugins", "via", "scripts", "via_run.py")
 GH_SECRET = "ghp_" + "a1B2c3D4e5" * 3 + "a1B2c3"  # 36 chars after the prefix
 
 
+def checkout_project():
+    """This checkout's project name as session_report.py derives it: the folder holding the common git dir."""
+    common = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=ROOT,
+                            capture_output=True, text=True).stdout.strip()
+    return os.path.basename(os.path.dirname(common.rstrip("/")))
+
+
 def git_status():
     return subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True).stdout
 
@@ -595,8 +602,8 @@ class WatchLedger(unittest.TestCase):
         line = self.line_for(self.watch("list").stdout, "testfail-voided-by-edit")
         self.assertIn("2 tickets", line)
         self.assertIn("class", line)
-        self.assertIn("NFX-214@NousFX", line)
-        self.assertIn("NFX-218@NousFX", line)
+        self.assertIn("NFX-214@%s" % checkout_project(), line)
+        self.assertIn("NFX-218@%s" % checkout_project(), line)
         self.assertIn("last 20", line)
 
     def test_watch_new_slug_is_refused_and_lists_both_ledgers(self):
@@ -626,6 +633,9 @@ class WatchLedger(unittest.TestCase):
             self.assertIn(part, r.stderr)
         self.refused(self.add("Not_Kebab", "NFX-9", "--new"))
         self.refused(self.add("testfail-voided-by-edit", "NFX-9", note="two\nlines"))
+        r = self.add("testfail-voided-by-edit", "NFX-9", note="hidden \x1b[2Ktext")
+        self.refused(r)
+        self.assertIn("no control characters", r.stderr)
         self.assertEqual(len(self.ledger("NousFX", "watch.jsonl")), 1)
 
     def test_watch_ledger_choice(self):
@@ -638,7 +648,8 @@ class WatchLedger(unittest.TestCase):
         self.assertFalse(os.path.exists(self.root))
         self.assertEqual(self.add("flaky-snapshot", "PAP-12", "--new", "--project", cwd=pap).returncode, 0)
         self.assertEqual(self.ledger("pawlypaint", "watch.jsonl")[0]["project"], "pawlypaint")
-        # Inside NousFX (the scripts/nousfx_sync.py marker), every row is a harness row.
+
+    def test_watch_ledger_choice_inside_nousfx_is_harness(self):
         self.assertEqual(self.add("decide-refusals", "NFX-219", "--new").returncode, 0)
         rows = self.ledger("NousFX", "watch.jsonl")
         self.assertEqual([(r["slug"], r["ticket"]) for r in rows], [("decide-refusals", "NFX-219")])
@@ -648,7 +659,6 @@ class WatchLedger(unittest.TestCase):
         self.assertIn("[harness] decide-refusals", listed)
 
     def test_watch_ledger_choice_marker_not_folder_name(self):
-        # A clone named other than NousFX still writes the literal NousFX ledger.
         clone = self.project("harness-clone")
         os.makedirs(os.path.join(clone, "scripts"))
         open(os.path.join(clone, "scripts", "nousfx_sync.py"), "w").close()
@@ -682,13 +692,31 @@ class WatchLedger(unittest.TestCase):
         out = self.watch("list").stdout
         line = self.line_for(out, "testfail-voided-by-edit")
         self.assertIn("2 tickets, class", line)
-        self.assertIn("NFX-214@NousFX", line)
+        self.assertIn("NFX-214@%s" % checkout_project(), line)
         self.assertNotIn("testfail-edit |", out)
-        # A repeat counts against the merged slug, and loops, self merges and unknown slugs are refused.
+
+    def test_watch_merge_keeps_the_new_slugs_meaning_and_a_repeated_merge_is_not_unreadable(self):
+        self.add("testfail-edit", "NFX-214", "--new", note="an early name for it")
+        self.add("testfail-voided-by-edit", "NFX-218", "--new", note="an edit during the run voided testfail")
+        path = os.path.join(self.root, "NousFX", "watch.jsonl")
+        merge = {"v": 1, "project": "NousFX", "merge": "testfail-edit", "into": "testfail-voided-by-edit",
+                 "date": "2026-11-27"}
+        with open(path, "a") as f:
+            f.write(json.dumps(merge) + "\n" + json.dumps(merge) + "\n")
+        r = self.watch("list")
+        self.assertEqual(r.stderr, "")
+        line = self.line_for(r.stdout, "testfail-voided-by-edit")
+        self.assertTrue(line.endswith("| an edit during the run voided testfail"), line)
+
+    def test_watch_merge_refuses_repeats_loops_self_and_unknown(self):
+        self.add("testfail-edit", "NFX-214", "--new")
+        self.add("testfail-voided-by-edit", "NFX-218", "--new")
+        self.watch("add", "--merge", "testfail-edit", "--into", "testfail-voided-by-edit")
         self.refused(self.add("testfail-edit", "NFX-218"))
         self.refused(self.watch("add", "--merge", "testfail-voided-by-edit", "--into", "testfail-edit"))
         self.refused(self.watch("add", "--merge", "testfail-edit", "--into", "testfail-edit"))
         self.refused(self.watch("add", "--merge", "no-such-slug", "--into", "testfail-voided-by-edit"))
+        self.refused(self.watch("add", "--merge", "testfail-edit", "--into", "testfail-voided-by-edit", "--project"))
         self.assertEqual(len(self.ledger("NousFX", "watch.jsonl")), 3)
 
     def test_watch_replay_testfail(self):
@@ -716,6 +744,63 @@ class WatchLedger(unittest.TestCase):
             line = self.line_for(self.watch("list", "--min", "2", cwd=cwd).stdout, slug)
             self.assertIn("[harness] %s | 2 tickets, class | HEM-87@hemisphere PAP-70@pawlypaint |" % slug, line)
 
+    def test_watch_list_shows_the_first_note_as_the_meaning(self):
+        self.add("shared-tmpdir", "NFX-231", "--new", note="sibling sessions clobbered one TMPDIR file")
+        self.add("shared-tmpdir", "NFX-232", note="again, in the wave")
+        line = self.line_for(self.watch("list").stdout, "shared-tmpdir")
+        self.assertTrue(line.endswith("| sibling sessions clobbered one TMPDIR file"), line)
+
+    def test_watch_cross_ledger_refusals_see_other_projects(self):
+        pap, hem = self.project("pawlypaint"), self.project("hemisphere")
+        self.assertEqual(self.add("glob-matches-nothing", "PAP-60", "--project", "--new", cwd=pap).returncode, 0)
+        r = self.add("glob-matches-nothing", "HEM-86", "--harness", "--new", cwd=hem)
+        self.refused(r)
+        self.assertIn("project slug in pawlypaint", r.stderr)
+        self.refused(self.add("glob-matches-nothing", "NFX-300", "--new"))
+
+    def test_watch_cross_ledger_refusals_free_a_project_slug_once_merged(self):
+        pap, hem = self.project("pawlypaint"), self.project("hemisphere")
+        self.assertEqual(self.add("glob-matches-nothing", "PAP-60", "--project", "--new", cwd=pap).returncode, 0)
+        self.add("no-test-glob-match", "PAP-61", "--project", "--new", cwd=pap)
+        self.assertEqual(self.watch("add", "--merge", "glob-matches-nothing", "--into", "no-test-glob-match",
+                                    cwd=pap).returncode, 0)
+        self.assertEqual(self.add("glob-matches-nothing", "HEM-86", "--harness", "--new", cwd=hem).returncode, 0)
+        self.assertEqual(self.add("glob-matches-nothing", "PAP-62", "--harness", cwd=pap).returncode, 0)
+
+    def test_watch_cross_ledger_refusals_skip_other_projects_for_a_known_harness_slug(self):
+        pap, hem = self.project("pawlypaint"), self.project("hemisphere")
+        self.assertEqual(self.add("glob-matches-nothing", "HEM-86", "--harness", "--new", cwd=hem).returncode, 0)
+        os.makedirs(os.path.join(self.root, "pawlypaint"))
+        with open(os.path.join(self.root, "pawlypaint", "watch.jsonl"), "w") as f:
+            f.write(json.dumps({"v": 1, "project": "pawlypaint", "slug": "glob-matches-nothing", "ticket": "PAP-60",
+                                "evidence": "#3", "note": "raced in", "date": "2026-11-27"}) + "\n")
+        self.assertEqual(self.add("glob-matches-nothing", "ANI-219", "--harness", cwd=self.project("anima")).returncode, 0)
+
+    def test_watch_rows_carry_a_version_and_newer_rows_are_reported(self):
+        self.add("decide-refusals", "NFX-219", "--new")
+        self.assertEqual(self.ledger("NousFX", "watch.jsonl")[0]["v"], 1)
+        with open(os.path.join(self.root, "NousFX", "watch.jsonl"), "a") as f:
+            f.write(json.dumps({"v": 2, "project": "x", "move": "decide-refusals", "to": "y", "date": "2027-01-01"})
+                    + "\n")
+        r = self.watch("list")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("1 rows in", r.stderr)
+        self.assertIn("need a newer session_report.py", r.stderr)
+        self.assertIn("decide-refusals | 1 ticket |", r.stdout)
+
+    def test_watch_merge_rows_that_close_a_loop_are_skipped(self):
+        self.add("a-slug", "NFX-1", "--new")
+        self.add("b-slug", "NFX-2", "--new")
+        path = os.path.join(self.root, "NousFX", "watch.jsonl")
+        merges_from_two_sessions_at_once = (("a-slug", "b-slug"), ("b-slug", "a-slug"))
+        with open(path, "a") as f:
+            for old, new in merges_from_two_sessions_at_once:
+                f.write(json.dumps({"v": 1, "project": "NousFX", "merge": old, "into": new, "date": "2026-11-27"})
+                        + "\n")
+        r = self.watch("list")
+        self.assertIn("1 unreadable lines", r.stderr)
+        self.assertIn("b-slug | 2 tickets, class", r.stdout)
+
     def test_watch_list_without_a_ledger_says_so(self):
         r = self.watch("list")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -734,6 +819,19 @@ class WatchLedger(unittest.TestCase):
         self.assertNotIn("shared-tmpdir", r.stdout)
         out = self.watch("list").stdout.splitlines()
         self.assertTrue(out[0].startswith("[harness] decide-refusals"), out)
+
+    def test_watch_parallel_appends_stay_whole_lines(self):
+        self.add("shared-tmpdir", "NFX-100", "--new")
+        argv = [sys.executable, "-B", SCRIPT, "watch", "add", "--slug", "shared-tmpdir", "--evidence", "#37",
+                "--note", "x" * 290]
+        procs = [subprocess.Popen(argv + ["--ticket", "NFX-%d" % n], cwd=ROOT, env=self.env,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for n in range(101, 113)]
+        self.assertEqual([p.wait() for p in procs], [0] * 12)
+        rows = self.ledger("NousFX", "watch.jsonl")
+        self.assertEqual(sorted(r["ticket"] for r in rows), sorted("NFX-%d" % n for n in range(100, 113)))
+        r = self.watch("list")
+        self.assertEqual(r.stderr, "")
+        self.assertIn("shared-tmpdir | 13 tickets, class", r.stdout)
 
     def test_watch_files_land_outside_the_repo(self):
         before = git_status()
