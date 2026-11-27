@@ -559,6 +559,41 @@ def make_project_links(links, platform):
         print(f"linked {path} -> {target}")
 
 
+def project_behind_origin_warning(project):
+    """One warning line when `project`'s HEAD is behind origin/<default> as of the last fetch, else None.
+    Local git state only (no fetch, no network). Silent on detached HEAD, missing origin, or git errors."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    def git(*cmd):
+        try:
+            r = subprocess.run(["git", *cmd], cwd=project, capture_output=True, text=True, timeout=5,
+                               stdin=subprocess.DEVNULL, env=env)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    if not git("symbolic-ref", "-q", "--short", "HEAD"):
+        return None
+    origin = "refs/remotes/origin/"
+    candidates = []
+    head_ref = git("symbolic-ref", "-q", origin + "HEAD")
+    if head_ref and head_ref.startswith(origin) and head_ref != origin + "HEAD":
+        candidates.append(head_ref)
+    candidates += [origin + "main", origin + "master"]
+    ref = next((c for c in candidates if git("rev-parse", "--verify", "--quiet", c + "^{commit}") is not None), None)
+    if ref is None:
+        return None
+    count = git("rev-list", "--count", f"HEAD..{ref}")
+    try:
+        behind = int(count)
+    except (TypeError, ValueError):
+        return None
+    if behind <= 0:
+        return None
+    short = ref[len("refs/remotes/"):]
+    commits = f"{behind} commit" + ("" if behind == 1 else "s")
+    return f"warning: {project} is {commits} behind {short} (as of the last fetch); update from {short} before trusting its drift lines."
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     mode = ap.add_mutually_exclusive_group()
@@ -649,7 +684,8 @@ def main(argv=None):
             print(json.dumps({**counts, "rules": rules} if rules else counts))
             return 1 if bad else 0
         servers = nousfx_mcp.load(repo, state, SyncError, SECRET_PATTERNS, project)
-        for line in rule_lines + nousfx_mcp.v1_warnings(servers):
+        behind = [w] if project and (args.check or args.dry_run) and (w := project_behind_origin_warning(project)) else []
+        for line in rule_lines + nousfx_mcp.v1_warnings(servers) + behind:
             print(line, file=sys.stderr)
         for note in pp.notes:
             print(note)
