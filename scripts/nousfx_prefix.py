@@ -43,16 +43,22 @@ def git_user_name():
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def resolve(state, SyncError, git_name=git_user_name):
-    """(prefix, note): note is None for an explicit prefix, else one line saying where the default came from."""
+def load(state, SyncError):
+    """The parsed local.toml, {} when there is none. Every reader of the file goes through here."""
     where = path(state)
     try:
         with open(where, encoding="utf-8") as f:
-            data = tomllib.loads(f.read())
+            return tomllib.loads(f.read())
     except FileNotFoundError:
-        data = {}
+        return {}
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
         raise SyncError(f"{where} is not valid TOML ({e}); fix it first. Nothing was written.", 2)
+
+
+def resolve(state, SyncError, git_name=git_user_name):
+    """(prefix, note): note is None for an explicit prefix, else one line saying where the default came from."""
+    where = path(state)
+    data = load(state, SyncError)
     branch = data.get("branch", {})
     if not isinstance(branch, dict):
         raise SyncError(f"{where}: \"branch\" must be a table ([branch]); fix it first. Nothing was written.", 2)

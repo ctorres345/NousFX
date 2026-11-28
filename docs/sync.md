@@ -9,11 +9,11 @@ harness/overlays/agy.overlay.md    agy only: no Skill tool, review before PR by 
 ~/.config/nousfx/local.md          mine alone, never committed, tool-neutral (copy harness/local.md.example)
 ~/.config/nousfx/local.claude.md   mine, Claude only (optional)
 ~/.config/nousfx/local.agy.md      mine, agy only (optional)
-~/.config/nousfx/local.toml        my settings, not rules: the branch prefix (optional, see below)
+~/.config/nousfx/local.toml        my settings, not rules: the branch prefix, the NousBoard path (optional, see below)
         |
         v   python3 -B scripts/nousfx_sync.py [--tools claude,agy]
 ~/.claude/CLAUDE.md                generated, header holds a hash of the sources and names them by path
-~/.claude/settings.json            review gate, drift warning, deny list and auto-mode allow rules (other settings kept)
+~/.claude/settings.json            review gate, drift warning, NousBoard unread hook, deny list and auto-mode allow rules (other settings kept)
 ~/.claude/hooks/                   review-gate.py, pr_create_parser.py, git_refs.py, nousfx-drift.py and testfail-running.py
 ~/.gemini/config/plugins/nousfx/   (agy) hooks.json, and hooks/ with agy_gate.py and its own copy of the gate
 ```
@@ -191,6 +191,23 @@ claude/skills/*, plugins/via/skills/via   sources
 - `--check` exits 1 on a collision, a broken link or a missing link. `--dry-run` and `--restore` cover the links, the manifest and the moved folders.
 - Old `install.sh` backups (`*.bak-YYYYMMDD-HHMMSS` of `CLAUDE.md`, `settings.json` and the files under `agents/`, `skills/`, `hooks/` in `~/.claude`) are listed in every run and never moved on their own. `--clean-backups` moves them into the run's backup, so `--restore` brings them back. `projects/`, `plugins/` and everything else are out of scope.
 - On Windows a failed symlink falls back to a junction. The command is fixed (`cmd /c mklink /J`); nothing in the environment can replace it. `NOUSFX_NO_SYMLINK=1` only forces that fallback and is test-only: tests pass `--platform windows` with a stand-in `cmd` first on PATH.
+
+### NousBoard
+
+The `board` skill, the `board` CLI and the unread hook come from my NousBoard clone (NFX-295). The clone is `~/Projects/NousBoard`, or `[nousboard] path` in `~/.config/nousfx/local.toml` (absolute or `~/...`). It counts when it has `skills/board/SKILL.md` and an executable `bin/board.mjs`. A path with a quote or a line break is refused (exit 2), since it goes inside the hook command; on Windows also `$` or a backtick, which PowerShell expands there.
+
+```
+<clone>/skills/board        -> ~/.agents/skills/board, ~/.claude/skills/board (like my own skills)
+<clone>/bin/board.mjs       -> ~/.local/bin/board (POSIX only; recorded in the skills manifest)
+settings.json               SessionStart and Stop: "~/.local/bin/board" hook, timeout 3
+                            (Windows: node "<clone>/bin/board.mjs" hook, and no CLI link)
+```
+
+- The links follow the skill rules, as one skill named `board`, with one difference: an unrecorded link that already points at the clone (what `install-local.sh` made) is relinked and recorded, so sync owns it from then on. Anything else is a collision that holds back all three links until `--yes-replace board`. `--restore` undoes them.
+- Sync removes hook entries only once it owns `board`: a board link is in the manifest, or settings.json holds an entry in the quoted form only sync writes (a `--tools agy` run can remove the links but never touches settings.json). On a collision it removes the hook it wrote, so the hook never runs a file that replaced its CLI link, and leaves entries it never wrote alone.
+- The hook entries are matched by their command, so the ones NousBoard's `install-local.sh` wrote are replaced in place, never doubled.
+- No clone: one `nousboard: no clone at ...` note on stderr, exit 0. Nothing is linked, and the links and hook entries an earlier sync made are removed, so nothing points at a deleted clone. Hook entries on a machine sync never shipped `board` to stay. `--check` stays clean.
+- agy sees the skill through `~/.agents/skills` but gets no hook.
 
 ### local-assist
 
