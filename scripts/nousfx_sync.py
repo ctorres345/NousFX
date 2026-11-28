@@ -15,6 +15,8 @@ Writes under <home>/.claude (tool "claude", the default):
   hooks/pr_create_parser.py
   hooks/git_refs.py          the default-branch rule --mark shares with tier.py (NFX-108)
   agents/*.md                from harness/agents (roles) and harness/models.toml (role -> model)
+NousBoard (nousfx_board.py): from the clone at <home>/Projects/NousBoard or [nousboard] path in local.toml,
+  the board skill link, <home>/.local/bin/board and the SessionStart/Stop unread hook; no clone: one note.
 Writes under <home>/.gemini/config/plugins/nousfx (tool "agy", only when named):
   plugin.json, rules/AGENTS.md, hooks.json and hooks/ (the review gate), skills/<name> links, mcp_config.json
 MCP servers (harness/mcp.toml, <state-home>/mcp.toml) go to <home>/.claude.json (only the entries
@@ -53,6 +55,7 @@ import time
 import nousfx_agents
 import nousfx_agy
 import nousfx_automode
+import nousfx_board
 import nousfx_deny
 import nousfx_mcp
 import nousfx_outside
@@ -221,17 +224,33 @@ def owned_hook(command, timeout, win):
 
 
 def replace_owned(entries, marker, entry):
-    """Swap our entry (any whose command names `marker`, from an earlier sync) for the fresh one, in the same
-    place, so a hook the user adds after ours does not make settings.json look drifted. New: add at the end."""
-    mine = lambda e: any(marker in h.get("command", "") for h in e.get("hooks", []))  # noqa: E731
+    """Swap our entry (any whose command names `marker`, a string or a regex, from an earlier sync) for the
+    fresh one, in the same place, so a hook the user adds after ours does not make settings.json look drifted.
+    New: add at the end. entry None only removes ours."""
+    found = marker.search if hasattr(marker, "search") else (lambda c: marker in c)
+    mine = lambda e: any(found(h.get("command", "")) for h in e.get("hooks", []))  # noqa: E731
     at = next((i for i, e in enumerate(entries) if mine(e)), len(entries))
     entries[:] = [e for e in entries if not mine(e)]
-    entries.insert(min(at, len(entries)), entry)
+    if entry is not None:
+        entries.insert(min(at, len(entries)), entry)
 
 
-def merge_settings(current, gate_path, win, drift=None, deny=None, where="settings.json", *, prefix, testfail=None):
+def merge_board(hooks, command, win):
+    """NousBoard's unread hook on SessionStart and Stop (nousfx_board.py); command False removes it."""
+    for event in nousfx_board.HOOK_EVENTS:
+        if not command and event not in hooks:
+            continue
+        entry = {"hooks": [owned_hook(command, nousfx_board.HOOK_TIMEOUT_S, win)]} if command else None
+        replace_owned(hooks.setdefault(event, []), nousfx_board.HOOK_MARKER, entry)
+        if not hooks[event]:
+            del hooks[event]
+
+
+def merge_settings(current, gate_path, win, drift=None, deny=None, where="settings.json", *, prefix, testfail=None,
+                   board=None):
     """Register the review gate, the testfail-running Edit/Write warning when `testfail` is its path, and, when
-    `drift` is (script, repo, tools), the session-start drift warning.
+    `drift` is (script, repo, tools), the session-start drift warning. `board` is NousBoard's hook command,
+    False to remove it (no clone), or None to leave those entries alone.
     `deny` is the list of deny rules sync owns (None: leave permissions as they are). The auto-mode allow entry
     for the `prefix` branches is always merged."""
     cfg = json.loads(current) if current else {}
@@ -251,6 +270,8 @@ def merge_settings(current, gate_path, win, drift=None, deny=None, where="settin
         warn = owned_hook(f'{py} -I -B "{script}" --repo "{repo}" --tools {",".join(tools)}', DRIFT_TIMEOUT, win)
         replace_owned(hooks.setdefault("SessionStart", []), DRIFT_HOOK,
                       {"matcher": "startup", "hooks": [warn]})  # not on resume, clear or compact
+    if board is not None:
+        merge_board(hooks, board, win)
     if deny is not None:
         nousfx_deny.merge(cfg, deny, SyncError, where)
         nousfx_deny.merge(cfg, nousfx_deny.ASK_RULES, SyncError, where, section="ask")
@@ -259,10 +280,13 @@ def merge_settings(current, gate_path, win, drift=None, deny=None, where="settin
     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
 
 
-def claude_files(repo, home, state, platform, tools, prefix):
+def claude_files(repo, home, state, platform, tools, prefix, board=None, board_hook="keep"):
+    """board: the NousBoard clone or None. board_hook: "add", "remove" or "keep" its hook entries (board_hook())."""
     claude = os.path.join(home, ".claude")
     win = is_windows(platform)
     native = native_for(win)
+    board_cmd = {"add": lambda: nousfx_board.hook_command(home, board, win, native), "remove": lambda: False,
+                 "keep": lambda: None}[board_hook]()
     gate_cmd = native(os.path.join(claude, "hooks", "review-gate.py"))
     drift_cmd = native(os.path.join(claude, "hooks", DRIFT_HOOK))
     testfail_cmd = native(os.path.join(claude, "hooks", TESTFAIL_HOOK))
@@ -279,10 +303,28 @@ def claude_files(repo, home, state, platform, tools, prefix):
     try:
         wanted[settings] = merge_settings(read_or_none(settings), gate_cmd, win,
                                           (drift_cmd, native(repo), sorted(tools, key=TOOLS.index)), deny, settings,
-                                          prefix=prefix, testfail=testfail_cmd)
+                                          prefix=prefix, testfail=testfail_cmd, board=board_cmd)
     except ValueError as e:
         raise SyncError(f"{settings} is not valid JSON ({e}); fix it first", 2)
     return wanted
+
+
+def board_hook(repo, home, state, board, win, tools, yes_replace, skill_roots):
+    """(mode, note) for NousBoard's hook entries: "add", "remove" or "keep". Sync removes only what it owned (a
+    board link in the skills manifest, or an entry in the form only sync writes, which outlives the links when a
+    --tools agy run removed them): with no clone, or with board links that collide, a hook it never wrote
+    stays, and one it wrote goes, so the hook never runs a file that replaced its CLI link."""
+    owned = (nousfx_skills.owns(state, nousfx_board.NAME)
+             or nousfx_board.wrote_hook(read_or_none(os.path.join(home, ".claude", "settings.json"))))
+    if not board:
+        return ("remove" if owned else "keep"), None
+    src, cli = nousfx_board.links(home, board, win)
+    probe = nousfx_skills.plan(repo, home, state, yes_replace, False, skill_roots, claude="claude" in tools,
+                               extra_sources=src, extra_links=cli)
+    if not any(n == nousfx_board.NAME for n, _ in probe.collisions):
+        return "add", None
+    return ("remove" if owned else "keep"), (f"nousboard: the board links collide (see below); its hook entries are "
+                                             f"{'removed' if owned else 'left as they are'}")
 
 
 def mcp_merged_files(home, project=None, tools=("claude",)):
@@ -300,10 +342,11 @@ def merged_files(home, project=None):
     return mcp_merged_files(home, project) | (set() if project else {os.path.join(home, ".claude", "settings.json")})
 
 
-def plan(repo, home, state, platform, tools=("claude",), project=None, yes_replace=(), extras=None, prefix=None):
+def plan(repo, home, state, platform, tools=("claude",), project=None, yes_replace=(), extras=None, prefix=None,
+         board=None, board_hook="keep"):
     """Map of absolute path -> expected text for every file sync owns. In project mode `extras` (a dict)
     receives the ProjectPlan under "project": links to make and notes to print. `prefix` is the branch prefix
-    (nousfx_prefix.resolve when None; project mode does not use it)."""
+    (nousfx_prefix.resolve when None; project mode does not use it). `board` and `board_hook`: claude_files."""
     tools = set(tools)
     if project:  # project mode writes only that project's files, never global ones
         wanted = nousfx_mcp.plan_mcp(repo, home, state, tools, SyncError, SECRET_PATTERNS, project)
@@ -319,7 +362,7 @@ def plan(repo, home, state, platform, tools=("claude",), project=None, yes_repla
             wanted = {p: t for p, t in wanted.items() if not p.startswith(plugin + os.sep)}
     else:
         prefix = prefix or nousfx_prefix.resolve(state, SyncError)[0]
-        wanted = claude_files(repo, home, state, platform, tools, prefix) if "claude" in tools else {}
+        wanted = claude_files(repo, home, state, platform, tools, prefix, board, board_hook) if "claude" in tools else {}
         if "agy" in tools:
             win = is_windows(platform)
             wanted.update(nousfx_agy.plan_agy(repo, home, state, SyncError, interpreter(win), native_for(win),
@@ -644,12 +687,22 @@ def main(argv=None):
             return restore(state) or 0
         outside = {} if project else nousfx_outside.load(repo, nousfx_skills.sources(repo), SyncError)
         seen_before = {p: read_or_none(p) for p in mcp_merged_files(home, project, tools)}  # before plan() reads them
-        extras, prefix = {}, None
+        extras, prefix, board, hook_mode = {}, None, None, "keep"
+        win = is_windows(args.platform)
+        skill_roots = [os.path.join(nousfx_agy.plugin_dir(home), "skills")] if "agy" in tools else []
         if not project:  # an explicit bad prefix stops here, before anything is written
             prefix, note = nousfx_prefix.resolve(state, SyncError)
-            if note and not (args.check and args.summary):
-                print(note, file=sys.stderr)
-        wanted = plan(repo, home, state, args.platform, tools, project, args.yes_replace, extras, prefix)
+            board, board_note = nousfx_board.locate(home, state, SyncError, win)
+            if "claude" in tools:  # NFX-312: a --tools agy run reads no Claude file; agy's sandbox blocks them
+                hook_mode, collide_note = board_hook(repo, home, state, board, win, tools, args.yes_replace,
+                                                     skill_roots)
+            else:
+                collide_note = None
+            for line in (note, board_note, collide_note):
+                if line and not (args.check and args.summary):
+                    print(line, file=sys.stderr)
+        wanted = plan(repo, home, state, args.platform, tools, project, args.yes_replace, extras, prefix, board,
+                      hook_mode)
         pp = extras.get("project") or nousfx_project.ProjectPlan()
         # Merged files hold the user's own content, so only what sync generates is scanned.
         merged = merged_files(home, project)
@@ -668,11 +721,11 @@ def main(argv=None):
         if project:
             sk = nousfx_skills.Plan()
         else:
-            extra = [os.path.join(nousfx_agy.plugin_dir(home), "skills")] if "agy" in tools else []
+            more = {n: nousfx_outside.cache_dir(state, n, e) for n, e in outside.items() if n not in failed}
+            board_src, more_links = nousfx_board.links(home, board, win) if board else ({}, {})
             sk = nousfx_skills.plan(
-                repo, home, state, args.yes_replace, args.clean_backups, extra, claude="claude" in tools,
-                extra_sources={n: nousfx_outside.cache_dir(state, n, e) for n, e in outside.items()
-                               if n not in failed},
+                repo, home, state, args.yes_replace, args.clean_backups, skill_roots, claude="claude" in tools,
+                extra_sources={**more, **board_src}, extra_links=more_links, adopt=set(board_src),
                 identical=lambda n, path: n in outside and nousfx_outside.same_as_lock(path, outside[n]["sha256"]),
                 keep=set(failed))
         rc = 1 if failed else 0  # a failed outside skill is reported after everything else was applied

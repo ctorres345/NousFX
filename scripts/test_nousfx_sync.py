@@ -15,6 +15,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import nousfx_board  # noqa: E402
 import nousfx_sync  # noqa: E402  (merge_settings is tested directly)
 ROOT = os.path.dirname(HERE)
 SYNC = os.path.join(HERE, "nousfx_sync.py")
@@ -741,6 +742,236 @@ class ProjectBehindOrigin(Base):
         project = self.make_project(branch="trunk", commits=3, behind=2)
         r = self.sync("--project", project, "--check")
         self.assertIn("2 commits behind origin/trunk", r.stderr)
+
+
+class NousBoard(Base):
+    """NFX-295: sync links the NousBoard board skill and CLI and registers its unread hook."""
+
+    def setUp(self):
+        super().setUp()
+        self.clone = os.path.join(self.home, "Projects", "NousBoard")
+        write(os.path.join(self.clone, "skills", "board", "SKILL.md"), "---\nname: board\n---\nboard skill\n")
+        write(os.path.join(self.clone, "bin", "board.mjs"), "#!/usr/bin/env node\n")
+        os.chmod(os.path.join(self.clone, "bin", "board.mjs"), 0o755)
+        self.cli = os.path.join(self.home, ".local", "bin", "board")
+        self.skill = os.path.join(self.home, ".claude", "skills", "board")
+        self.cmd = f'"{self.cli}" hook'
+
+    def board_hooks(self, event):
+        cfg = json.loads(read(self.settings))
+        return [h["command"] for e in cfg.get("hooks", {}).get(event, []) for h in e["hooks"]
+                if "board" in h["command"]]
+
+    def broken_links(self):
+        return [os.path.join(b, n) for b, dirs, files in os.walk(self.home) for n in dirs + files
+                if os.path.islink(os.path.join(b, n)) and not os.path.exists(os.path.join(b, n))]
+
+    def test_sync_links_skill_and_cli_and_registers_the_hook(self):
+        r = self.sync("--tools", "claude")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(read(os.path.join(self.skill, "SKILL.md")),
+                         read(os.path.join(self.clone, "skills", "board", "SKILL.md")))
+        self.assertEqual(os.path.realpath(self.cli), os.path.join(self.clone, "bin", "board.mjs"))
+        for event in ("SessionStart", "Stop"):
+            self.assertEqual(self.board_hooks(event), [self.cmd])
+        entry = next(e for e in json.loads(read(self.settings))["hooks"]["Stop"]
+                     if self.cmd in [h["command"] for h in e["hooks"]])
+        self.assertEqual(entry["hooks"][0]["timeout"], 3)
+        self.assertNotIn("matcher", entry, "fires on every session start, as install-local.sh registered it")
+
+    def test_second_sync_changes_nothing_and_check_is_clean(self):
+        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
+        r = self.sync("--tools", "claude", "--check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        before = self.snapshot()
+        self.assertIn("nothing to change", self.sync("--tools", "claude").stdout)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_missing_clone_is_skipped_with_a_note_and_no_broken_link(self):
+        shutil.rmtree(self.clone)
+        r = self.sync("--tools", "claude")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stderr.count("nousboard:"), 1, r.stderr)
+        self.assertIn("nousboard: no clone at", r.stderr)
+        self.assertFalse(os.path.lexists(self.skill))
+        self.assertFalse(os.path.lexists(self.cli))
+        self.assertEqual(self.board_hooks("SessionStart") + self.board_hooks("Stop"), [])
+        self.assertNotIn("Stop", json.loads(read(self.settings))["hooks"], "no empty list left behind")
+        self.assertEqual(self.broken_links(), [])
+        self.assertEqual(self.sync("--tools", "claude", "--check").returncode, 0)
+
+    def assert_removal_after_clone_goes(self):
+        self.assertTrue(os.path.islink(self.cli) and os.path.islink(self.skill))
+        self.assertEqual(self.board_hooks("Stop"), [self.cmd])
+        shutil.rmtree(self.clone)
+        r = self.sync("--tools", "claude")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("nousboard: no clone at", r.stderr)
+        self.assertFalse(os.path.lexists(self.skill))
+        self.assertFalse(os.path.lexists(self.cli))
+        self.assertEqual(self.board_hooks("SessionStart") + self.board_hooks("Stop"), [])
+        self.assertEqual(self.broken_links(), [])
+        self.assertEqual(self.sync("--tools", "claude", "--check").returncode, 0)
+
+    def test_clone_removed_after_a_sync_removes_links_and_hook(self):
+        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
+        self.assert_removal_after_clone_goes()
+
+    def test_an_agy_only_run_after_the_clone_goes_does_not_strand_the_hook(self):
+        write(os.path.join(self.repo, "harness", "overlays", "agy.overlay.md"), "## agy overlay\n")
+        write(os.path.join(self.repo, "harness", "agy", "agy_gate.py"),
+              read(os.path.join(ROOT, "harness", "agy", "agy_gate.py")))
+        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
+        shutil.rmtree(self.clone)
+        r = self.sync("--tools", "agy")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.lexists(self.cli), "the agy run unlinks the board links and leaves settings.json")
+        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
+        self.assertEqual(self.board_hooks("SessionStart") + self.board_hooks("Stop"), [])
+        self.assertEqual(self.broken_links(), [])
+
+    def test_an_agy_run_never_reads_claude_settings(self):
+        write(os.path.join(self.repo, "harness", "overlays", "agy.overlay.md"), "## agy overlay\n")
+        write(os.path.join(self.repo, "harness", "agy", "agy_gate.py"),
+              read(os.path.join(ROOT, "harness", "agy", "agy_gate.py")))
+        self.install_local()
+        os.chmod(self.settings, 0)
+        self.addCleanup(os.chmod, self.settings, 0o600)
+        r = self.sync("--tools", "agy")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.islink(os.path.join(self.home, ".agents", "skills", "board")))
+
+    def install_local(self):
+        """What NousBoard's install-local.sh leaves: links straight to the clone and unquoted hook entries."""
+        entry = {"hooks": [{"type": "command", "command": f"{self.cli} hook", "timeout": 3}]}
+        write(self.settings, json.dumps({"hooks": {"SessionStart": [entry], "Stop": [entry]}}))
+        os.makedirs(os.path.dirname(self.cli))
+        os.symlink(os.path.join(self.clone, "bin", "board.mjs"), self.cli)
+        os.makedirs(os.path.dirname(self.skill))
+        os.symlink(os.path.join(self.clone, "skills", "board"), self.skill)
+        return entry
+
+    def test_install_local_links_are_adopted_so_a_removed_clone_leaves_nothing_broken(self):
+        self.install_local()
+        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
+        self.assert_removal_after_clone_goes()
+
+    def test_hook_entries_sync_never_wrote_stay_when_no_clone_is_found(self):
+        entry = self.install_local()
+        shutil.move(self.clone, os.path.join(self.tmp, "elsewhere"))
+        r = self.sync("--tools", "claude")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(read(self.settings))["hooks"]["Stop"], [entry])
+
+    def test_a_file_that_replaced_the_cli_link_loses_the_hook(self):
+        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
+        os.unlink(self.cli)
+        write(self.cli, "something else\n")
+        r = self.sync("--tools", "claude")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("hook entries are removed", r.stderr)
+        self.assertEqual(self.board_hooks("SessionStart") + self.board_hooks("Stop"), [])
+        self.assertEqual(read(self.cli), "something else\n")
+
+    def test_install_local_entries_and_links_are_taken_over_not_duplicated(self):
+        old = f"{self.cli} hook"
+        mine = {"hooks": [{"type": "command", "command": "echo mine"}]}
+        write(self.settings, json.dumps({"hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": old, "timeout": 3}]}, mine],
+            "Stop": [mine, {"hooks": [{"type": "command", "command": old, "timeout": 3}]}]}}))
+        os.makedirs(os.path.dirname(self.cli))
+        os.symlink(os.path.join(self.clone, "bin", "board.mjs"), self.cli)
+        os.makedirs(os.path.dirname(self.skill))
+        os.symlink(os.path.join(self.clone, "skills", "board"), self.skill)
+        r = self.sync("--tools", "claude")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("collision", r.stdout + r.stderr)
+        hooks = json.loads(read(self.settings))["hooks"]
+        self.assertEqual([e["hooks"][0]["command"] for e in hooks["Stop"]], ["echo mine", self.cmd], "in place")
+        self.assertEqual(self.board_hooks("SessionStart"), [self.cmd])
+        self.assertEqual(self.sync("--tools", "claude", "--check").returncode, 0)
+
+    def test_a_real_file_at_the_cli_path_is_a_collision_like_any_skill_folder(self):
+        write(self.cli, "my own board\n")
+        r = self.sync("--tools", "claude")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"pass --yes-replace board to replace): {self.cli}", r.stdout)
+        self.assertEqual(read(self.cli), "my own board\n")
+        self.assertFalse(os.path.lexists(self.skill), "a collision holds back every link of that name")
+        self.assertEqual(self.board_hooks("SessionStart") + self.board_hooks("Stop"), [])
+        self.assertIn("hook entries are left as they are", r.stderr)
+        self.assertEqual(self.sync("--tools", "claude", "--yes-replace", "board").returncode, 0)
+        self.assertEqual(os.path.realpath(self.cli), os.path.join(self.clone, "bin", "board.mjs"))
+
+    def test_a_collision_keeps_existing_hook_entries_as_they_are(self):
+        old = {"hooks": [{"type": "command", "command": f"{self.cli} hook", "timeout": 3}]}
+        write(self.settings, json.dumps({"hooks": {"Stop": [old]}}))
+        write(self.cli, "my own board\n")
+        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
+        hooks = json.loads(read(self.settings))["hooks"]
+        self.assertEqual(hooks["Stop"], [old])
+        self.assertEqual(self.board_hooks("SessionStart"), [])
+
+    def test_a_board_mjs_that_is_not_executable_is_skipped_with_a_note(self):
+        os.chmod(os.path.join(self.clone, "bin", "board.mjs"), 0o644)
+        r = self.sync("--tools", "claude")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("is not executable", r.stderr)
+        self.assertFalse(os.path.lexists(self.cli))
+        self.assertEqual(self.board_hooks("SessionStart") + self.board_hooks("Stop"), [])
+
+    def test_a_path_with_a_quote_is_refused_before_anything_is_written(self):
+        write(os.path.join(self.state, "local.toml"), '[nousboard]\npath = "/tmp/a\\"b"\n')
+        r = self.sync("--tools", "claude")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("may not hold a quote", r.stderr)
+        self.assertFalse(os.path.exists(self.settings))
+
+    def test_a_dollar_in_the_path_is_refused_only_on_windows(self):
+        write(os.path.join(self.state, "local.toml"), '[nousboard]\npath = "~/Projects/$Board"\n')
+        with self.assertRaises(nousfx_sync.SyncError):
+            nousfx_board.locate(self.home, self.state, nousfx_sync.SyncError, win=True)
+        clone, note = nousfx_board.locate(self.home, self.state, nousfx_sync.SyncError, win=False)
+        self.assertIn("no clone at", note)
+
+    def test_a_windows_home_path_is_expanded(self):
+        write(os.path.join(self.state, "local.toml"), '[nousboard]\npath = "~\\\\Projects\\\\NousBoard"\n')
+        clone, note = nousfx_board.locate(self.home, self.state, nousfx_sync.SyncError, win=True)
+        self.assertIn(f"no clone at {self.home}", note, "expanded under home, not refused as relative")
+
+    def test_local_toml_path_overrides_the_default(self):
+        moved = os.path.join(self.tmp, "elsewhere", "NousBoard")
+        shutil.move(self.clone, moved)
+        write(os.path.join(self.state, "local.toml"), f'[nousboard]\npath = "{moved}"\n')
+        r = self.sync("--tools", "claude")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(os.path.realpath(self.cli), os.path.join(moved, "bin", "board.mjs"))
+        self.assertNotIn("nousboard:", r.stderr)
+
+    def test_restore_undoes_the_board_links_and_hook(self):
+        write(self.settings, "{}\n")
+        self.assertEqual(self.sync("--tools", "claude").returncode, 0)
+        r = self.sync("--restore")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(os.path.lexists(self.cli))
+        self.assertFalse(os.path.lexists(self.skill))
+        self.assertEqual(read(self.settings), "{}\n")
+
+    def test_windows_hook_runs_node_and_makes_no_cli_link(self):
+        cfg = json.loads(nousfx_sync.merge_settings(None, "/g/review-gate.py", True, prefix="me",
+                                                    board='node "C:/c/NousBoard/bin/board.mjs" hook'))
+        self.assertEqual(cfg["hooks"]["Stop"][0]["hooks"][0]["command"], 'node "C:/c/NousBoard/bin/board.mjs" hook')
+        self.assertEqual(nousfx_board.hook_command(self.home, self.clone, True, lambda p: p),
+                         f'node "{os.path.join(self.clone, "bin", "board.mjs")}" hook')
+        self.assertIsNone(nousfx_board.cli_link(self.home, self.clone, True))
+
+    def test_merge_settings_removes_board_entries_and_leaves_others(self):
+        current = json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "/x/.local/bin/board hook"}]},
+                                                 {"hooks": [{"type": "command", "command": "echo mine"}]}]}})
+        cfg = json.loads(nousfx_sync.merge_settings(current, "/g/review-gate.py", False, prefix="me", board=False))
+        self.assertEqual(cfg["hooks"]["Stop"], [{"hooks": [{"type": "command", "command": "echo mine"}]}])
+        untouched = json.loads(nousfx_sync.merge_settings(current, "/g/review-gate.py", False, prefix="me"))
+        self.assertEqual(len(untouched["hooks"]["Stop"]), 2, "board=None leaves the entries alone")
 
 
 if __name__ == "__main__":

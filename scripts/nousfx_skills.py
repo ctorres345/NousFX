@@ -17,6 +17,8 @@ Pinned outside skills (harness/skills.lock.json, see nousfx_outside.py) are one 
 verified files sit in <state>/outside-skills/ and are linked the same way. A hand-installed copy that
 holds exactly the pinned files is replaced without --yes-replace (and backed up); one that differs is a
 collision like any other.
+NousBoard's board skill (nousfx_board.py) is one more source too, and its `board` CLI link
+(H/.local/bin/board) is recorded in the same manifest and journal.
 Old install.sh backups (<file>.bak-YYYYMMDD-HHMMSS) are only listed. With --clean-backups they are
 moved into the run's backup too, so --restore brings them back. Only what install.sh writes is
 searched: H/.claude/CLAUDE.md, settings.json and the files under agents/, skills/ and hooks/
@@ -155,11 +157,19 @@ def old_backups(dot_claude):
     return sorted(found)
 
 
+def owns(state, name):
+    """True when the manifest records a link of the skill `name`, so an earlier sync shipped it."""
+    return any(os.path.basename(path) == name for path in _load(state))
+
+
 def plan(repo, home, state, yes_replace=(), clean_backups=False, extra_roots=(), claude=True,
-         extra_sources=None, identical=None, keep=()):
-    """extra_sources: more name -> folder skills (the pinned outside skills). identical(name, path): true when
+         extra_sources=None, identical=None, keep=(), extra_links=None, adopt=()):
+    """extra_sources: more name -> folder skills (the pinned outside skills). extra_links: name -> [(path,
+    target)] more links that belong to a wanted skill and follow its rules (NousBoard's CLI); each path's
+    basename is the name, so the manifest cleanup below treats it as that skill's. identical(name, path): true when
     what is at `path` holds exactly the pinned files, so it may be replaced without --yes-replace (it is
-    still backed up). keep: names whose links stay as they are (a skill that failed to fetch)."""
+    still backed up). keep: names whose links stay as they are (a skill that failed to fetch). adopt: names
+    whose unrecorded links to the same place are relinked and recorded, so sync removes them with the skill."""
     manifest = _load(state)
     p = Plan(clean_backups)
     p.manifest = dict(manifest)
@@ -167,12 +177,14 @@ def plan(repo, home, state, yes_replace=(), clean_backups=False, extra_roots=(),
     agents = os.path.join(home, ".agents", "skills")
     claude_dir = os.path.join(home, ".claude", "skills")
     for name, src in want.items():
-        real = os.path.realpath(src)
         steps, blocked = [], False
         shared = os.path.join(agents, name)
         links = [(shared, src)] + ([(os.path.join(claude_dir, name), shared)] if claude else [])
         links += [(os.path.join(root, name), shared) for root in extra_roots]
+        links += (extra_links or {}).get(name, [])
         for path, target in links:
+            final = src if target == shared else target
+            real = os.path.realpath(final)
             if not os.path.lexists(path):
                 steps.append(("create", path, target))
             elif path in manifest:
@@ -182,6 +194,8 @@ def plan(repo, home, state, yes_replace=(), clean_backups=False, extra_roots=(),
                 elif os.path.realpath(path) != real:
                     steps.append(("relink", path, target))
             elif _is_link(path) and os.path.realpath(path) == real:
+                if name in adopt:
+                    steps.append(("relink", path, target))
                 continue  # someone else's link to the same place: fine, not recorded
             elif name in yes_replace or (identical and identical(name, path)):
                 steps.append(("replace", path, target))
