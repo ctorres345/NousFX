@@ -43,16 +43,19 @@ Exit 0 prints the line; exit 2 prints a reason to stderr and nothing to stdout.
 
 Proofs are self-asserted. They come from a list the branch author controls and CI does not re-run them; see
 docs/review-gate.md. The stamp helpers are the review gate's, loaded from the gate --mark runs: ~/.claude/hooks, else
-the cloud copy in the git dir, else (in a NousFX checkout only) claude/hooks next to the skills folder. A project's
-own .claude/hooks copy is never loaded (NFX-214; gate_paths, and "Where prove.py and testfail.py load the gate" in
+the agy plugin's gate (~/.gemini/config/plugins/nousfx/hooks, hash-checked against hooks.json), else the cloud copy in
+the git dir, else (in a NousFX checkout only) claude/hooks next to the skills folder. A project's own .claude/hooks or
+.gemini/... copy is never loaded (NFX-214, NFX-316; gate_paths, and "Where prove.py and testfail.py load the gate" in
 docs/review-gate.md).
 """
 import argparse
 import contextlib
 import hashlib
 import importlib.util
+import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -94,6 +97,7 @@ def gate_paths(cwd):
     """Where the review gate may come from, reader first (NFX-214; the rule via_run.py follows, NFX-207), as
     (path, kind) pairs, plus the trusted paths a refusal names. The gate --mark runs comes first:
       installed  <home>/.claude/hooks/review-gate.py
+      agy        <home>/.gemini/config/plugins/nousfx/hooks/review-gate.py, hash-checked against hooks.json (NFX-316)
       cloud      <git-dir>/nousfx-gate/current/hooks/review-gate.py, the default branch's copy the project hook
                  extracts when there is no ~/.claude. git runs with every GIT_* variable dropped: a committed
                  settings `env` block could point GIT_DIR at a fake git dir in the repo.
@@ -105,6 +109,7 @@ def gate_paths(cwd):
                  name; a committed link from .claude/skills into a claude/ folder still has a `.claude` abspath."""
     home = home_dir()
     installed = os.path.join(home or "<home>", ".claude", "hooks", "review-gate.py")
+    agy = os.path.join(home or "<home>", ".gemini", "config", "plugins", "nousfx", "hooks", "review-gate.py")
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     # A committed folder that looks like a bare repo is not a git dir: --show-toplevel fails inside any git dir,
     # and safe.bareRepository=explicit (git 2.38+) refuses bare discovery as a second layer.
@@ -116,24 +121,68 @@ def gate_paths(cwd):
     except (OSError, subprocess.SubprocessError):
         git_dir = ""  # not a repo, or no git: no cloud copy to find
     cloud = os.path.join(git_dir or "<git-dir>", "nousfx-gate", "current", "hooks", "review-gate.py")
-    paths = ([(installed, "installed")] if home else []) + ([(cloud, "cloud")] if git_dir else [])
+    paths = ([(installed, "installed"), (agy, "agy")] if home else []) + ([(cloud, "cloud")] if git_dir else [])
     roots = [os.path.normpath(os.path.join(os.path.dirname(me), "..", "..", ".."))
              for me in (os.path.abspath(__file__), os.path.realpath(__file__))]
     if all(os.path.basename(root) == "claude" for root in roots):
         # normpath, so the `..` steps are taken in the path as written: the OS would walk them through a symlink
         paths += [(os.path.join(root, "hooks", "review-gate.py"), "checkout") for root in roots]
-    return paths, (installed, cloud)
+    return paths, (installed, agy, cloud)
 
 
 def find_gate(cwd):
     """The first gate in gate_paths() that exists, as (path, kind). None found: refuse, naming the trusted paths."""
-    paths, (installed, cloud) = gate_paths(cwd)
+    paths, (installed, agy, cloud) = gate_paths(cwd)
     found = next(((p, kind) for p, kind in paths if os.path.isfile(p)), None)
     if found is None:
-        raise Refused(f"no trusted review gate: looked for {installed} and {cloud}. The repo's own "
-                      ".claude/hooks/review-gate.py is never loaded: it is code under review. Re-run the NousFX sync "
-                      "(in a cloud session, any Bash call lets the project hook extract the default branch's gate)")
+        raise Refused(f"no trusted review gate: looked for {installed}, {agy} and {cloud}. The repo's own "
+                      ".claude/hooks/review-gate.py and .gemini/... copies are never loaded: they are code under "
+                      "review. Re-run the NousFX sync (in a cloud session, any Bash call lets the project hook "
+                      "extract the default branch's gate)")
     return found
+
+
+def verify_agy_gate(path):
+    """Refuse the agy plugin gate unless hooks.json names its sha256 (and pr_create_parser.py's) in --expect
+    (NFX-316). agy file tools are not hooked yet, so a model could edit the plugin gate; hooks.json is guarded."""
+    hooks_dir = os.path.dirname(path)
+    hooks_json = os.path.join(os.path.dirname(hooks_dir), "hooks.json")
+    sync_hint = "Run `python3 -B scripts/nousfx_sync.py --tools agy` to refresh it."
+    try:
+        with open(hooks_json, encoding="utf-8") as f:
+            command = json.load(f)["nousfx-review-gate"]["PreToolUse"][0]["hooks"][0]["command"]
+        if not isinstance(command, str):
+            raise TypeError("hook command is not a string")
+        argv = [a.strip('"') for a in shlex.split(command, posix=os.name != "nt")]
+    except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
+        raise Refused(f"cannot verify agy review gate {path}: {hooks_json} is missing or malformed ({e}). "
+                      f"{sync_hint}") from None
+    expect = None
+    for i, arg in enumerate(argv):
+        if arg == "--expect" and i + 1 < len(argv):
+            expect = argv[i + 1]
+            break
+        if arg.startswith("--expect="):
+            expect = arg.split("=", 1)[1]
+            break
+    want = expect.lower().split(",") if expect else []
+    if len(want) < 3 or any(len(h) != 64 or any(c not in "0123456789abcdef" for c in h) for h in want[1:3]):
+        raise Refused(f"cannot verify agy review gate {path}: {hooks_json} has a missing or malformed --expect "
+                      f"hash list. {sync_hint}")
+    for target, expected in ((path, want[1]), (os.path.join(hooks_dir, "pr_create_parser.py"), want[2])):
+        try:
+            with open(target, "rb") as f:
+                actual = hashlib.sha256(f.read()).hexdigest()
+        except OSError as e:
+            raise Refused(f"cannot verify agy review gate {target} against {hooks_json}: {e}. {sync_hint}") from None
+        if actual != expected:
+            raise Refused(f"agy review gate {target} does not match the hash in {hooks_json} "
+                          f"(the plugin file may have been edited). {sync_hint}")
+    for shadow in ("pr_create_parser", "__pycache__"):
+        shadow_path = os.path.join(hooks_dir, shadow)
+        if os.path.exists(shadow_path):
+            raise Refused(f"agy review gate refused: unexpected {shadow_path} could shadow a verified plugin "
+                          f"module. {sync_hint}")
 
 
 def too_old_hint(kind):
@@ -146,6 +195,8 @@ def load_gate(cwd=None):
     """The trusted review gate module (gate_paths). A gate that exists but cannot load, or lacks the proof stamp,
     refuses: the next candidate is never tried."""
     path, kind = find_gate(cwd or os.getcwd())
+    if kind == "agy":
+        verify_agy_gate(path)
     spec = importlib.util.spec_from_file_location("review_gate_for_prove", path)
     module = importlib.util.module_from_spec(spec)
     try:

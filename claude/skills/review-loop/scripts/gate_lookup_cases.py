@@ -1,12 +1,14 @@
-"""Test helper (not shipped to projects): the gate lookup cases test_prove.py and test_testfail.py share (NFX-214).
+"""Test helper (not shipped to projects): the gate lookup cases test_prove.py and test_testfail.py share (NFX-214, NFX-316).
 
-prove.py and testfail.py load the review gate reader first: <home>/.claude/hooks, then the cloud copy in
-<git-dir>/nousfx-gate/current/hooks, then, in a NousFX checkout only, the gate next to the skills folder. A project
-copy (.claude/skills/review-loop/scripts) never loads its sibling .claude/hooks/review-gate.py, which the PR branch
-can edit. The home comes from the user record, so the scripts run through nousfx_testhome's interpreter stand-in
-with a temp home: the real ~/.claude is never read.
+prove.py and testfail.py load the review gate reader first: <home>/.claude/hooks, then <home>/.gemini/config/plugins/nousfx/hooks
+(hash-checked against hooks.json), then the cloud copy in <git-dir>/nousfx-gate/current/hooks, then, in a NousFX checkout only,
+the gate next to the skills folder. A project copy (.claude/skills/review-loop/scripts) never loads its sibling
+.claude/hooks/review-gate.py or a repo's .gemini/... copy, which the PR branch can edit. The home comes from the user record,
+so the scripts run through nousfx_testhome's interpreter stand-in with a temp home: the real ~/.claude and ~/.gemini are never read.
 """
 import atexit
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -91,6 +93,37 @@ class GateLookupCases:
     def installed(self):
         return os.path.join(self.home, ".claude", "hooks")
 
+    def agy_plugin(self, root=None):
+        return os.path.join(self.home if root is None else root, ".gemini", "config", "plugins", "nousfx")
+
+    def agy_hooks(self, root=None):
+        return os.path.join(self.agy_plugin(root), "hooks")
+
+    def write_agy_hooks_json(self, plugin_dir, hashes):
+        os.makedirs(plugin_dir, exist_ok=True)
+        adapter = os.path.join(plugin_dir, "hooks", "agy_gate.py")
+        cmd = f'python3 -I -B "{adapter}" --budget 55 --expect {",".join(hashes)}'
+        data = {"nousfx-review-gate": {"PreToolUse": [{"matcher": "run_command", "hooks": [{"type": "command", "command": cmd}]}]}}
+        path = os.path.join(plugin_dir, "hooks.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return path
+
+    def write_agy_gate(self, mark="agy", root=None, body=None, parser_body="# stub parser\n", extra_hashes=()):
+        plugin = self.agy_plugin(root)
+        hooks = self.agy_hooks(root)
+        self.write_gate(hooks, mark, body)
+        gate_path = os.path.join(hooks, "review-gate.py")
+        parser_path = os.path.join(hooks, "pr_create_parser.py")
+        with open(parser_path, "w", encoding="utf-8") as f:
+            f.write(parser_body)
+        with open(gate_path, "rb") as f:
+            gate_sha = hashlib.sha256(f.read()).hexdigest()
+        with open(parser_path, "rb") as f:
+            parser_sha = hashlib.sha256(f.read()).hexdigest()
+        hooks_json = self.write_agy_hooks_json(plugin, ["a" * 64, gate_sha, parser_sha, *extra_hashes])
+        return gate_path, parser_path, hooks_json
+
     def cloud(self):
         return os.path.join(self.git_dir, "nousfx-gate", "current", "hooks")
 
@@ -126,6 +159,7 @@ class GateLookupCases:
         out = self.load(script)
         self.assertTrue(out.startswith("REFUSED "), out)
         self.assertIn(os.path.join(self.home, ".claude", "hooks", "review-gate.py"), out)
+        self.assertIn(os.path.join(self.agy_hooks(), "review-gate.py"), out)
         self.assertIn(os.path.join("nousfx-gate", "current", "hooks", "review-gate.py"), out)
         self.assertTamperedNeverRan()
 
@@ -232,3 +266,101 @@ class GateLookupCases:
         out = self.load(script, cwd=fake)
         self.assertTrue(out.startswith("REFUSED "), out)
         self.assertTamperedNeverRan()
+
+    def test_agy_gate_loads_when_installed_is_absent(self):
+        script = self.project_copy()
+        self.write_agy_gate("agy")
+        self.assertEqual(self.load(script), "MARK agy")
+        self.assertTamperedNeverRan()
+
+    def test_agy_gate_accepts_four_or_more_expect_hashes(self):
+        script = self.project_copy()
+        self.write_agy_gate("agy4", extra_hashes=("d" * 64,))
+        self.assertEqual(self.load(script), "MARK agy4")
+
+    def test_agy_gate_precedence_after_installed_before_cloud(self):
+        script = self.project_copy()
+        self.write_agy_gate("agy")
+        self.write_gate(self.cloud(), "cloud")
+        self.assertEqual(self.load(script), "MARK agy")
+        self.write_gate(self.installed(), "installed")
+        self.assertEqual(self.load(script), "MARK installed")
+
+    def test_agy_gate_refuses_edited_gate_without_falling_back(self):
+        script = self.project_copy()
+        gate_path, _, hooks_json = self.write_agy_gate("agy")
+        self.write_gate(self.cloud(), "cloud")
+        with open(gate_path, "w", encoding="utf-8") as f:
+            f.write(f"open({self.sentinel!r}, 'w').close()\n{self.GATE_NAMES}\nMARK = 'edited'\n")
+        out = self.load(script)
+        self.assertTrue(out.startswith("REFUSED "), out)
+        self.assertIn(gate_path, out)
+        self.assertIn(hooks_json, out)
+        self.assertIn("nousfx_sync.py --tools agy", out)
+        self.assertTamperedNeverRan()
+
+    def test_agy_gate_refuses_edited_parser_without_falling_back(self):
+        script = self.project_copy()
+        _, parser_path, hooks_json = self.write_agy_gate("agy")
+        self.write_gate(self.cloud(), "cloud")
+        with open(parser_path, "w", encoding="utf-8") as f:
+            f.write(f"open({self.sentinel!r}, 'w').close()\n")
+        out = self.load(script)
+        self.assertTrue(out.startswith("REFUSED "), out)
+        self.assertIn(parser_path, out)
+        self.assertIn(hooks_json, out)
+        self.assertIn("nousfx_sync.py --tools agy", out)
+        self.assertTamperedNeverRan()
+
+    def test_agy_gate_refuses_shadowing_package_or_pycache(self):
+        script = self.project_copy()
+        self.write_agy_gate("agy")
+        self.write_gate(self.cloud(), "cloud")
+        for shadow in ("pr_create_parser", "__pycache__"):
+            with self.subTest(shadow=shadow):
+                shadow_dir = os.path.join(self.agy_hooks(), shadow)
+                os.makedirs(shadow_dir, exist_ok=True)
+                try:
+                    out = self.load(script)
+                    self.assertTrue(out.startswith("REFUSED "), out)
+                    self.assertIn(shadow_dir, out)
+                    self.assertIn("nousfx_sync.py --tools agy", out)
+                finally:
+                    shutil.rmtree(shadow_dir, ignore_errors=True)
+
+    def test_agy_gate_refuses_missing_or_malformed_hooks_json_without_falling_back(self):
+        script = self.project_copy()
+        _, _, hooks_json = self.write_agy_gate("agy")
+        self.write_gate(self.cloud(), "cloud")
+        cases = [
+            ("missing", None),
+            ("bad-json", "{not json"),
+            ("no-expect", json.dumps({"nousfx-review-gate": {"PreToolUse": [{"hooks": [{"command": "python3 -I -B agy_gate.py"}]}]}})),
+            ("too-few", json.dumps({"nousfx-review-gate": {"PreToolUse": [{"hooks": [{"command": f"python3 -I -B agy_gate.py --expect {'a'*64},{'b'*64}"}]}]}})),
+            ("bad-hex", json.dumps({"nousfx-review-gate": {"PreToolUse": [{"hooks": [{"command": "python3 -I -B agy_gate.py --expect a,b,c"}]}]}})),
+        ]
+        for label, content in cases:
+            with self.subTest(case=label):
+                if content is None:
+                    os.remove(hooks_json)
+                else:
+                    with open(hooks_json, "w", encoding="utf-8") as f:
+                        f.write(content)
+                out = self.load(script)
+                self.assertTrue(out.startswith("REFUSED "), out)
+                self.assertIn(hooks_json, out)
+                self.assertIn("nousfx_sync.py --tools agy", out)
+
+    def test_agy_gate_never_loads_repo_gemini_copy(self):
+        script = self.project_copy()
+        tampered_body = f"open({self.sentinel!r}, 'w').close()\n{self.GATE_NAMES}\nMARK = 'repo-gemini'\n"
+        self.write_agy_gate("repo-gemini", root=self.proj, body=tampered_body)
+        for label, kwargs in [
+            ("clean-home", {}),
+            ("home-env-to-repo", {"env": {**os.environ, "HOME": self.proj}}),
+            ("empty-home", {"home": ""}),
+        ]:
+            with self.subTest(case=label):
+                out = self.load(script, **kwargs)
+                self.assertTrue(out.startswith("REFUSED "), out)
+                self.assertTamperedNeverRan()

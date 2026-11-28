@@ -962,12 +962,12 @@ class GateLookup(GateLookupCases, unittest.TestCase):
         def lookup(path):
             with open(path, encoding="utf-8") as f:
                 src = f.read()
-            names = ("home_dir", "gate_paths", "find_gate", "too_old_hint")
+            names = ("home_dir", "gate_paths", "find_gate", "verify_agy_gate", "too_old_hint")
             return {n.name: ast.get_source_segment(src, n) for n in ast.parse(src).body
                     if isinstance(n, ast.FunctionDef) and n.name in names}
 
         mine = lookup(TESTFAIL)
-        self.assertEqual(len(mine), 4)
+        self.assertEqual(len(mine), 5)
         self.assertEqual(mine, lookup(os.path.join(HERE, "prove.py")))
 
 
