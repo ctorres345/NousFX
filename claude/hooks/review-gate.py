@@ -1777,14 +1777,68 @@ BODY_WHY = {
 }
 
 
+def _heredoc_body(command, path_text):
+    """If command writes path_text via one literal `cat` heredoc before `gh pr create` (with no other
+    writes to path_text), return the heredoc body text; else None."""
+    esc = re.escape(path_text)
+    qpath = rf"(?:['\"]?{esc}['\"]?)"
+    pat = re.compile(
+        r"(?:^|[;&|\n])\s*cat\s+(?:"
+        + rf"(?<!>)>\s*{qpath}\s*<<(-?)\s*(?:(['\"])(\w+)\2|\\(\w+)|(\w+))"
+        + r"|"
+        + rf"<<(-?)\s*(?:(['\"])(\w+)\7|\\(\w+)|(\w+))\s*(?<!>)>\s*{qpath}"
+        + r")[ \t]*\r?\n",
+    )
+    matches = list(pat.finditer(command))
+    if len(matches) != 1:
+        return None
+    m = matches[0]
+    strip_tabs = bool(m.group(1) or m.group(6))
+    quoted = bool(m.group(2) or m.group(4) or m.group(7) or m.group(9))
+    delim = m.group(3) or m.group(4) or m.group(5) or m.group(8) or m.group(9) or m.group(10)
+    close_pat = re.compile(r"^" + (r"\t*" if strip_tabs else "") + re.escape(delim) + r"\r?$", re.M)
+    close = close_pat.search(command, m.end())
+    if not close:
+        return None
+    body = command[m.end():close.start()]
+    if not quoted and ("$" in body or "`" in body):
+        return None
+    outside = command[:m.start()] + "\n" + command[close.end():]
+    tok = re.compile(r"(?<![\w./~-])" + esc + r"(?![\w./-])")
+    rem = list(tok.finditer(outside))
+    if not rem or rem[0].start() < m.start():
+        return None
+    if len(rem) == 1:
+        return body
+    if len(rem) == 2 and _is_trailing_rm(outside, rem[1].start()):
+        return body
+    return None
+
+
+def _is_trailing_rm(command, use_pos):
+    """True when the path mention at use_pos is a trailing `rm` cleanup after `gh pr create`."""
+    before = command[:use_pos]
+    return bool(re.search(r"\bgh\b.*\bpr\b.*\bcreate\b.*(?:&&|;|\|\||\n)\s*rm\s+(?:-[a-zA-Z]+\s+)*['\"]?$",
+                          before, re.S))
+
+
 def written(source, command):
-    """source, or kind "written" when the command names its body file more than once (`cat > b.md <<EOF ...
-    && gh pr create -F b.md`): the hook runs before the command, so it would judge the file's old contents."""
+    """source, or its literal heredoc body when written via one `cat` heredoc in the same command,
+    or kind "written" when the command otherwise mutates the body file before `gh pr create` runs."""
     word = source.get("value")
     if source["kind"] != "file" or not word or not word.text:
         return source
-    uses = re.findall(r"(?<![\w./~-])" + re.escape(word.text) + r"(?![\w./-])", command)
-    return {"kind": "written"} if len(uses) > 1 else source
+    esc = re.escape(word.text)
+    uses = list(re.finditer(r"(?<![\w./~-])" + esc + r"(?![\w./-])", command))
+    if len(uses) <= 1:
+        return source
+    if len(uses) == 2 and _is_trailing_rm(command, uses[1].start()):
+        return source
+    if pr_create_parser is not None:
+        body = _heredoc_body(command, word.text)
+        if body is not None:
+            return {"kind": "text", "value": pr_create_parser.Word(body, False)}
+    return {"kind": "written"}
 
 
 def body_text(source, cwd):

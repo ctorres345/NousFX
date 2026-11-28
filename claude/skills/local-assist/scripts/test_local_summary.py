@@ -231,10 +231,17 @@ class LocalSummaryTest(unittest.TestCase):
         self.assert_fallback(self.run_script("raise SystemExit(1)"))
 
     def test_public_url_no_requests(self):
-        self.config(url="http://8.8.8.8:1")
-        r = self.run_script("raise SystemExit(1)")
-        self.assert_fallback(r, 0)
-        self.assertIn("not loopback or private", r.stdout)
+        for bad in ("http://8.8.8.8:1", "http://100.63.255.255:11434", "http://100.128.0.1:11434"):
+            self.config(url=bad)
+            r = self.run_script("raise SystemExit(1)")
+            self.assert_fallback(r, 0)
+            self.assertIn("not loopback or private", r.stdout)
+
+    def test_tailscale_cgnat_network_is_allowed(self):
+        sys.path.insert(0, HERE)
+        import local_summary
+        self.assertEqual(local_summary.check_url("http://100.64.0.1:11434"), "http://100.64.0.1:11434")
+        self.assertEqual(local_summary.check_url("http://100.127.255.254:11434"), "http://100.127.255.254:11434")
 
     def test_redirect_is_not_followed(self):
         self.config()

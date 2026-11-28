@@ -28,7 +28,7 @@ import urllib.request
 sys.dont_write_bytecode = True
 
 NETWORKS = [ipaddress.ip_network(n) for n in (
-    "127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+    "127.0.0.0/8", "::1/128", "10.0.0.0/8", "100.64.0.0/10", "172.16.0.0/12", "192.168.0.0/16")]
 MAX_LOG = 12000
 BLOCK_BUDGET = 7500
 TAIL = 4000
