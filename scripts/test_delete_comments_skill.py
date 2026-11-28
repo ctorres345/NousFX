@@ -13,7 +13,7 @@ sys.dont_write_bytecode = True
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILL = os.path.join(ROOT, "claude", "skills", "delete-comments", "SKILL.md")
-SCRIPT = "~/.claude/skills/review-loop/scripts/comment_check.py"
+SCRIPT = "~/.agents/skills/review-loop/scripts/comment_check.py"
 
 
 def text():

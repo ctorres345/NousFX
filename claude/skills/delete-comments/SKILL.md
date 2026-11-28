@@ -6,12 +6,12 @@ argument-hint: "[path] (default: the repo)"
 
 Clean the comments under: $ARGUMENTS (default: the git top level).
 
-This runs from Cesar's Mac. The script is `~/.claude/skills/review-loop/scripts/comment_check.py` (`python` on Windows). Work on a ticket branch, as for any ticket.
+This runs from Cesar's Mac. The script is `~/.agents/skills/review-loop/scripts/comment_check.py` (`python` on Windows). Work on a ticket branch, as for any ticket.
 
 ## 1. Inventory
 
 ```bash
-python3 -B ~/.claude/skills/review-loop/scripts/comment_check.py --all <path> [<path> ...]
+python3 -B ~/.agents/skills/review-loop/scripts/comment_check.py --all <path> [<path> ...]
 ```
 
 One line per comment: `file:line form verdict text`. Form is `docstring`, `inline`, `line` or `shell`. Verdict is `keep:<rule>` or `flag:<kind>`. The last line counts the forms and the lines the cleanup could shed; with several paths, each path gets its own count line and the last line is the total.
@@ -49,7 +49,7 @@ ADRs follow the `domain-modeling` skill's ADR-FORMAT: `docs/adr/NNNN-slug.md`, t
 ## 4. Verify
 
 ```bash
-python3 -B ~/.claude/skills/review-loop/scripts/comment_check.py verify [<base>]
+python3 -B ~/.agents/skills/review-loop/scripts/comment_check.py verify [<base>]
 ```
 
 It compares with `git merge-base <base> HEAD` and prints that commit, so merges that land on `<base>` later never count; with no `<base>`, review-loop's base (origin/HEAD, else origin/main), so a ticket's `Proof:` line runs as written. It checks every changed Python file's AST with docstrings stripped, the module docstring and every docstring read as `name.__doc__` in each file that reads `__doc__` (the `--help` text; it reads scripts and never runs them), each changed shell file's text outside comments and `bash -n`, shebang and encoding lines, and every ADR pointer. Exit 2 names each file that changed more than comments: undo that edit and run it again. In a shell file, delete only the comment and keep the blank lines and spaces around it: verify counts them as code, since a heredoc or an escaped space can hold them. Kotlin, Dart, TypeScript and JavaScript files are compared token by token outside comments, and a difference names its line. In TSX or JSX delete the whole `{/* ... */}` expression: empty braces left behind are code, and a bare `//` between tags is rendered text. In Dart a bare trailing `//` is a `dart format` line-break marker, not a comment: keep it. Keep line breaks and directive comments (`/// <reference>`, `// @dart=`, `@jsx`, `@ts-`): verify counts them as code. Exit 0 is not the end: then run the project's test suite. Other languages rely on the suite alone.
