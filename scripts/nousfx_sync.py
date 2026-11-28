@@ -638,6 +638,7 @@ def main(argv=None):
     home = os.path.abspath(args.home or user_home())
     state = os.path.abspath(args.state_home or os.path.join(home, ".config", "nousfx"))
     repo = os.path.abspath(args.repo)
+    root = None
     try:
         if args.restore:
             return restore(state) or 0
@@ -766,9 +767,15 @@ def main(argv=None):
     except SyncError as e:
         print(f"nousfx_sync: {e}", file=sys.stderr)
         return e.code
-    except PermissionError as e:  # a sandbox (agy) or a file mode blocks it: one line, never a traceback
-        print(f"nousfx_sync: permission denied: {e.filename}. Fix its permissions or run sync outside the sandbox; "
-              "--restore undoes anything this run already wrote.", file=sys.stderr)
+    except PermissionError as e:
+        if args.restore:
+            after = "The restore may have stopped partway; run --restore again once it is fixed."
+        elif root:
+            after = f"The backup is {root}; run --restore to put the previous files back."
+        else:
+            after = "Nothing was written."
+        print(f"nousfx_sync: permission denied: {e.filename or e}. Fix its permissions or run sync outside the "
+              f"sandbox. {after}", file=sys.stderr)
         return 2
 
 
