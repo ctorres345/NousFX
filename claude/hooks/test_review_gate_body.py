@@ -166,10 +166,25 @@ class Body(BodyBase):
     def test_a_flag_name_built_at_run_time_could_be_a_body_flag(self):
         self.assertEqual(self.create(f"gh pr create --$K=f.md -b '{self.line}'").returncode, BLOCKED)
 
-    def test_a_body_file_written_in_the_same_command_blocks(self):
+    def test_a_body_file_written_in_the_same_command_checks_heredoc_and_blocks_other_writes(self):
         path = self.body_file(self.line + "\n", name="pr.md")  # an old file that would pass on its own
         r = self.create(f"cat > {path} <<'EOF'\nnew body\nEOF\ngh pr create -F {path}")
-        self.assert_blocked_with_lines(r, "Write the body file in a separate call")
+        self.assert_blocked_with_lines(r, "no `Review-Gate: <HEAD tree>`")
+        self.assertEqual(self.create(f"cat > {path} <<'EOF'\n## Summary\n{self.line}\nEOF\ngh pr create -F {path}").returncode,
+                         ALLOWED)
+        self.assertEqual(self.create(f"cat <<'EOF' > {path}\n{self.line}\nEOF\n&& gh pr create -F {path}").returncode,
+                         ALLOWED)
+        self.assertEqual(self.create(f"cat > {path} <<'EOF'\n{self.line}\nEOF\ngh pr create -F {path} && rm -f {path}").returncode,
+                         ALLOWED)
+        r_dyn = self.create(f"cat > {path} <<EOF\n$VAR\n{self.line}\nEOF\ngh pr create -F {path}")
+        self.assert_blocked_with_lines(r_dyn, "Write the body file in a separate call")
+        r_echo = self.create(f"echo '{self.line}' > {path} && gh pr create -F {path}")
+        self.assert_blocked_with_lines(r_echo, "Write the body file in a separate call")
+        r_sed = self.create(f"sed -i '' 's/a/b/' {path} && gh pr create -F {path}")
+        self.assert_blocked_with_lines(r_sed, "Write the body file in a separate call")
+        r_after = self.create(f"gh pr create -F {path} && cat > {path} <<'EOF'\n{self.line}\nEOF")
+        self.assert_blocked_with_lines(r_after, "Write the body file in a separate call")
+        self.assertEqual(self.create(f"gh pr create -F {path} && rm -f {path}").returncode, ALLOWED)
         self.assertEqual(self.create(f"gh pr create -F {path}").returncode, ALLOWED)
 
     def test_web_editor_and_recover_block_even_with_the_line(self):
