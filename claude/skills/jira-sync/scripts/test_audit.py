@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for audit.py. Run: python3 -I ~/.claude/skills/jira-sync/scripts/test_audit.py"""
+"""Tests for audit.py. Run: python3 -I ~/.agents/skills/jira-sync/scripts/test_audit.py"""
 import os
 import shutil
 import subprocess

@@ -86,7 +86,7 @@ class GeminiInLoop(unittest.TestCase):
         self.assertIn("run the Gemini checks the table lists for that round", section(LOOP, "Loop"))
 
     def test_argon_runs_from_gemini_review(self):
-        self.assertIn("~/.claude/skills/gemini-review/scripts/argon_review.py", GEMINI)
+        self.assertIn("~/.agents/skills/gemini-review/scripts/argon_review.py", GEMINI)
 
     def test_the_argon_log_goes_to_the_configured_vault_or_nowhere(self):
         self.assertIn("obsidian.vault_path", GEMINI)

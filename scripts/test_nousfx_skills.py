@@ -73,6 +73,23 @@ class Links(SkillsBase):
         os.remove(os.path.join(self.claude, "alpha"))
         self.assertEqual(self.sync("--check").returncode, 1)
 
+    def test_machine_synced_before_agents_skills_is_drift_and_sync_links_it(self):
+        self.run_ok()
+        shutil.rmtree(os.path.join(self.home, ".agents"))
+        old = {}
+        for name, via in (("alpha", False), ("beta", False), ("via", True)):
+            link = os.path.join(self.claude, name)
+            os.remove(link)
+            os.symlink(self.src(name, via), link)
+            old[link] = self.src(name, via)
+        with open(self.manifest, "w") as f:
+            json.dump({"links": old}, f)
+        self.assertEqual(self.sync("--check").returncode, 1)
+        self.run_ok()
+        for name, via in (("alpha", False), ("beta", False), ("via", True)):
+            self.assertEqual(self.real(self.agents, name), self.src(name, via))
+        self.assertEqual(self.sync("--check").returncode, 0)
+
     def test_restore_removes_links_and_manifest(self):
         self.run_ok()
         self.run_ok("--restore")

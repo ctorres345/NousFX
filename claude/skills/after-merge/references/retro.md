@@ -4,15 +4,15 @@ The pinned `retro` skill says how to run a retro. These are our additions; apply
 
 ## Inputs
 - The review comments on the wave's PRs, the reviewer's findings, and the `habit:` lines under Habits in each PR body.
-- The decision logs: `python3 -B <review-loop skill folder>/scripts/session_report.py render --name <KEY>` output, or `~/Releases/<project>/reports/<date>-<KEY>/`.
+- The decision logs: `python3 -B ~/.agents/skills/review-loop/scripts/session_report.py render --name <KEY>` output, or `~/Releases/<project>/reports/<date>-<KEY>/`.
 - The wave's result files and `followups.md` when present.
 
 ## Classes
-Before grouping, read the watch ledger: `python3 -B ~/.claude/skills/review-loop/scripts/session_report.py watch list` from the repo (`python` on Windows). Use the installed copy: a project copy may be stale. If it is missing or has no `watch`, say so and go on. When a finding matches a listed slug, count it against that slug: its earlier tickets count toward the class, across projects too.
+Before grouping, read the watch ledger: `python3 -B ~/.agents/skills/review-loop/scripts/session_report.py watch list` from the repo (`python` on Windows). Use the installed copy: a project copy may be stale. If it is missing or has no `watch`, say so and go on. When a finding matches a listed slug, count it against that slug: its earlier tickets count toward the class, across projects too.
 
 Group findings into mistake classes. A class counts once it has happened twice, in two different PRs or tickets; a `habit:` line counts the same way. A class seen once stays in the retro file as a watch item.
 
-Add each watch item the retro keeps, and each finding that matched a slug: `python3 -B ~/.claude/skills/review-loop/scripts/session_report.py watch add --slug <kebab> --ticket <KEY> --evidence <pointer> --note "<one line>"`. Pass `--harness` when the fix belongs in NousFX (a script, skill, hook, rule, the sync or an agent habit, so a habit seen once per project still becomes a class), else `--project`; inside NousFX every row is a harness row. Reuse a listed slug for the same mistake; `--new` starts one on purpose.
+Add each watch item the retro keeps, and each finding that matched a slug: `python3 -B ~/.agents/skills/review-loop/scripts/session_report.py watch add --slug <kebab> --ticket <KEY> --evidence <pointer> --note "<one line>"`. Pass `--harness` when the fix belongs in NousFX (a script, skill, hook, rule, the sync or an agent habit, so a habit seen once per project still becomes a class), else `--project`; inside NousFX every row is a harness row. Reuse a listed slug for the same mistake; `--new` starts one on purpose.
 
 A byte cap a ticket raised under a name that `CAP_NAMES` in review-loop's `scripts/tier.py` does not list is a finding (NFX-200); its fix is adding the name there.
 

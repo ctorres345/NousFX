@@ -120,7 +120,7 @@ class ReferenceExtras(unittest.TestCase):
     def test_classes_read_and_feed_the_watch_ledger(self):
         # NFX-272: a mistake seen once per ticket becomes a class across tickets and projects.
         classes = REF[REF.index("## Classes"):REF.index("## Fix order")]
-        for phrase in ("python3 -B ~/.claude/skills/review-loop/scripts/session_report.py watch list",
+        for phrase in ("python3 -B ~/.agents/skills/review-loop/scripts/session_report.py watch list",
                        "the installed copy", "Before grouping", "count it against that slug", "watch add",
                        "--harness", "the fix belongs in NousFX", "an agent habit", "--project", "--new",
                        "inside NousFX every row is a harness row",

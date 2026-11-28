@@ -22,7 +22,7 @@ Done when every page is on disk and the last one reports no next page. The scrip
 ## 2. Run the checks
 
 ```bash
-python3 -I ~/.claude/skills/jira-sync/scripts/audit.py --project <KEY> --repo <repo path> --issues <page files...>
+python3 -I ~/.agents/skills/jira-sync/scripts/audit.py --project <KEY> --repo <repo path> --issues <page files...>
 ```
 
 The script prints the findings, the next-up list and any evidence gaps. It reads `docs/agents/jira-sync.md` in the repo for ignored findings. Keep its finding IDs and numbers.
