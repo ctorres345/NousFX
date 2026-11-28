@@ -1070,5 +1070,19 @@ class GateBudget(unittest.TestCase):
         self.assert_agrees(cfg["nousfx-review-gate"]["PreToolUse"][0]["hooks"][0])
 
 
+class DelegationSplit(unittest.TestCase):
+    """NFX-314: 'Keep edits in the main thread.' lives in the Claude overlay, not in agy's generated rules."""
+
+    def test_delegation_split(self):
+        no_state = os.path.join(ROOT, "no-such-state")
+        claude_rules = nousfx_sync.build_rules(ROOT, no_state, prefix="cesar")
+        agy_rules = nousfx_agy.build_rules(ROOT, no_state, nousfx_sync.SyncError, prefix="cesar")
+        self.assertNotIn("Keep edits in the main thread", agy_rules)
+        self.assertIn("- Keep edits in the main thread.\n- Exception: `implementer` codes S/M tickets.", claude_rules)
+        re_read = "- Re-read a file before editing, never trust only an agent's summary."
+        self.assertIn(re_read, claude_rules)
+        self.assertIn(re_read, agy_rules)
+
+
 if __name__ == "__main__":
     unittest.main()
