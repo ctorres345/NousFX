@@ -1,7 +1,7 @@
 # Working rules
 
 ## Delegation
-- Keep edits in the main thread; re-read a file before editing, never trust only an agent's summary.
+- Re-read a file before editing, never trust only an agent's summary.
 - Give every subagent an objective, output format and boundaries. At most ~3 in parallel for simple tasks.
 
 ## Tickets and branches
