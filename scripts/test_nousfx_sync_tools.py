@@ -345,6 +345,32 @@ class Mcp(Fixture):
         self.assertEqual(read(self.claude_json), before)
 
 
+@unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "mode 000 does not stop root or Windows from reading")
+class Unreadable(Fixture):
+    """agy's sandbox cannot read ~/.claude.json (NFX-312)."""
+    def setUp(self):
+        super().setUp()
+        self.original = json.dumps({"mcpServers": {"mine": {"type": "http", "url": "https://m.example.com"}}})
+        write(self.claude_json, self.original)
+        os.chmod(self.claude_json, 0o000)
+        self.addCleanup(os.chmod, self.claude_json, 0o600)
+
+    def test_claude_json_unreadable_agy(self):
+        r = self.sync("--check", "--summary", "--tools", "agy")
+        self.assertIn(r.returncode, (0, 1), r.stderr + r.stdout)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertIsInstance(json.loads(r.stdout), dict)
+
+    def test_permission_error_one_line(self):
+        r = self.sync("--tools", "claude,agy")
+        self.assertEqual(r.returncode, 2, r.stderr + r.stdout)
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+        self.assertIn(self.claude_json, r.stderr)
+        os.chmod(self.claude_json, 0o600)
+        self.assertEqual(read(self.claude_json), self.original)  # never read as missing and rewritten
+
+
 class Project(Fixture):
     def setUp(self):
         super().setUp()

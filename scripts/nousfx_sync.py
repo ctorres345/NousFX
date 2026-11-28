@@ -285,8 +285,11 @@ def claude_files(repo, home, state, platform, tools, prefix):
     return wanted
 
 
-def mcp_merged_files(home, project=None):
-    """Files Claude also writes, where sync owns only some MCP servers."""
+def mcp_merged_files(home, project=None, tools=("claude",)):
+    """Files Claude also writes, where sync owns only some MCP servers. Without claude in `tools` sync never
+    touches them, so it never reads them either: agy's sandbox cannot read ~/.claude.json."""
+    if "claude" not in tools:
+        return set()
     if project:
         return {os.path.join(project, nousfx_mcp.PROJECT_CLAUDE_REL)}
     return {os.path.join(home, nousfx_mcp.CLAUDE_JSON_REL)}
@@ -639,7 +642,7 @@ def main(argv=None):
         if args.restore:
             return restore(state) or 0
         outside = {} if project else nousfx_outside.load(repo, nousfx_skills.sources(repo), SyncError)
-        seen_before = {p: read_or_none(p) for p in mcp_merged_files(home, project)}  # before plan() reads them
+        seen_before = {p: read_or_none(p) for p in mcp_merged_files(home, project, tools)}  # before plan() reads them
         extras, prefix = {}, None
         if not project:  # an explicit bad prefix stops here, before anything is written
             prefix, note = nousfx_prefix.resolve(state, SyncError)
@@ -652,7 +655,7 @@ def main(argv=None):
         scan_secrets({shown_name(p, home): t for p, t in wanted.items() if p not in merged})
         warn_local(state, tools)
         todo = changes(wanted)
-        mcp_merged = mcp_merged_files(home, project) & set(todo)
+        mcp_merged = mcp_merged_files(home, project, tools) & set(todo)
         seen = {p: seen_before[p] for p in mcp_merged}
         failed, need = {}, {}
         if outside and (args.check or args.dry_run):  # these fetch nothing: they only report what would happen
@@ -763,6 +766,10 @@ def main(argv=None):
     except SyncError as e:
         print(f"nousfx_sync: {e}", file=sys.stderr)
         return e.code
+    except PermissionError as e:  # a sandbox (agy) or a file mode blocks it: one line, never a traceback
+        print(f"nousfx_sync: permission denied: {e.filename}. Fix its permissions or run sync outside the sandbox; "
+              "--restore undoes anything this run already wrote.", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
