@@ -81,16 +81,23 @@ class Base(unittest.TestCase):
         subprocess.run([sys.executable, "-B", os.path.join(GATE_DIR, "review-gate.py"), "--mark", "--findings", "0"],
                        cwd=self.repo, check=True, capture_output=True, env=CLEAN_ENV)
 
-    def expect(self):
+    def expect(self, hooks=None):
         """The --expect value sync writes into hooks.json: hashes of the three files as they are now."""
+        hooks_dir = hooks or self.hooks
         names = ("agy_gate.py", "review-gate.py", "pr_create_parser.py")
-        return ",".join(hashlib.sha256(open(os.path.join(self.hooks, n), "rb").read()).hexdigest() for n in names)
+        out = []
+        for n in names:
+            with open(os.path.join(hooks_dir, n), "rb") as f:
+                out.append(hashlib.sha256(f.read()).hexdigest())
+        return ",".join(out)
 
-    def run_adapter(self, stdin, expect=None):
+    def run_adapter(self, stdin, expect=None, env=None, hooks=None):
         text = stdin if isinstance(stdin, str) else json.dumps(stdin)
-        args = [] if expect == "" else ["--expect", expect or self.expect()]
-        return subprocess.run([sys.executable, "-I", "-B", os.path.join(self.hooks, "agy_gate.py"), *args],
-                              input=text, cwd=self.tmp, capture_output=True, text=True, timeout=60, env=CLEAN_ENV)
+        hooks_dir = hooks or self.hooks
+        args = [] if expect == "" else ["--expect", expect or self.expect(hooks_dir)]
+        return subprocess.run([sys.executable, "-I", "-B", os.path.join(hooks_dir, "agy_gate.py"), *args],
+                              input=text, cwd=self.tmp, capture_output=True, text=True, timeout=60,
+                              env=env or CLEAN_ENV)
 
     def decision(self, stdin):
         """(exit code, decision or None) for one payload."""
@@ -249,6 +256,101 @@ class Integrity(Base):
             r = self.run_adapter(payload(command, [self.repo]))
             self.assertIn("own files", json.loads(r.stdout)["reason"], command)
         self.assertSilent(payload("sed -i s/2/0/ claude/hooks/review-gate.py", [self.repo]))  # the repo's own copy
+
+    def test_the_plugin_gate_may_run_its_own_commands(self):
+        gate = os.path.join(self.hooks, "review-gate.py")
+        norm_gate = os.path.join(self.hooks, "..", "hooks", "review-gate.py")
+        for command in (
+            f"python3 -I -B {gate} run-check --stamp",
+            f"python3 -I -B {gate} --mark --findings 0",
+            f'python3 -I -B {gate} --mark --findings 0 --tier 2 --reasons "Tier 2: 42 lines, 2 file(s); risk_paths <default> | ok"',
+            f"python3 -I -B {gate} --mark --findings 0 --reasons 'fixes `foo` & `bar`'",
+            f"python3 -I -B {gate} attest",
+            f"python3 -I -B {norm_gate} attest",
+        ):
+            self.assertSilent(payload(command, [self.repo]))
+
+        # Unquoted ~/ resolves to the plugin gate when HOME points to the agy-only home (no ~/.claude)
+        fake_home = os.path.join(self.tmp, "home")
+        home_hooks = os.path.join(fake_home, ".gemini", "config", "plugins", "nousfx", "hooks")
+        shutil.copytree(self.hooks, home_hooks)
+        env = {**CLEAN_ENV, "HOME": fake_home}
+        for sub in ("run-check --stamp", "--mark --findings 0", "attest"):
+            cmd = f"python3 -I -B ~/.gemini/config/plugins/nousfx/hooks/review-gate.py {sub}"
+            r = self.run_adapter(payload(cmd, [self.repo]), env=env, hooks=home_hooks)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, ""), (cmd, r.stdout, r.stderr))
+
+        # An edited review-gate.py is still caught by --expect before the allow check runs
+        expect = self.expect()
+        with open(gate, "a", encoding="utf-8") as f:
+            f.write("\n# tampered\n")
+        r = self.run_adapter(payload(f"python3 -I -B {gate} attest", [self.repo]), expect=expect)
+        self.assertIn("review-gate.py does not match", json.loads(r.stdout)["reason"])
+
+    def test_other_commands_naming_the_plugin_folder_stay_denied(self):
+        gate = os.path.join(self.hooks, "review-gate.py")
+        leaf_link = os.path.join(self.hooks, "gate-link.py")
+        os.symlink(gate, leaf_link)
+        parent_link_root = os.path.join(self.tmp, "other-plugins", "nousfx")
+        os.makedirs(os.path.dirname(parent_link_root))
+        os.symlink(os.path.dirname(self.hooks), parent_link_root)
+        parent_link_gate = os.path.join(parent_link_root, "hooks", "review-gate.py")
+        copy_hooks = os.path.join(self.tmp, "copy", "plugins", "nousfx", "hooks")
+        shutil.copytree(self.hooks, copy_hooks)
+        copy_gate = os.path.join(copy_hooks, "review-gate.py")
+
+        denied = (
+            # chaining, piping, redirection, newlines
+            f"python3 -I -B {gate} --mark --findings 0 && rm -rf {self.hooks}",
+            f"python3 -I -B {gate} attest; ls",
+            f"python3 -I -B {gate} attest | cat",
+            f"python3 -I -B {gate} attest > {self.hooks}/out.txt",
+            f"python3 -I -B {gate} attest\nrm -rf {self.hooks}",
+            # command substitution & zsh expansions
+            f'python3 -I -B {gate} --mark --findings 0 --reasons "$(cat {self.hooks}/review-gate.py)"',
+            f'python3 -I -B {gate} --mark --findings 0 --reasons "`cat {self.hooks}/review-gate.py`"',
+            f"python3 -I -B {gate} --mark --findings 0 --reasons =(rm -rf {self.hooks})",
+            f"python3 -I -B {gate} --mark --findings 0 --reasons .(e:'rm -rf {self.hooks}':)",
+            f"python3 -I -B {gate} --mark --findings 0 --reasons ${{ rm -rf {self.hooks}; }}",
+            # missing -I -B or python3 -c
+            f"python3 {gate} attest",
+            f"python3 -B {gate} attest",
+            f"python3 -I {gate} attest",
+            f"python3 -c 'open({gate!r})'",
+            # disallowed subcommands & extra args
+            f"python3 -I -B {gate}",
+            f"python3 -I -B {gate} check",
+            f"python3 -I -B {gate} marker",
+            f"python3 -I -B {gate} attest --extra",
+            f"python3 -I -B {gate} run-check --ref HEAD",
+            # waiver flags & flag-smuggling
+            f'python3 -I -B {gate} --mark --skip "waived"',
+            f"python3 -I -B {gate} --mark --tier-override 1",
+            f'python3 -I -B {gate} --mark --allow-branch "x"',
+            f'python3 -I -B {gate} --mark --via-skip "x"',
+            f"python3 -I -B {gate} --mark $'\\x2d\\x2dallow-branch' x",
+            f"python3 -I -B {gate} --mark --{{allow-branch,x}} x",
+            # symlinks, copies elsewhere, relative paths
+            f"python3 -I -B {leaf_link} attest",
+            f"python3 -I -B {parent_link_gate} attest",
+            f"python3 -I -B {copy_gate} attest",
+            "python3 -I -B plugins/nousfx/hooks/review-gate.py attest",
+        )
+        for command in denied:
+            self.assertDeny(payload(command, [self.repo]))
+
+        # Quoted or escaped ~/ is not expanded by bash/zsh and must stay denied
+        fake_home = os.path.join(self.tmp, "home2")
+        home_hooks = os.path.join(fake_home, ".gemini", "config", "plugins", "nousfx", "hooks")
+        shutil.copytree(self.hooks, home_hooks)
+        env = {**CLEAN_ENV, "HOME": fake_home}
+        for cmd in (
+            'python3 -I -B "~/.gemini/config/plugins/nousfx/hooks/review-gate.py" attest',
+            "python3 -I -B '~/.gemini/config/plugins/nousfx/hooks/review-gate.py' attest",
+            r"python3 -I -B \~/.gemini/config/plugins/nousfx/hooks/review-gate.py attest",
+        ):
+            r = self.run_adapter(payload(cmd, [self.repo]), env=env, hooks=home_hooks)
+            self.assertEqual((r.returncode, json.loads(r.stdout).get("decision")), (0, "deny"), cmd)
 
 
 class FailClosed(Base):

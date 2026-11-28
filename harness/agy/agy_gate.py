@@ -40,6 +40,8 @@ FOLDER_KEY = re.compile(r"cwd|(work(ing)?_?)?(dir(ectory)?|folder)|location|path
 MCP_CREATE = re.compile(r"create_pull_request", re.I)
 CREATE_CANDIDATE = re.compile(r"\bpr\b|pull", re.I)  # a command that might open a PR
 PLUGIN_FOLDER = re.compile(r"plugins[/\\]nousfx", re.I)  # where sync puts this hook and the gate
+GATE_WAIVER_FLAGS = frozenset(("--allow-branch", "--via-skip", "--skip", "--tier-override"))
+SAFE_UNQUOTED = frozenset("/.-_:@,+%")
 # GIT_DIR and friends would point git at another repo (or none) and hide the real one from the gate
 CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
@@ -78,6 +80,110 @@ def verify_files(argv):
                           "review gate may have been changed. Run nousfx_sync again.")
 
 
+def split_safe_gate_command(command):
+    """Split a single POSIX gate invocation into (token, unquoted_tilde) pairs, or None if unsafe.
+    Rejects Windows (no PowerShell parser here), newlines/NUL, and every unquoted shell operator or
+    expansion (`;`, `&`, `|`, `<`, `>`, `(`, `)`, `=`, `$`, `` ` ``, `*`, `?`, `[`, `]`, `{`, `}`, `#`, `!`)."""
+    if os.name == "nt" or any(c in command for c in "\n\r\0"):
+        return None
+    tokens, buf, started, unquoted_tilde, state = [], [], False, False, "OUT"
+    i, n = 0, len(command)
+
+    def flush():
+        nonlocal buf, started, unquoted_tilde
+        if started:
+            tokens.append(("".join(buf), unquoted_tilde))
+            buf, started, unquoted_tilde = [], False, False
+
+    while i < n:
+        c = command[i]
+        if state == "SQ":
+            if c == "'":
+                state = "OUT"
+            else:
+                buf.append(c)
+        elif state == "DQ":
+            if c == '"':
+                state = "OUT"
+            elif c in "$`":
+                return None
+            elif c == "\\":
+                if i + 1 >= n:
+                    return None
+                nxt = command[i + 1]
+                if nxt in '$`"\\':
+                    buf.append(nxt)
+                    i += 1
+                else:
+                    buf.append("\\")
+            else:
+                buf.append(c)
+        else:
+            if c in " \t":
+                flush()
+            elif c == "'":
+                started, state = True, "SQ"
+            elif c == '"':
+                started, state = True, "DQ"
+            elif c == "\\":
+                if i + 1 >= n:
+                    return None
+                nxt = command[i + 1]
+                if not (nxt.isalnum() or nxt in SAFE_UNQUOTED or nxt == " "):
+                    return None
+                started = True
+                buf.append(nxt)
+                i += 1
+            elif c == "~" and not started and i + 1 < n and command[i + 1] == "/":
+                started = unquoted_tilde = True
+                buf.append("~")
+            elif c.isalnum() or c in SAFE_UNQUOTED:
+                started = True
+                buf.append(c)
+            else:
+                return None
+        i += 1
+    if state != "OUT":
+        return None
+    flush()
+    return tokens
+
+
+def is_own_gate_call(command):
+    """True only for `python3 -I -B <gate> <subcommand> ...` targeting the hash-verified review-gate.py
+    beside this adapter with `run-check --stamp`, `--mark` (without waiver flags), or `attest`."""
+    tokens = split_safe_gate_command(command)
+    if not tokens or len(tokens) < 5:
+        return False
+    if any(tilde for _, tilde in tokens[:3] + tokens[4:]):
+        return False
+    argv = [tok for tok, _ in tokens]
+    if argv[:3] != ["python3", "-I", "-B"]:
+        return False
+    gate_arg, unquoted_tilde = tokens[3]
+    path = os.path.expanduser(gate_arg) if unquoted_tilde else gate_arg
+    if not os.path.isabs(path):
+        return False
+    norm = os.path.normpath(path)
+    if os.path.islink(norm):
+        return False
+    if os.path.realpath(path) != os.path.realpath(GATE):
+        return False
+    if norm not in (os.path.normpath(GATE), os.path.realpath(GATE)):
+        return False
+    sub = argv[4]
+    if sub == "attest":
+        return len(argv) == 5
+    if sub == "run-check":
+        return argv[5:] == ["--stamp"]
+    if sub == "--mark":
+        if GATE_WAIVER_FLAGS & set(argv[5:]):
+            raise Refused("Blocked: review-gate waiver flags require explicit human approval and are not "
+                          "allowed through the agy gate hook yet.")
+        return True
+    return False
+
+
 def read_call():
     """(tools, command, folders, body) to check, or None when this hook is not meant for the tool.
     Raises ValueError on anything unreadable and Refused on a call that must not run."""
@@ -95,7 +201,7 @@ def read_call():
     command = args.get("CommandLine") if shell else name
     if not isinstance(command, str) or not command.strip():
         raise ValueError("no command")
-    if shell and PLUGIN_FOLDER.search(command):
+    if shell and PLUGIN_FOLDER.search(command) and not is_own_gate_call(command):
         raise Refused("Blocked: this command touches the review gate's own files. Change the sources in the "
                       "nousfx repo and run nousfx_sync instead.")
     workspaces = payload["workspacePaths"]
