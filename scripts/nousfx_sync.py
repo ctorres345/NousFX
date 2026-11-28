@@ -285,8 +285,11 @@ def claude_files(repo, home, state, platform, tools, prefix):
     return wanted
 
 
-def mcp_merged_files(home, project=None):
-    """Files Claude also writes, where sync owns only some MCP servers."""
+def mcp_merged_files(home, project=None, tools=("claude",)):
+    """Files Claude also writes, where sync owns only some MCP servers. Without claude in `tools` sync never
+    touches them, so it never reads them either: agy's sandbox cannot read ~/.claude.json."""
+    if "claude" not in tools:
+        return set()
     if project:
         return {os.path.join(project, nousfx_mcp.PROJECT_CLAUDE_REL)}
     return {os.path.join(home, nousfx_mcp.CLAUDE_JSON_REL)}
@@ -635,11 +638,12 @@ def main(argv=None):
     home = os.path.abspath(args.home or user_home())
     state = os.path.abspath(args.state_home or os.path.join(home, ".config", "nousfx"))
     repo = os.path.abspath(args.repo)
+    root = None
     try:
         if args.restore:
             return restore(state) or 0
         outside = {} if project else nousfx_outside.load(repo, nousfx_skills.sources(repo), SyncError)
-        seen_before = {p: read_or_none(p) for p in mcp_merged_files(home, project)}  # before plan() reads them
+        seen_before = {p: read_or_none(p) for p in mcp_merged_files(home, project, tools)}  # before plan() reads them
         extras, prefix = {}, None
         if not project:  # an explicit bad prefix stops here, before anything is written
             prefix, note = nousfx_prefix.resolve(state, SyncError)
@@ -652,7 +656,7 @@ def main(argv=None):
         scan_secrets({shown_name(p, home): t for p, t in wanted.items() if p not in merged})
         warn_local(state, tools)
         todo = changes(wanted)
-        mcp_merged = mcp_merged_files(home, project) & set(todo)
+        mcp_merged = mcp_merged_files(home, project, tools) & set(todo)
         seen = {p: seen_before[p] for p in mcp_merged}
         failed, need = {}, {}
         if outside and (args.check or args.dry_run):  # these fetch nothing: they only report what would happen
@@ -763,6 +767,16 @@ def main(argv=None):
     except SyncError as e:
         print(f"nousfx_sync: {e}", file=sys.stderr)
         return e.code
+    except PermissionError as e:
+        if args.restore:
+            after = "The restore may have stopped partway; run --restore again once it is fixed."
+        elif root:
+            after = f"The backup is {root}; run --restore to put the previous files back."
+        else:
+            after = "Nothing was written."
+        print(f"nousfx_sync: permission denied: {e.filename or e}. Fix its permissions or run sync outside the "
+              f"sandbox. {after}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
